@@ -1,3 +1,4 @@
+mod extractor;
 mod flags;
 mod input;
 mod tokenizer;
