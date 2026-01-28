@@ -1,3 +1,4 @@
+mod flags;
 mod input;
 mod tokenizer;
 
