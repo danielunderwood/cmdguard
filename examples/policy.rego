@@ -1,6 +1,7 @@
 package claude.permissions
 
 import data.claude.permissions.stdlib
+import future.keywords.in
 
 default decision = "ask"
 
@@ -11,7 +12,7 @@ default decision = "ask"
 # Allow safe git read commands
 decision = "allow" {
     input.command[0] == "git"
-    stdlib.git_subcommand in {
+    data.claude.permissions.stdlib.git_subcommand in {
         "status", "diff", "log", "branch", "show",
         "fetch", "stash", "remote", "tag", "describe"
     }
@@ -20,7 +21,7 @@ decision = "allow" {
 # Allow git add/commit (common safe operations)
 decision = "allow" {
     input.command[0] == "git"
-    stdlib.git_subcommand in {"add", "commit", "restore", "switch", "checkout"}
+    data.claude.permissions.stdlib.git_subcommand in {"add", "commit", "restore", "switch", "checkout"}
 }
 
 # Allow cargo commands
@@ -52,7 +53,7 @@ decision = "allow" {
 # Deny git push --force
 decision = "deny" {
     input.command[0] == "git"
-    stdlib.git_subcommand == "push"
+    data.claude.permissions.stdlib.git_subcommand == "push"
     has_force_flag
 }
 
@@ -65,7 +66,7 @@ has_force_flag {
 decision = "deny" {
     input.command[0] == "rm"
     "-r" in input.flags_expanded
-    stdlib.path_outside_project
+    data.claude.permissions.stdlib.path_outside_project
 }
 
 # Deny dangerous commands entirely
@@ -100,7 +101,7 @@ reason = "Read-only command" {
 reason = "Force push is blocked - use regular push instead" {
     decision == "deny"
     input.command[0] == "git"
-    stdlib.git_subcommand == "push"
+    data.claude.permissions.stdlib.git_subcommand == "push"
 }
 
 reason = "Recursive delete outside project root is blocked" {

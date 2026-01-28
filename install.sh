@@ -40,6 +40,12 @@ else
     cp examples/policy.rego "$HOME/.config/claude-permissions/"
     echo "Installed example policy: $HOME/.config/claude-permissions/policy.rego"
 fi
+
+# Copy example test file if none exists
+if [ ! -f "$HOME/.config/claude-permissions/policy_tests.yaml" ]; then
+    cp examples/policy_tests.yaml "$HOME/.config/claude-permissions/"
+    echo "Installed example policy_tests.yaml"
+fi
 echo ""
 
 # Installation complete
