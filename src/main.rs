@@ -1,4 +1,5 @@
 mod input;
+mod tokenizer;
 
 fn main() {
     println!("claude-permissions stub");
