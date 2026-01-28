@@ -1842,7 +1842,43 @@ Your policies receive this input:
 }
 ```
 
+## Testing Policies
+
+Run policy tests:
+
+```bash
+# Run all tests from policy_tests.yaml
+claude-permissions test
+
+# Run with verbose output
+claude-permissions test --verbose
+
+# Run specific test file
+claude-permissions test my_tests.yaml
+```
+
+Test file format (`policy_tests.yaml`):
+
+```yaml
+tests:
+  - name: "allow git status"
+    command: "git status"
+    expect: allow
+    reason_contains: "Safe git"
+
+  - name: "deny force push"
+    command: "git push --force origin main"
+    expect: deny
+```
+
 ## Debugging
+
+Evaluate a single command:
+
+```bash
+claude-permissions eval "git status"
+claude-permissions eval "nix develop --command cargo build"
+```
 
 Enable logging:
 
@@ -1851,15 +1887,6 @@ export RUST_LOG=debug
 ```
 
 Logs written to `~/.local/state/claude-permissions/debug.log`
-
-## Testing
-
-Test without Claude:
-
-```bash
-echo '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/tmp"}' | \
-  claude-permissions
-```
 
 ## License
 
@@ -1875,13 +1902,827 @@ git commit -m "docs: add README with usage instructions"
 
 ---
 
-### Task 14: Final Integration Test
+### Task 14: CLI with Test Subcommand
+
+**Files:**
+- Modify: `Cargo.toml`
+- Create: `src/cli.rs`
+- Create: `src/test_runner.rs`
+- Modify: `src/main.rs`
+
+**Step 1: Add dependencies to Cargo.toml**
+
+Add to `[dependencies]` in `Cargo.toml`:
+
+```toml
+clap = { version = "4.5", features = ["derive"] }
+serde_yaml = "0.9"
+```
+
+**Step 2: Create CLI module**
+
+Create `src/cli.rs`:
+
+```rust
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "claude-permissions")]
+#[command(about = "Policy-driven permission control for Claude Code")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Run policy tests from a YAML file
+    Test {
+        /// Path to test file (default: looks for policy_tests.yaml in policy dir)
+        #[arg(value_name = "FILE")]
+        file: Option<PathBuf>,
+
+        /// Show detailed output for each test
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Policy directory (default: ~/.config/claude-permissions)
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
+    },
+
+    /// Evaluate a single command (for debugging)
+    Eval {
+        /// The command to evaluate
+        command: String,
+
+        /// Working directory context
+        #[arg(short, long, default_value = ".")]
+        cwd: String,
+
+        /// Policy directory
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
+    },
+}
+```
+
+**Step 3: Create test runner module**
+
+Create `src/test_runner.rs`:
+
+```rust
+use crate::extractor::extract_command;
+use crate::flags::expand_flags;
+use crate::output::Decision;
+use crate::paths::detect_paths;
+use crate::policy::{PolicyEngine, PolicyInput};
+use crate::tokenizer::tokenize;
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Deserialize)]
+pub struct TestFile {
+    pub tests: Vec<TestCase>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TestCase {
+    pub name: String,
+    pub command: String,
+    #[serde(default = "default_cwd")]
+    pub cwd: String,
+    pub expect: ExpectedDecision,
+    #[serde(default)]
+    pub reason_contains: Option<String>,
+}
+
+fn default_cwd() -> String {
+    "/home/user/project".to_string()
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum ExpectedDecision {
+    Allow,
+    Deny,
+    Ask,
+}
+
+impl ExpectedDecision {
+    fn matches(&self, decision: Decision) -> bool {
+        match (self, decision) {
+            (ExpectedDecision::Allow, Decision::Allow) => true,
+            (ExpectedDecision::Deny, Decision::Deny) => true,
+            (ExpectedDecision::Ask, Decision::Ask) => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct TestResult {
+    pub name: String,
+    pub passed: bool,
+    pub expected: ExpectedDecision,
+    pub actual: Decision,
+    pub reason: Option<String>,
+    pub error: Option<String>,
+}
+
+pub struct TestRunner {
+    engine: PolicyEngine,
+}
+
+impl TestRunner {
+    pub fn new(policy_dir: &Path) -> Result<Self, String> {
+        let mut engine = PolicyEngine::new();
+        engine.load_policies_from_dir(policy_dir)?;
+        Ok(TestRunner { engine })
+    }
+
+    pub fn run_tests(&mut self, test_file: &TestFile) -> Vec<TestResult> {
+        test_file
+            .tests
+            .iter()
+            .map(|tc| self.run_single_test(tc))
+            .collect()
+    }
+
+    fn run_single_test(&mut self, test: &TestCase) -> TestResult {
+        // Tokenize
+        let tokens = match tokenize(&test.command) {
+            Ok(t) => t,
+            Err(e) => {
+                return TestResult {
+                    name: test.name.clone(),
+                    passed: false,
+                    expected: test.expect,
+                    actual: Decision::Ask,
+                    reason: None,
+                    error: Some(format!("Tokenize error: {}", e)),
+                }
+            }
+        };
+
+        if tokens.is_empty() {
+            return TestResult {
+                name: test.name.clone(),
+                passed: false,
+                expected: test.expect,
+                actual: Decision::Ask,
+                reason: None,
+                error: Some("Empty command".to_string()),
+            };
+        }
+
+        // Process command
+        let extracted = extract_command(&tokens);
+        let flags_expanded = expand_flags(&extracted.command);
+        let cwd_path = PathBuf::from(&test.cwd);
+        let paths = detect_paths(&extracted.command, &cwd_path);
+
+        let policy_input = PolicyInput {
+            tool: "Bash".to_string(),
+            raw_command: test.command.clone(),
+            command: extracted.command,
+            wrapper_chain: extracted.wrapper_chain,
+            flags_expanded,
+            paths,
+            cwd: test.cwd.clone(),
+            project_root: test.cwd.clone(),
+            session_id: "test".to_string(),
+        };
+
+        // Evaluate
+        let result = self.engine.evaluate(&policy_input);
+
+        // Check result
+        let decision_matches = test.expect.matches(result.decision);
+        let reason_matches = test.reason_contains.as_ref().map_or(true, |expected| {
+            result
+                .reason
+                .as_ref()
+                .map_or(false, |r| r.contains(expected))
+        });
+
+        TestResult {
+            name: test.name.clone(),
+            passed: decision_matches && reason_matches,
+            expected: test.expect,
+            actual: result.decision,
+            reason: result.reason,
+            error: if !reason_matches {
+                Some(format!(
+                    "Reason '{}' does not contain '{}'",
+                    result.reason.as_deref().unwrap_or("(none)"),
+                    test.reason_contains.as_deref().unwrap_or("")
+                ))
+            } else {
+                None
+            },
+        }
+    }
+}
+
+pub fn load_test_file(path: &Path) -> Result<TestFile, String> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read test file {:?}: {}", path, e))?;
+
+    serde_yaml::from_str(&contents)
+        .map_err(|e| format!("Failed to parse test file {:?}: {}", path, e))
+}
+
+pub fn print_results(results: &[TestResult], verbose: bool) {
+    let passed = results.iter().filter(|r| r.passed).count();
+    let total = results.len();
+
+    if verbose {
+        for result in results {
+            let status = if result.passed { "✓" } else { "✗" };
+            let decision_str = format!("{:?}", result.actual).to_lowercase();
+
+            println!("{} {} -> {} (expected {:?})",
+                status,
+                result.name,
+                decision_str,
+                result.expected
+            );
+
+            if !result.passed {
+                if let Some(ref err) = result.error {
+                    println!("    Error: {}", err);
+                }
+                if let Some(ref reason) = result.reason {
+                    println!("    Reason: {}", reason);
+                }
+            }
+        }
+        println!();
+    }
+
+    if passed == total {
+        println!("✓ {}/{} tests passed", passed, total);
+    } else {
+        println!("✗ {}/{} tests passed", passed, total);
+
+        if !verbose {
+            println!("\nFailed tests:");
+            for result in results.iter().filter(|r| !r.passed) {
+                println!("  - {} (expected {:?}, got {:?})",
+                    result.name,
+                    result.expected,
+                    result.actual
+                );
+                if let Some(ref err) = result.error {
+                    println!("    {}", err);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_yaml() {
+        let yaml = r#"
+tests:
+  - name: "test allow"
+    command: "git status"
+    expect: allow
+  - name: "test deny"
+    command: "rm -rf /"
+    expect: deny
+    reason_contains: "blocked"
+"#;
+        let test_file: TestFile = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(test_file.tests.len(), 2);
+        assert_eq!(test_file.tests[0].name, "test allow");
+        assert_eq!(test_file.tests[0].expect, ExpectedDecision::Allow);
+        assert_eq!(test_file.tests[1].reason_contains, Some("blocked".to_string()));
+    }
+}
+```
+
+**Step 4: Update main.rs for CLI**
+
+Replace `src/main.rs`:
+
+```rust
+mod cli;
+mod extractor;
+mod flags;
+mod input;
+mod logging;
+mod output;
+mod paths;
+mod policy;
+mod test_runner;
+mod tokenizer;
+
+use clap::Parser;
+use cli::{Cli, Commands};
+use extractor::extract_command;
+use flags::expand_flags;
+use input::parse_input;
+use logging::init_logging;
+use output::HookOutput;
+use paths::detect_paths;
+use policy::{PolicyEngine, PolicyInput};
+use std::io::{self, Read};
+use std::path::PathBuf;
+use std::time::Instant;
+use test_runner::{load_test_file, print_results, TestRunner};
+use tracing::{debug, error, info};
+
+fn main() {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::Test {
+            file,
+            verbose,
+            policy_dir,
+        }) => {
+            run_tests(file, verbose, policy_dir);
+        }
+        Some(Commands::Eval {
+            command,
+            cwd,
+            policy_dir,
+        }) => {
+            run_eval(&command, &cwd, policy_dir);
+        }
+        None => {
+            // Default: run as hook (read from stdin)
+            run_hook();
+        }
+    }
+}
+
+fn get_policy_dir(override_dir: Option<PathBuf>) -> PathBuf {
+    override_dir.unwrap_or_else(|| {
+        dirs::config_dir()
+            .map(|d| d.join("claude-permissions"))
+            .unwrap_or_else(|| PathBuf::from("/etc/claude-permissions"))
+    })
+}
+
+fn run_tests(file: Option<PathBuf>, verbose: bool, policy_dir: Option<PathBuf>) {
+    let policy_dir = get_policy_dir(policy_dir);
+
+    // Find test file
+    let test_file_path = file.unwrap_or_else(|| policy_dir.join("policy_tests.yaml"));
+
+    if !test_file_path.exists() {
+        eprintln!("Test file not found: {:?}", test_file_path);
+        eprintln!("Create a test file or specify one with: claude-permissions test <file>");
+        std::process::exit(1);
+    }
+
+    // Load tests
+    let test_file = match load_test_file(&test_file_path) {
+        Ok(tf) => tf,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Create runner
+    let mut runner = match TestRunner::new(&policy_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error loading policies: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Run tests
+    let results = runner.run_tests(&test_file);
+    print_results(&results, verbose);
+
+    // Exit with error if any failed
+    if results.iter().any(|r| !r.passed) {
+        std::process::exit(1);
+    }
+}
+
+fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
+    let _guard = init_logging();
+    let policy_dir = get_policy_dir(policy_dir);
+
+    // Process command
+    let tokens = match tokenizer::tokenize(command) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Tokenize error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let extracted = extract_command(&tokens);
+    let flags_expanded = expand_flags(&extracted.command);
+    let cwd_path = PathBuf::from(cwd);
+    let paths = detect_paths(&extracted.command, &cwd_path);
+
+    let policy_input = PolicyInput {
+        tool: "Bash".to_string(),
+        raw_command: command.to_string(),
+        command: extracted.command.clone(),
+        wrapper_chain: extracted.wrapper_chain.clone(),
+        flags_expanded: flags_expanded.clone(),
+        paths: paths.clone(),
+        cwd: cwd.to_string(),
+        project_root: cwd.to_string(),
+        session_id: "eval".to_string(),
+    };
+
+    // Load and evaluate
+    let mut engine = PolicyEngine::new();
+    if let Err(e) = engine.load_policies_from_dir(&policy_dir) {
+        eprintln!("Error loading policies: {}", e);
+        std::process::exit(1);
+    }
+
+    let result = engine.evaluate(&policy_input);
+
+    // Print results
+    println!("Command:    {}", command);
+    println!("Extracted:  {:?}", extracted.command);
+    if !extracted.wrapper_chain.is_empty() {
+        println!("Wrappers:   {:?}", extracted.wrapper_chain);
+    }
+    if !flags_expanded.is_empty() {
+        println!("Flags:      {:?}", flags_expanded);
+    }
+    if !paths.is_empty() {
+        println!("Paths:      {:?}", paths.iter().map(|p| &p.raw).collect::<Vec<_>>());
+    }
+    println!();
+    println!("Decision:   {:?}", result.decision);
+    if let Some(reason) = result.reason {
+        println!("Reason:     {}", reason);
+    }
+}
+
+fn run_hook() {
+    let _guard = init_logging();
+    let start = Instant::now();
+
+    let result = run_hook_inner();
+
+    let elapsed = start.elapsed();
+    debug!(total_ms = elapsed.as_secs_f64() * 1000.0, "Completed");
+
+    match result {
+        Ok(output) => {
+            println!("{}", output.to_json());
+        }
+        Err(e) => {
+            error!("Error: {}", e);
+            println!("{}", HookOutput::ask_with_reason(&e).to_json());
+        }
+    }
+}
+
+fn run_hook_inner() -> Result<HookOutput, String> {
+    // Read input from stdin
+    let mut input_str = String::new();
+    io::stdin()
+        .read_to_string(&mut input_str)
+        .map_err(|e| format!("Failed to read stdin: {}", e))?;
+
+    debug!(input = %input_str, "Received input");
+
+    // Parse input JSON
+    let hook_input =
+        parse_input(&input_str).map_err(|e| format!("Failed to parse input: {}", e))?;
+
+    // Only handle Bash tool
+    if hook_input.tool_name != "Bash" {
+        return Ok(HookOutput::ask_with_reason("Not a Bash command"));
+    }
+
+    let raw_command = &hook_input.tool_input.command;
+    let cwd = hook_input.cwd.clone().unwrap_or_else(|| ".".to_string());
+    let cwd_path = PathBuf::from(&cwd);
+    let session_id = hook_input.session_id.clone().unwrap_or_default();
+
+    // Tokenize command
+    let tokens =
+        tokenizer::tokenize(raw_command).map_err(|e| format!("Failed to tokenize: {}", e))?;
+
+    if tokens.is_empty() {
+        return Ok(HookOutput::ask_with_reason("Empty command"));
+    }
+
+    // Extract from wrappers
+    let extracted = extract_command(&tokens);
+    debug!(
+        raw = ?tokens,
+        extracted = ?extracted.command,
+        wrappers = ?extracted.wrapper_chain,
+        "Extracted command"
+    );
+
+    if extracted.command.is_empty() {
+        return Ok(HookOutput::ask_with_reason("Empty extracted command"));
+    }
+
+    // Expand flags
+    let flags_expanded = expand_flags(&extracted.command);
+    debug!(flags = ?flags_expanded, "Expanded flags");
+
+    // Detect paths
+    let paths = detect_paths(&extracted.command, &cwd_path);
+    debug!(paths = ?paths, "Detected paths");
+
+    // Build policy input
+    let policy_input = PolicyInput {
+        tool: hook_input.tool_name,
+        raw_command: raw_command.clone(),
+        command: extracted.command,
+        wrapper_chain: extracted.wrapper_chain,
+        flags_expanded,
+        paths,
+        cwd: cwd.clone(),
+        project_root: cwd,
+        session_id,
+    };
+
+    // Load and evaluate policy
+    let compile_start = Instant::now();
+    let mut engine = PolicyEngine::new();
+
+    let config_dir = get_policy_dir(None);
+
+    if config_dir.exists() {
+        engine.load_policies_from_dir(&config_dir)?;
+    } else {
+        info!("Config directory {:?} not found, using defaults", config_dir);
+        return Ok(HookOutput::ask_with_reason("No policy configured"));
+    }
+
+    let compile_elapsed = compile_start.elapsed();
+    debug!(
+        compile_ms = compile_elapsed.as_secs_f64() * 1000.0,
+        "Compiled policies"
+    );
+
+    // Evaluate
+    let eval_start = Instant::now();
+    let result = engine.evaluate(&policy_input);
+    let eval_elapsed = eval_start.elapsed();
+
+    info!(
+        decision = ?result.decision,
+        reason = ?result.reason,
+        compile_ms = compile_elapsed.as_secs_f64() * 1000.0,
+        eval_ms = eval_elapsed.as_secs_f64() * 1000.0,
+        command = ?policy_input.command,
+        "Policy evaluation complete"
+    );
+
+    Ok(HookOutput::new(result.decision, result.reason))
+}
+```
+
+**Step 5: Run tests**
+
+Run: `cargo test`
+Expected: All tests pass
+
+**Step 6: Build and test CLI**
+
+Run: `cargo build --release`
+
+Test help:
+```bash
+./target/release/claude-permissions --help
+./target/release/claude-permissions test --help
+./target/release/claude-permissions eval --help
+```
+
+**Step 7: Commit**
+
+```bash
+git add Cargo.toml src/cli.rs src/test_runner.rs src/main.rs
+git commit -m "feat: add CLI with test and eval subcommands"
+```
+
+---
+
+### Task 15: Example Test File
+
+**Files:**
+- Create: `examples/policy_tests.yaml`
+
+**Step 1: Create example test file**
+
+Create `examples/policy_tests.yaml`:
+
+```yaml
+# Policy tests for claude-permissions
+# Run with: claude-permissions test examples/policy_tests.yaml
+
+tests:
+  # ==========================================================================
+  # Git Commands
+  # ==========================================================================
+
+  - name: "allow git status"
+    command: "git status"
+    expect: allow
+    reason_contains: "Safe git"
+
+  - name: "allow git diff"
+    command: "git diff HEAD~1"
+    expect: allow
+
+  - name: "allow git log"
+    command: "git log --oneline -10"
+    expect: allow
+
+  - name: "allow git add"
+    command: "git add ."
+    expect: allow
+
+  - name: "allow git commit"
+    command: "git commit -m 'test commit'"
+    expect: allow
+
+  - name: "deny git push --force"
+    command: "git push --force origin main"
+    expect: deny
+    reason_contains: "Force push"
+
+  - name: "deny git push -f"
+    command: "git push -f origin main"
+    expect: deny
+
+  # ==========================================================================
+  # Wrapper Extraction
+  # ==========================================================================
+
+  - name: "allow git through nix develop"
+    command: "nix develop --command git status"
+    expect: allow
+
+  - name: "allow git through sudo"
+    command: "sudo git status"
+    expect: allow
+
+  - name: "allow git through bash -c"
+    command: "bash -c 'git status'"
+    expect: allow
+
+  - name: "deny force push through wrapper"
+    command: "nix develop --command git push --force origin main"
+    expect: deny
+
+  # ==========================================================================
+  # Cargo Commands
+  # ==========================================================================
+
+  - name: "allow cargo build"
+    command: "cargo build"
+    expect: allow
+
+  - name: "allow cargo test"
+    command: "cargo test"
+    expect: allow
+
+  - name: "allow cargo fmt"
+    command: "cargo fmt"
+    expect: allow
+
+  # ==========================================================================
+  # Package Manager Commands
+  # ==========================================================================
+
+  - name: "allow npm install"
+    command: "npm install"
+    expect: allow
+
+  - name: "allow npm test"
+    command: "npm test"
+    expect: allow
+
+  - name: "allow yarn build"
+    command: "yarn build"
+    expect: allow
+
+  # ==========================================================================
+  # Read-Only Commands
+  # ==========================================================================
+
+  - name: "allow ls"
+    command: "ls -la"
+    expect: allow
+
+  - name: "allow cat"
+    command: "cat README.md"
+    expect: allow
+
+  - name: "allow grep"
+    command: "grep -r 'TODO' src/"
+    expect: allow
+
+  # ==========================================================================
+  # Dangerous Commands
+  # ==========================================================================
+
+  - name: "deny rm -rf outside project"
+    command: "rm -rf /etc"
+    cwd: "/home/user/project"
+    expect: deny
+    reason_contains: "outside project"
+
+  - name: "deny shutdown"
+    command: "shutdown -h now"
+    expect: deny
+    reason_contains: "blocked"
+
+  - name: "deny reboot"
+    command: "reboot"
+    expect: deny
+
+  # ==========================================================================
+  # Ask (Unknown Commands)
+  # ==========================================================================
+
+  - name: "ask for curl"
+    command: "curl https://example.com"
+    expect: ask
+
+  - name: "ask for wget"
+    command: "wget https://example.com/file.zip"
+    expect: ask
+
+  - name: "ask for unknown command"
+    command: "some-random-command --with-args"
+    expect: ask
+```
+
+**Step 2: Update install.sh to copy test file**
+
+Add to `install.sh` before the final echo:
+
+```bash
+# Copy example test file
+if [ ! -f ~/.config/claude-permissions/policy_tests.yaml ]; then
+    cp examples/policy_tests.yaml ~/.config/claude-permissions/
+    echo "Installed example policy_tests.yaml"
+fi
+```
+
+**Step 3: Test the test runner**
+
+Run:
+```bash
+./install.sh
+claude-permissions test --verbose
+```
+
+Expected: All tests pass with verbose output
+
+**Step 4: Commit**
+
+```bash
+git add examples/policy_tests.yaml install.sh
+git commit -m "feat: add example policy tests and update install script"
+```
+
+---
+
+### Task 16: Final Integration Test
 
 **Step 1: Build and install**
 
 Run: `./install.sh`
 
-**Step 2: Test various commands**
+**Step 2: Run policy tests**
+
+```bash
+claude-permissions test --verbose
+```
+
+Expected: All tests pass
+
+**Step 3: Test CLI eval command**
+
+```bash
+claude-permissions eval "git status"
+claude-permissions eval "git push --force origin main"
+claude-permissions eval "nix develop --command git status"
+```
+
+**Step 4: Test as hook (stdin mode)**
 
 ```bash
 # Test allowed command
@@ -1891,38 +2732,18 @@ echo '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/tmp"}' |
 # Test denied command
 echo '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"},"cwd":"/tmp"}' | \
   ~/.local/bin/claude-permissions
-
-# Test wrapper extraction
-echo '{"tool_name":"Bash","tool_input":{"command":"nix develop --command git status"},"cwd":"/tmp"}' | \
-  ~/.local/bin/claude-permissions
-
-# Test unknown command (should ask)
-echo '{"tool_name":"Bash","tool_input":{"command":"curl https://example.com"},"cwd":"/tmp"}' | \
-  ~/.local/bin/claude-permissions
 ```
 
-**Step 3: Verify outputs**
+**Step 5: Verify outputs**
 
-- git status → allow
-- git push --force → deny
-- nix develop --command git status → allow (extracts git status)
-- curl → ask
+- `claude-permissions test` → all pass
+- `claude-permissions eval "git status"` → Decision: Allow
+- Hook mode git status → `"permissionDecision":"allow"`
+- Hook mode force push → `"permissionDecision":"deny"`
 
-**Step 4: Final commit**
+**Step 6: Final commit**
 
 ```bash
 git add -A
 git commit -m "chore: final integration verification" --allow-empty
 ```
-
----
-
-Plan complete and saved to `docs/plans/2026-01-28-claude-permissions-impl.md`.
-
-**Two execution options:**
-
-1. **Subagent-Driven (this session)** - I dispatch fresh subagent per task, review between tasks, fast iteration
-
-2. **Parallel Session (separate)** - Open new session with executing-plans, batch execution with checkpoints
-
-Which approach?
