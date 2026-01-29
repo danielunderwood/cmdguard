@@ -28,7 +28,10 @@ pub struct HookOutput {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookSpecificOutput {
+    pub hook_event_name: String,
     pub permission_decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_decision_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_input: Option<serde_json::Value>,
 }
@@ -37,7 +40,9 @@ impl HookOutput {
     pub fn new(decision: Decision, reason: Option<String>) -> Self {
         HookOutput {
             hook_specific_output: HookSpecificOutput {
+                hook_event_name: "PreToolUse".to_string(),
                 permission_decision: decision.as_str().to_string(),
+                permission_decision_reason: reason.clone(),
                 updated_input: None,
             },
             system_message: reason,
