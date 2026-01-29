@@ -51,8 +51,9 @@ fn main() {
 
 fn get_policy_dir(override_dir: Option<PathBuf>) -> PathBuf {
     override_dir.unwrap_or_else(|| {
-        dirs::config_dir()
-            .map(|d| d.join("claude-permissions"))
+        // Always use ~/.config/claude-permissions for consistency across platforms
+        dirs::home_dir()
+            .map(|d| d.join(".config/claude-permissions"))
             .unwrap_or_else(|| PathBuf::from("/etc/claude-permissions"))
     })
 }
