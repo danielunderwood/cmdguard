@@ -1,28 +1,22 @@
 package claude.permissions
 
-import data.claude.permissions.stdlib
 import future.keywords.in
 
 default decision = "ask"
 
-decision = "allow" {
-    input.command[0] == "git"
-    data.claude.permissions.stdlib.git_subcommand in {"status", "diff", "log", "branch", "show", "fetch", "stash"}
+is_safe_git_read {
+	input.command[0] == "git"
+	data.claude.permissions.stdlib.git_subcommand in {"status", "diff", "log", "branch", "show", "fetch", "stash"}
 }
 
-decision = "deny" {
-    input.command[0] == "git"
-    data.claude.permissions.stdlib.git_subcommand == "push"
-    "--force" in input.command
+is_force_push {
+	input.command[0] == "git"
+	data.claude.permissions.stdlib.git_subcommand == "push"
+	"--force" in input.command
 }
 
-reason = "Safe git read operation" {
-    decision == "allow"
-    input.command[0] == "git"
-}
+decision = "allow" { is_safe_git_read }
+decision = "deny" { is_force_push }
 
-reason = "Force push blocked by policy" {
-    input.command[0] == "git"
-    data.claude.permissions.stdlib.git_subcommand == "push"
-    "--force" in input.command
-}
+reason = "Safe git read operation" { is_safe_git_read }
+reason = "Force push blocked by policy" { is_force_push }

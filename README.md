@@ -36,12 +36,62 @@ Then add the hook to `~/.claude/settings.json`:
 }
 ```
 
+## Directory Structure
+
+```
+policies/                    # For unit tests (minimal, stable)
+  stdlib.rego                # Standard helpers (required by all)
+  test_policy.rego           # Minimal policy for unit tests
+
+examples/                    # Reference implementations
+  basic/
+    policy.rego              # Simple single-file example
+  split/
+    git.rego                 # Git rules example
+    cargo.rego               # Cargo rules example
+    npm.rego                 # NPM/yarn rules example
+    safety.rego              # Dangerous command blocking
+  policy_tests.yaml          # Example test file
+
+config/                      # User's working directory (symlink target)
+  stdlib.rego                # Copy of standard helpers
+```
+
 ## Configuration
 
 Policies live in `~/.config/claude-permissions/`:
 
 - `stdlib.rego` - Standard helpers (git_subcommand, path checks, etc.)
 - `policy.rego` - Your custom rules
+
+### Development Workflow (Symlink)
+
+For active development, symlink your config directory to this repo:
+
+```bash
+# Remove installed config (if exists)
+rm -rf ~/.config/claude-permissions
+
+# Symlink to repo's config directory
+ln -s /path/to/claude-hooks/config ~/.config/claude-permissions
+```
+
+This lets you edit policies in the repo and test immediately. The install script detects symlinks and won't overwrite them.
+
+### Using Split Examples
+
+The `examples/split/` directory shows how to organize rules by domain. Copy the files you need:
+
+```bash
+# Start with stdlib
+cp examples/split/../../../config/stdlib.rego ~/.config/claude-permissions/
+
+# Add only the rules you want
+cp examples/split/git.rego ~/.config/claude-permissions/
+cp examples/split/cargo.rego ~/.config/claude-permissions/
+```
+
+All `.rego` files in the directory are loaded and merged automatically.
 
 ## Writing Policies
 

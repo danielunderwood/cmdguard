@@ -8,43 +8,31 @@ echo "=== claude-permissions Installation ==="
 echo ""
 
 # Step 1: Build release binary
-echo "[1/5] Building release binary..."
+echo "[1/3] Building release binary..."
 cargo build --release
 echo "Build complete."
 echo ""
 
 # Step 2: Create ~/.local/bin and copy binary
-echo "[2/5] Installing binary to ~/.local/bin..."
+echo "[2/3] Installing binary to ~/.local/bin..."
 mkdir -p "$HOME/.local/bin"
 cp target/release/claude-permissions "$HOME/.local/bin/"
 echo "Binary installed: $HOME/.local/bin/claude-permissions"
 echo ""
 
-# Step 3: Create config directory
-echo "[3/5] Creating configuration directory..."
-mkdir -p "$HOME/.config/claude-permissions"
-echo "Config directory created: $HOME/.config/claude-permissions"
-echo ""
+# Step 3: Set up config directory
+echo "[3/3] Setting up configuration..."
+CONFIG_DIR="$HOME/.config/claude-permissions"
 
-# Step 4: Copy stdlib.rego
-echo "[4/5] Copying standard library policy..."
-cp policies/stdlib.rego "$HOME/.config/claude-permissions/"
-echo "Installed: $HOME/.config/claude-permissions/stdlib.rego"
-echo ""
-
-# Step 5: Copy example policy if none exists
-echo "[5/5] Setting up policy.rego..."
-if [ -f "$HOME/.config/claude-permissions/policy.rego" ]; then
-    echo "Existing policy.rego found - preserving your configuration."
+if [ -e "$CONFIG_DIR" ] || [ -L "$CONFIG_DIR" ]; then
+    echo "Config directory exists (may be symlink) - skipping policy installation"
+    echo "Manage your policies at: $CONFIG_DIR"
 else
-    cp examples/policy.rego "$HOME/.config/claude-permissions/"
-    echo "Installed example policy: $HOME/.config/claude-permissions/policy.rego"
-fi
-
-# Copy example test file if none exists
-if [ ! -f "$HOME/.config/claude-permissions/policy_tests.yaml" ]; then
-    cp examples/policy_tests.yaml "$HOME/.config/claude-permissions/"
-    echo "Installed example policy_tests.yaml"
+    mkdir -p "$CONFIG_DIR"
+    cp policies/stdlib.rego "$CONFIG_DIR/"
+    cp examples/basic/policy.rego "$CONFIG_DIR/"
+    cp examples/policy_tests.yaml "$CONFIG_DIR/"
+    echo "Installed example policies to $CONFIG_DIR"
 fi
 echo ""
 
