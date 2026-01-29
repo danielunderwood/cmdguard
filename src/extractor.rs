@@ -41,6 +41,7 @@ fn try_extract_wrapper(tokens: &[String]) -> Option<(String, Vec<String>)> {
         "nix-shell" => extract_nix_shell(tokens),
         "docker" => extract_docker(tokens),
         "sh" | "bash" | "zsh" => extract_shell_c(tokens),
+        "poetry" => extract_poetry(tokens),
         _ => None,
     }
 }
@@ -189,6 +190,14 @@ fn extract_shell_c(tokens: &[String]) -> Option<(String, Vec<String>)> {
     None
 }
 
+fn extract_poetry(tokens: &[String]) -> Option<(String, Vec<String>)> {
+    // poetry run <command>
+    if tokens.len() >= 3 && tokens[1] == "run" {
+        return Some(("poetry run".to_string(), tokens[2..].to_vec()));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +268,13 @@ mod tests {
         let result = extract_command(&tokens);
         assert_eq!(result.command, to_vec(&["cargo", "build"]));
         assert_eq!(result.wrapper_chain, vec!["nix-shell"]);
+    }
+
+    #[test]
+    fn test_poetry_run() {
+        let tokens = to_vec(&["poetry", "run", "pytest", "-v"]);
+        let result = extract_command(&tokens);
+        assert_eq!(result.command, to_vec(&["pytest", "-v"]));
+        assert_eq!(result.wrapper_chain, vec!["poetry run"]);
     }
 }
