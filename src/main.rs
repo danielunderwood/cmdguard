@@ -106,66 +106,102 @@ fn run_tests(file: Option<PathBuf>, verbose: bool, policy_dir: Option<PathBuf>) 
 fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
     let _guard = init_logging();
     let policy_dir = get_policy_dir(policy_dir);
-
-    // Process command
-    let tokens = match tokenizer::tokenize(command) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Tokenize error: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    let extracted = extract_command(&tokens);
-    let flags_expanded = expand_flags(&extracted.command);
     let cwd_path = PathBuf::from(cwd);
-    let paths = detect_paths(&extracted.command, &cwd_path);
 
-    let policy_input = PolicyInput {
-        tool: "Bash".to_string(),
-        raw_command: command.to_string(),
-        command: extracted.command.clone(),
-        wrapper_chain: extracted.wrapper_chain.clone(),
-        flags_expanded: flags_expanded.clone(),
-        paths: paths.clone(),
-        cwd: cwd.to_string(),
-        project_root: cwd.to_string(),
-        session_id: "eval".to_string(),
-        chain_position: None,
-        chain_length: None,
-        chain_operator: None,
-    };
+    // Parse for compound operators
+    let parse_result = parse_command(command);
 
-    // Load and evaluate
+    println!("=== Compound Command Analysis ===");
+    println!("Commands:   {} in chain", parse_result.commands.len());
+    println!("Has errors: {}", parse_result.has_errors);
+
+    if parse_result.commands.len() > 1 {
+        println!("\nChain breakdown:");
+        for (i, cmd) in parse_result.commands.iter().enumerate() {
+            let op = cmd.next_operator.as_deref().unwrap_or("(end)");
+            println!("  [{}] {} {}", i + 1, cmd.text, op);
+        }
+    }
+    println!();
+
+    // Load engine
     let mut engine = PolicyEngine::new();
     if let Err(e) = engine.load_policies_from_dir(&policy_dir) {
         eprintln!("Error loading policies: {}", e);
-        std::process::exit(1);
+        return;
     }
 
-    let result = engine.evaluate(&policy_input);
+    // Evaluate each command in chain
+    println!("=== Per-Command Evaluation ===");
+    for cmd in &parse_result.commands {
+        println!("\n--- Command {}/{}: {} ---", cmd.position + 1, cmd.chain_length, cmd.text);
 
-    // Print results
-    println!("Command:    {}", command);
-    println!("Extracted:  {:?}", extracted.command);
-    if !extracted.wrapper_chain.is_empty() {
-        println!("Wrappers:   {:?}", extracted.wrapper_chain);
+        let tokens = match tokenizer::tokenize(&cmd.text) {
+            Ok(t) => t,
+            Err(e) => {
+                println!("Tokenize error: {}", e);
+                continue;
+            }
+        };
+
+        if tokens.is_empty() {
+            println!("(empty command)");
+            continue;
+        }
+
+        let extracted = extract_command(&tokens);
+        let flags_expanded = expand_flags(&extracted.command);
+        let paths = detect_paths(&extracted.command, &cwd_path);
+
+        println!("Command:    {:?}", extracted.command);
+        if !extracted.wrapper_chain.is_empty() {
+            println!("Wrappers:   {:?}", extracted.wrapper_chain);
+        }
+        if !flags_expanded.is_empty() {
+            println!("Flags:      {:?}", flags_expanded);
+        }
+        if !paths.is_empty() {
+            println!("Paths:      {:?}", paths.iter().map(|p| &p.raw).collect::<Vec<_>>());
+        }
+
+        let policy_input = PolicyInput {
+            tool: "Bash".to_string(),
+            raw_command: cmd.text.clone(),
+            command: extracted.command,
+            wrapper_chain: extracted.wrapper_chain,
+            flags_expanded,
+            paths,
+            cwd: cwd.to_string(),
+            project_root: cwd.to_string(),
+            session_id: "eval".to_string(),
+            chain_position: Some(cmd.position),
+            chain_length: Some(cmd.chain_length),
+            chain_operator: cmd.next_operator.clone(),
+        };
+
+        let result = engine.evaluate(&policy_input);
+        println!("Decision:   {:?}", result.decision);
+        if let Some(reason) = result.reason {
+            println!("Reason:     {}", reason);
+        }
+        if let Some(rule) = result.rule {
+            println!("Rule:       {}", rule);
+        }
+        println!("Explicit:   {}", result.explicit);
     }
-    if !flags_expanded.is_empty() {
-        println!("Flags:      {:?}", flags_expanded);
-    }
-    if !paths.is_empty() {
-        println!("Paths:      {:?}", paths.iter().map(|p| &p.raw).collect::<Vec<_>>());
-    }
-    println!();
-    println!("Decision:   {:?}", result.decision);
-    if let Some(reason) = result.reason {
-        println!("Reason:     {}", reason);
-    }
-    if let Some(rule) = result.rule {
-        println!("Rule:       {}", rule);
-    }
-    println!("Explicit:   {}", result.explicit);
+
+    // Show final result
+    println!("\n=== Final Result (Short-Circuit) ===");
+    let final_output = evaluate_compound(
+        &parse_result.commands,
+        parse_result.has_errors,
+        cwd,
+        &cwd_path,
+        "eval",
+        cwd,
+        &mut engine,
+    );
+    println!("{}", serde_json::to_string_pretty(&final_output).unwrap_or_default());
 }
 
 fn run_hook() {
