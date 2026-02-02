@@ -137,6 +137,22 @@ fn extract_commands_recursive(
                 }
             }
         }
+        // Program: top-level node that may contain semicolon-separated commands
+        // In tree-sitter-bash, semicolons at the program level are direct children
+        "program" => {
+            for i in 0..node.child_count() as u32 {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == ";" {
+                        // Set operator on previous command
+                        if let Some(last) = commands.last_mut() {
+                            last.next_operator = Some(";".to_string());
+                        }
+                    } else {
+                        extract_commands_recursive(&child, source, commands);
+                    }
+                }
+            }
+        }
         // Recurse into other node types
         _ => {
             for i in 0..node.child_count() as u32 {
@@ -150,6 +166,24 @@ fn extract_commands_recursive(
 
 fn node_text(node: &tree_sitter::Node, source: &str) -> String {
     source[node.start_byte()..node.end_byte()].to_string()
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn print_tree(node: &tree_sitter::Node, source: &str, indent: usize) {
+    println!(
+        "{}{} [{}-{}] {:?}",
+        "  ".repeat(indent),
+        node.kind(),
+        node.start_byte(),
+        node.end_byte(),
+        &source[node.start_byte()..node.end_byte()]
+    );
+    for i in 0..node.child_count() as u32 {
+        if let Some(child) = node.child(i) {
+            print_tree(&child, source, indent + 1);
+        }
+    }
 }
 
 #[cfg(test)]
