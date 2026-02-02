@@ -13,6 +13,7 @@ mod parser;
 use clap::Parser;
 use cli::{Cli, Commands};
 use extractor::extract_command;
+use parser::{parse_command, ParsedCommand};
 use flags::expand_flags;
 use input::parse_input;
 use logging::init_logging;
@@ -185,6 +186,81 @@ fn run_hook() {
             println!("{}", HookOutput::ask_with_reason(&e).to_json());
         }
     }
+}
+
+/// Evaluate a compound command, short-circuiting on first non-allow
+fn evaluate_compound(
+    parsed: &[ParsedCommand],
+    has_parse_errors: bool,
+    cwd: &str,
+    cwd_path: &PathBuf,
+    session_id: &str,
+    project_root: &str,
+    engine: &mut PolicyEngine,
+) -> HookOutput {
+    // If parsing had errors, be conservative and ask
+    if has_parse_errors {
+        return HookOutput::ask_with_reason("Command contains unparseable constructs");
+    }
+
+    for cmd in parsed {
+        // Tokenize this individual command
+        let tokens = match tokenizer::tokenize(&cmd.text) {
+            Ok(t) if !t.is_empty() => t,
+            _ => continue, // Skip empty/invalid
+        };
+
+        // Extract from wrappers
+        let extracted = extract_command(&tokens);
+        if extracted.command.is_empty() {
+            continue;
+        }
+
+        // Expand flags
+        let flags_expanded = expand_flags(&extracted.command);
+
+        // Detect paths
+        let paths = detect_paths(&extracted.command, cwd_path);
+
+        // Build policy input with chain info
+        let policy_input = PolicyInput {
+            tool: "Bash".to_string(),
+            raw_command: cmd.text.clone(),
+            command: extracted.command,
+            wrapper_chain: extracted.wrapper_chain,
+            flags_expanded,
+            paths,
+            cwd: cwd.to_string(),
+            project_root: project_root.to_string(),
+            session_id: session_id.to_string(),
+            chain_position: Some(cmd.position),
+            chain_length: Some(cmd.chain_length),
+            chain_operator: cmd.next_operator.clone(),
+        };
+
+        // Evaluate
+        let result = engine.evaluate(&policy_input);
+
+        // Short-circuit on non-allow
+        match result.decision {
+            output::Decision::Allow => continue,
+            output::Decision::Deny => {
+                let reason = result.reason.unwrap_or_else(|| {
+                    format!("Denied at command {} of {}", cmd.position + 1, cmd.chain_length)
+                });
+                return HookOutput::deny(&reason);
+            }
+            output::Decision::Ask => {
+                let reason = result.reason.unwrap_or_else(|| {
+                    format!("Review needed for command {} of {}", cmd.position + 1, cmd.chain_length)
+                });
+                return HookOutput::ask_with_reason(&reason);
+            }
+        }
+    }
+
+    // All commands allowed
+    HookOutput::new(output::Decision::Allow, None)
 }
 
 fn run_hook_inner() -> Result<HookOutput, String> {
