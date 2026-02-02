@@ -24,7 +24,7 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::time::Instant;
 use test_runner::{load_test_file, print_results, TestRunner};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 fn main() {
     let cli = Cli::parse();
@@ -286,83 +286,32 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     let cwd_path = PathBuf::from(&cwd);
     let session_id = hook_input.session_id.clone().unwrap_or_default();
 
-    // Tokenize command
-    let tokens =
-        tokenizer::tokenize(raw_command).map_err(|e| format!("Failed to tokenize: {}", e))?;
+    // Determine project root (for now, use cwd)
+    let project_root = cwd.clone();
 
-    if tokens.is_empty() {
-        return Ok(HookOutput::ask_with_reason("Empty command"));
-    }
-
-    // Extract from wrappers
-    let extracted = extract_command(&tokens);
+    // Parse command for compound operators
+    let parse_result = parse_command(raw_command);
     debug!(
-        raw = ?tokens,
-        extracted = ?extracted.command,
-        wrappers = ?extracted.wrapper_chain,
-        "Extracted command"
+        commands = ?parse_result.commands,
+        has_errors = parse_result.has_errors,
+        "Parsed command"
     );
 
-    if extracted.command.is_empty() {
-        return Ok(HookOutput::ask_with_reason("Empty extracted command"));
-    }
-
-    // Expand flags
-    let flags_expanded = expand_flags(&extracted.command);
-    debug!(flags = ?flags_expanded, "Expanded flags");
-
-    // Detect paths
-    let paths = detect_paths(&extracted.command, &cwd_path);
-    debug!(paths = ?paths, "Detected paths");
-
-    // Build policy input
-    let policy_input = PolicyInput {
-        tool: hook_input.tool_name,
-        raw_command: raw_command.clone(),
-        command: extracted.command,
-        wrapper_chain: extracted.wrapper_chain,
-        flags_expanded,
-        paths,
-        cwd: cwd.clone(),
-        project_root: cwd,
-        session_id,
-        chain_position: None,
-        chain_length: None,
-        chain_operator: None,
-    };
-
-    // Load and evaluate policy
-    let compile_start = Instant::now();
+    // Load policy engine
+    let policy_dir = get_policy_dir(None);
     let mut engine = PolicyEngine::new();
+    engine
+        .load_policies_from_dir(&policy_dir)
+        .map_err(|e| format!("Failed to load policies: {}", e))?;
 
-    let config_dir = get_policy_dir(None);
-
-    if config_dir.exists() {
-        engine.load_policies_from_dir(&config_dir)?;
-    } else {
-        info!("Config directory {:?} not found, using defaults", config_dir);
-        return Ok(HookOutput::ask_with_reason("No policy configured"));
-    }
-
-    let compile_elapsed = compile_start.elapsed();
-    debug!(
-        compile_ms = compile_elapsed.as_secs_f64() * 1000.0,
-        "Compiled policies"
-    );
-
-    // Evaluate
-    let eval_start = Instant::now();
-    let result = engine.evaluate(&policy_input);
-    let eval_elapsed = eval_start.elapsed();
-
-    info!(
-        decision = ?result.decision,
-        reason = ?result.reason,
-        compile_ms = compile_elapsed.as_secs_f64() * 1000.0,
-        eval_ms = eval_elapsed.as_secs_f64() * 1000.0,
-        command = ?policy_input.command,
-        "Policy evaluation complete"
-    );
-
-    Ok(HookOutput::new(result.decision, result.reason))
+    // Evaluate compound command
+    Ok(evaluate_compound(
+        &parse_result.commands,
+        parse_result.has_errors,
+        &cwd,
+        &cwd_path,
+        &session_id,
+        &project_root,
+        &mut engine,
+    ))
 }
