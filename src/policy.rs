@@ -16,6 +16,13 @@ pub struct PolicyInput {
     pub cwd: String,
     pub project_root: String,
     pub session_id: String,
+    // New fields for compound commands
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_position: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_length: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_operator: Option<String>,
 }
 
 pub struct PolicyResult {
@@ -173,6 +180,9 @@ mod tests {
             cwd: "/home/user/project".to_string(),
             project_root: "/home/user/project".to_string(),
             session_id: "test".to_string(),
+            chain_position: None,
+            chain_length: None,
+            chain_operator: None,
         }
     }
 

@@ -130,6 +130,9 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
         cwd: cwd.to_string(),
         project_root: cwd.to_string(),
         session_id: "eval".to_string(),
+        chain_position: None,
+        chain_length: None,
+        chain_operator: None,
     };
 
     // Load and evaluate
@@ -247,6 +250,9 @@ fn run_hook_inner() -> Result<HookOutput, String> {
         cwd: cwd.clone(),
         project_root: cwd,
         session_id,
+        chain_position: None,
+        chain_length: None,
+        chain_operator: None,
     };
 
     // Load and evaluate policy

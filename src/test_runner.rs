@@ -118,6 +118,9 @@ impl TestRunner {
             cwd: test.cwd.clone(),
             project_root: test.cwd.clone(),
             session_id: "test".to_string(),
+            chain_position: None,
+            chain_length: None,
+            chain_operator: None,
         };
 
         // Evaluate
