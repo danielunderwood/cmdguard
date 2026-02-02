@@ -154,6 +154,10 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
     if let Some(reason) = result.reason {
         println!("Reason:     {}", reason);
     }
+    if let Some(rule) = result.rule {
+        println!("Rule:       {}", rule);
+    }
+    println!("Explicit:   {}", result.explicit);
 }
 
 fn run_hook() {
