@@ -76,69 +76,106 @@ impl TestRunner {
     }
 
     fn run_single_test(&mut self, test: &TestCase) -> TestResult {
-        // Tokenize
-        let tokens = match tokenize(&test.command) {
-            Ok(t) => t,
-            Err(e) => {
-                return TestResult {
-                    name: test.name.clone(),
-                    passed: false,
-                    expected: test.expect,
-                    actual: Decision::Ask,
-                    reason: None,
-                    error: Some(format!("Tokenize error: {}", e)),
-                }
-            }
-        };
+        use crate::parser::parse_command;
 
-        if tokens.is_empty() {
+        // Parse for compound commands
+        let parse_result = parse_command(&test.command);
+
+        // If has errors, be conservative
+        if parse_result.has_errors {
+            let decision_matches = test.expect.matches(Decision::Ask);
             return TestResult {
                 name: test.name.clone(),
-                passed: false,
+                passed: decision_matches,
                 expected: test.expect,
                 actual: Decision::Ask,
-                reason: None,
-                error: Some("Empty command".to_string()),
+                reason: Some("Command contains unparseable constructs".to_string()),
+                error: None,
             };
         }
 
-        // Process command
-        let extracted = extract_command(&tokens);
-        let flags_expanded = expand_flags(&extracted.command);
+        // Evaluate each command, short-circuit on non-allow
         let cwd_path = PathBuf::from(&test.cwd);
-        let paths = detect_paths(&extracted.command, &cwd_path);
 
-        let policy_input = PolicyInput {
-            tool: "Bash".to_string(),
-            raw_command: test.command.clone(),
-            command: extracted.command,
-            wrapper_chain: extracted.wrapper_chain,
-            flags_expanded,
-            paths,
-            cwd: test.cwd.clone(),
-            project_root: test.cwd.clone(),
-            session_id: "test".to_string(),
-            chain_position: None,
-            chain_length: None,
-            chain_operator: None,
-        };
+        for cmd in &parse_result.commands {
+            let tokens = match tokenize(&cmd.text) {
+                Ok(t) => t,
+                Err(e) => {
+                    return TestResult {
+                        name: test.name.clone(),
+                        passed: false,
+                        expected: test.expect,
+                        actual: Decision::Ask,
+                        reason: None,
+                        error: Some(format!("Tokenize error: {}", e)),
+                    }
+                }
+            };
 
-        // Evaluate
-        let result = self.engine.evaluate(&policy_input);
+            if tokens.is_empty() {
+                continue;
+            }
 
-        // Check result
-        let decision_matches = test.expect.matches(result.decision);
-        let reason_matches = test.reason_contains.as_ref().map_or(true, |expected| {
-            result
-                .reason
-                .as_ref()
-                .map_or(false, |r| r.contains(expected))
-        });
+            let extracted = extract_command(&tokens);
+            if extracted.command.is_empty() {
+                continue;
+            }
 
-        let error = if !reason_matches {
+            let flags_expanded = expand_flags(&extracted.command);
+            let paths = detect_paths(&extracted.command, &cwd_path);
+
+            let policy_input = PolicyInput {
+                tool: "Bash".to_string(),
+                raw_command: cmd.text.clone(),
+                command: extracted.command,
+                wrapper_chain: extracted.wrapper_chain,
+                flags_expanded,
+                paths,
+                cwd: test.cwd.clone(),
+                project_root: test.cwd.clone(),
+                session_id: "test".to_string(),
+                chain_position: Some(cmd.position),
+                chain_length: Some(cmd.chain_length),
+                chain_operator: cmd.next_operator.clone(),
+            };
+
+            let result = self.engine.evaluate(&policy_input);
+
+            // Short-circuit on non-allow
+            if result.decision != Decision::Allow {
+                let decision_matches = test.expect.matches(result.decision);
+                let reason_matches = test.reason_contains.as_ref().map_or(true, |expected| {
+                    result.reason.as_ref().map_or(false, |r| r.contains(expected))
+                });
+
+                let error = if !reason_matches {
+                    Some(format!(
+                        "Reason '{}' does not contain '{}'",
+                        result.reason.as_deref().unwrap_or("(none)"),
+                        test.reason_contains.as_deref().unwrap_or("")
+                    ))
+                } else {
+                    None
+                };
+
+                return TestResult {
+                    name: test.name.clone(),
+                    passed: decision_matches && reason_matches,
+                    expected: test.expect,
+                    actual: result.decision,
+                    reason: result.reason,
+                    error,
+                };
+            }
+        }
+
+        // All commands allowed
+        let decision_matches = test.expect.matches(Decision::Allow);
+        let reason_matches = test.reason_contains.as_ref().map_or(true, |_| false);
+
+        let error = if !reason_matches && test.reason_contains.is_some() {
             Some(format!(
-                "Reason '{}' does not contain '{}'",
-                result.reason.as_deref().unwrap_or("(none)"),
+                "Expected reason containing '{}' but all commands allowed (no reason)",
                 test.reason_contains.as_deref().unwrap_or("")
             ))
         } else {
@@ -147,10 +184,10 @@ impl TestRunner {
 
         TestResult {
             name: test.name.clone(),
-            passed: decision_matches && reason_matches,
+            passed: decision_matches && (error.is_none()),
             expected: test.expect,
-            actual: result.decision,
-            reason: result.reason,
+            actual: Decision::Allow,
+            reason: None,
             error,
         }
     }
