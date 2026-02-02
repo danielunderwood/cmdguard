@@ -21,6 +21,8 @@ pub struct PolicyInput {
 pub struct PolicyResult {
     pub decision: Decision,
     pub reason: Option<String>,
+    pub rule: Option<String>,
+    pub explicit: bool,
 }
 
 pub struct PolicyEngine {
@@ -79,6 +81,8 @@ impl PolicyEngine {
                 return PolicyResult {
                     decision: Decision::Ask,
                     reason: Some("Internal error serializing input".to_string()),
+                    rule: None,
+                    explicit: false,
                 };
             }
         };
@@ -87,37 +91,68 @@ impl PolicyEngine {
         let input_value: regorus::Value = input_json.into();
         self.engine.set_input(input_value);
 
-        // Evaluate decision
-        let decision = self.eval_decision();
-        let reason = self.eval_reason();
-
-        PolicyResult { decision, reason }
+        // Evaluate and return result
+        self.eval_result()
     }
 
-    fn eval_decision(&mut self) -> Decision {
-        match self.engine.eval_rule("data.claude.permissions.decision".to_string()) {
+    fn eval_result(&mut self) -> PolicyResult {
+        match self.engine.eval_rule("data.claude.permissions.result".to_string()) {
             Ok(value) => {
-                if let Ok(s) = value.as_string() {
-                    match s.as_ref() {
+                // Try to parse as object with decision, reason, rule, explicit
+                let obj = match value.as_object() {
+                    Ok(o) => o,
+                    Err(_) => {
+                        return PolicyResult {
+                            decision: Decision::Ask,
+                            reason: Some("Policy result is not an object".to_string()),
+                            rule: None,
+                            explicit: false,
+                        };
+                    }
+                };
+
+                let decision = obj
+                    .get(&"decision".into())
+                    .and_then(|v| v.as_string().ok())
+                    .map(|s| match s.as_ref() {
                         "allow" => Decision::Allow,
                         "deny" => Decision::Deny,
                         _ => Decision::Ask,
-                    }
-                } else {
-                    Decision::Ask
+                    })
+                    .unwrap_or(Decision::Ask);
+
+                let reason = obj
+                    .get(&"reason".into())
+                    .and_then(|v| v.as_string().ok())
+                    .map(|s| s.to_string());
+
+                let rule = obj
+                    .get(&"rule".into())
+                    .and_then(|v| v.as_string().ok())
+                    .map(|s| s.to_string());
+
+                let explicit = obj
+                    .get(&"explicit".into())
+                    .and_then(|v| v.as_bool().ok())
+                    .copied()
+                    .unwrap_or(false);
+
+                PolicyResult {
+                    decision,
+                    reason,
+                    rule,
+                    explicit,
                 }
             }
             Err(e) => {
-                warn!("Failed to evaluate decision: {}", e);
-                Decision::Ask
+                warn!("Failed to evaluate result: {}", e);
+                PolicyResult {
+                    decision: Decision::Ask,
+                    reason: Some(format!("Policy evaluation error: {}", e)),
+                    rule: None,
+                    explicit: false,
+                }
             }
-        }
-    }
-
-    fn eval_reason(&mut self) -> Option<String> {
-        match self.engine.eval_rule("data.claude.permissions.reason".to_string()) {
-            Ok(value) => value.as_string().ok().map(|s| s.to_string()),
-            Err(_) => None,
         }
     }
 }
@@ -179,5 +214,33 @@ mod tests {
         let input = make_input(vec!["curl", "https://example.com"]);
         let result = engine.evaluate(&input);
         assert_eq!(result.decision, Decision::Ask);
+    }
+
+    #[test]
+    fn test_policy_result_has_rule_name() {
+        let mut engine = PolicyEngine::new();
+        let policy_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("policies");
+        engine.load_policies_from_dir(&policy_dir).unwrap();
+
+        let input = make_input(vec!["git", "status"]);
+        let result = engine.evaluate(&input);
+
+        assert_eq!(result.decision, Decision::Allow);
+        assert!(result.rule.is_some());
+        assert_eq!(result.rule.unwrap(), "safe_git_read");
+        assert!(result.explicit);
+    }
+
+    #[test]
+    fn test_policy_result_default_not_explicit() {
+        let mut engine = PolicyEngine::new();
+        let policy_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("policies");
+        engine.load_policies_from_dir(&policy_dir).unwrap();
+
+        let input = make_input(vec!["curl", "https://example.com"]);
+        let result = engine.evaluate(&input);
+
+        assert_eq!(result.decision, Decision::Ask);
+        assert!(!result.explicit);
     }
 }
