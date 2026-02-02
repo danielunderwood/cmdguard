@@ -8,6 +8,7 @@ mod paths;
 mod policy;
 mod test_runner;
 mod tokenizer;
+mod parser;
 
 use clap::Parser;
 use cli::{Cli, Commands};
