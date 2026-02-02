@@ -166,4 +166,64 @@ mod tests {
         assert_eq!(result.commands[0].chain_length, 1);
         assert!(result.commands[0].next_operator.is_none());
     }
+
+    #[test]
+    fn test_and_list() {
+        let result = parse_command("echo foo && git status");
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+
+        assert_eq!(result.commands[0].text, "echo foo");
+        assert_eq!(result.commands[0].position, 0);
+        assert_eq!(result.commands[0].chain_length, 2);
+        assert_eq!(result.commands[0].next_operator, Some("&&".to_string()));
+
+        assert_eq!(result.commands[1].text, "git status");
+        assert_eq!(result.commands[1].position, 1);
+        assert_eq!(result.commands[1].chain_length, 2);
+        assert!(result.commands[1].next_operator.is_none());
+    }
+
+    #[test]
+    fn test_or_list() {
+        let result = parse_command("false || echo fallback");
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[0].next_operator, Some("||".to_string()));
+    }
+
+    #[test]
+    fn test_semicolon_list() {
+        let result = parse_command("echo a ; echo b ; echo c");
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 3);
+        assert_eq!(result.commands[0].next_operator, Some(";".to_string()));
+        assert_eq!(result.commands[1].next_operator, Some(";".to_string()));
+        assert!(result.commands[2].next_operator.is_none());
+    }
+
+    #[test]
+    fn test_pipeline() {
+        let result = parse_command("cat file.txt | grep pattern | head -10");
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 3);
+        assert_eq!(result.commands[0].next_operator, Some("|".to_string()));
+        assert_eq!(result.commands[1].next_operator, Some("|".to_string()));
+    }
+
+    #[test]
+    fn test_mixed_operators() {
+        let result = parse_command("echo start && cat file | grep foo || echo failed");
+        assert!(!result.has_errors);
+        // Should have at least 3 commands
+        assert!(result.commands.len() >= 3);
+    }
+
+    #[test]
+    fn test_quoted_strings_preserved() {
+        let result = parse_command(r#"echo "hello && world""#);
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        // The && inside quotes should NOT split the command
+    }
 }
