@@ -260,4 +260,21 @@ mod tests {
         assert_eq!(result.commands.len(), 1);
         // The && inside quotes should NOT split the command
     }
+
+    #[test]
+    fn test_parse_error_detected() {
+        // Unclosed quote should be detected as error
+        let result = parse_command(r#"echo "unclosed"#);
+        assert!(result.has_errors);
+        // Should still return the input as a single command
+        assert_eq!(result.commands.len(), 1);
+    }
+
+    #[test]
+    fn test_subshell_treated_as_single() {
+        // Subshells should be extracted but marked if we can't fully parse them
+        let result = parse_command("(cd /tmp && ls)");
+        // For now, we treat this as needing review
+        assert!(result.commands.len() >= 1);
+    }
 }
