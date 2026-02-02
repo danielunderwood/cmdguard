@@ -1,0 +1,122 @@
+tests:
+  # ==========================================================================
+  # Git Commands
+  # ==========================================================================
+
+  - name: "allow git status"
+    command: "git status"
+    expect: allow
+    reason_contains: "Safe git"
+
+  - name: "allow git diff"
+    command: "git diff HEAD~1"
+    expect: allow
+
+  - name: "allow git log"
+    command: "git log --oneline -10"
+    expect: allow
+
+  - name: "ask for git add"
+    command: "git add ."
+    expect: ask 
+
+  - name: "ask for git commit"
+    command: "git commit -m 'test commit'"
+    expect: ask
+
+  - name: "ask for git push -f"
+    command: "git push -f origin main"
+    expect: ask 
+
+  # ==========================================================================
+  # Wrapper Extraction
+  # ==========================================================================
+
+  - name: "allow git through nix develop"
+    command: "nix develop --command git status"
+    expect: allow
+
+  - name: "allow git through sudo"
+    command: "sudo git status"
+    expect: allow
+
+  - name: "allow git through bash -c"
+    command: "bash -c 'git status'"
+    expect: allow
+
+  # ==========================================================================
+  # Cargo Commands
+  # ==========================================================================
+
+  - name: "allow cargo build"
+    command: "cargo build"
+    expect: allow
+
+  - name: "allow cargo test"
+    command: "cargo test"
+    expect: allow
+
+  - name: "allow cargo fmt"
+    command: "cargo fmt"
+    expect: allow
+
+  # ==========================================================================
+  # Package Manager Commands
+  # ==========================================================================
+
+  - name: "allow npm test"
+    command: "npm test"
+    expect: allow
+
+  - name: "allow yarn build"
+    command: "yarn build"
+    expect: allow
+
+  # ==========================================================================
+  # Read-Only Commands
+  # ==========================================================================
+
+  - name: "allow ls"
+    command: "ls -la"
+    expect: allow
+
+  - name: "allow cat"
+    command: "cat README.md"
+    expect: allow
+
+  - name: "allow grep"
+    command: "grep -r 'TODO' src/"
+    expect: allow
+
+  - name: pytest
+    command: "pytest"
+    expect: allow
+
+  - name: "pytest in wrapper"
+    command: "poetry run pytest"
+    expect: allow
+
+  - name: pytest as module
+    command: poetry run python -m pytest
+    expect: allow
+
+  # ==========================================================================
+  # Dangerous Commands
+  # ==========================================================================
+
+  # ==========================================================================
+  # Ask (Unknown Commands)
+  # ==========================================================================
+
+  - name: "ask for curl"
+    command: "curl https://example.com"
+    expect: ask
+
+  - name: "ask for wget"
+    command: "wget https://example.com/file.zip"
+    expect: ask
+
+  - name: "ask for unknown command"
+    command: "some-random-command --with-args"
+    expect: ask
+

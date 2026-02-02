@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "claude-permissions")]
 #[command(about = "Policy-driven permission control for Claude Code")]
+#[command(version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -39,4 +40,7 @@ pub enum Commands {
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
     },
+
+    /// Print version information
+    Version,
 }

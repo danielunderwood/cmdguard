@@ -42,6 +42,9 @@ fn main() {
         }) => {
             run_eval(&command, &cwd, policy_dir);
         }
+        Some(Commands::Version) => {
+            println!("claude-permissions {}", env!("CARGO_PKG_VERSION"));
+        }
         None => {
             // Default: run as hook (read from stdin)
             run_hook();
