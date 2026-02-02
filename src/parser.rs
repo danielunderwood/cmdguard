@@ -96,6 +96,19 @@ fn extract_commands_recursive(
     commands: &mut Vec<ParsedCommand>,
 ) {
     match node.kind() {
+        // Redirected statement: command with redirects (e.g., echo foo >> file)
+        // We want to capture the full text including redirects
+        "redirected_statement" => {
+            let text = node_text(node, source);
+            if !text.trim().is_empty() {
+                commands.push(ParsedCommand {
+                    text: text.trim().to_string(),
+                    position: commands.len(),
+                    chain_length: 0, // Will be updated later
+                    next_operator: None,
+                });
+            }
+        }
         // Simple command
         "command" | "simple_command" => {
             let text = node_text(node, source);
@@ -276,5 +289,33 @@ mod tests {
         let result = parse_command("(cd /tmp && ls)");
         // For now, we treat this as needing review
         assert!(result.commands.len() >= 1);
+    }
+
+    // Integration tests for real-world compound command scenarios
+
+    #[test]
+    fn test_dangerous_compound_detected() {
+        // This is the motivating example from the design doc
+        let result = parse_command("echo foo && rm -rf /");
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[0].text, "echo foo");
+        assert_eq!(result.commands[1].text, "rm -rf /");
+    }
+
+    #[test]
+    fn test_redirect_preserved() {
+        let result = parse_command("echo '.gitignore' >> .gitignore && git add .");
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        // Redirect should be part of first command
+        assert!(result.commands[0].text.contains(">>"));
+    }
+
+    #[test]
+    fn test_complex_real_world() {
+        let result = parse_command("cd /tmp && git clone repo && cd repo && make");
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 4);
     }
 }
