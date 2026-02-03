@@ -15,6 +15,7 @@ mod parser;
 
 use clap::Parser;
 use cli::{Cli, Commands};
+use command_defs::CommandDefinitions;
 use extractor::extract_command;
 use parser::{parse_command, ParsedCommand};
 use flags::expand_flags;
@@ -112,6 +113,9 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
     let policy_dir = get_policy_dir(policy_dir);
     let cwd_path = PathBuf::from(cwd);
 
+    // Load command definitions
+    let command_defs = CommandDefinitions::builtin();
+
     // Detect project root
     let project_root_detected = detect_project_root(&cwd_path);
     let project_root_str = project_root_detected
@@ -192,6 +196,39 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
             }
         }
 
+        // Parse command for structured flags and args
+        let parsed_cmd = if !extracted.command.is_empty() {
+            command_parser::parse_command(
+                &extracted.command,
+                &command_defs,
+                project_root_detected.as_ref().map(|p| p.as_path()),
+            )
+        } else {
+            command_parser::ParsedCommand {
+                parsed_flags: std::collections::HashMap::new(),
+                positional_args: vec![],
+                subcommand: None,
+            }
+        };
+
+        // Display parsed structure
+        if let Some(subcommand) = &parsed_cmd.subcommand {
+            println!("Subcommand: {}", subcommand);
+        }
+        if !parsed_cmd.parsed_flags.is_empty() {
+            println!("Parsed Flags: {:?}", parsed_cmd.parsed_flags);
+        }
+        if !parsed_cmd.positional_args.is_empty() {
+            println!("Positional Args:");
+            for arg in &parsed_cmd.positional_args {
+                println!("  {}: {:?}", arg.name, arg.values);
+            }
+        }
+
+        // Serialize to JSON for PolicyInput
+        let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
+        let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
+
         let policy_input = PolicyInput {
             tool: "Bash".to_string(),
             raw_command: cmd.text.clone(),
@@ -211,9 +248,9 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
             resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
             is_symlink: Some(resolved.is_symlink),
             symlink_source: resolved.symlink_source,
-            parsed_flags: None,
-            positional_args: None,
-            subcommand: None,
+            parsed_flags: parsed_flags_json,
+            positional_args: positional_args_json,
+            subcommand: parsed_cmd.subcommand,
         };
 
         let result = engine.evaluate(&policy_input);
@@ -238,6 +275,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
         &project_root_str,
         project_root_detected.as_ref(),
         &mut engine,
+        &command_defs,
     );
     println!("{}", serde_json::to_string_pretty(&final_output).unwrap_or_default());
 }
@@ -272,6 +310,7 @@ fn evaluate_compound(
     project_root: &str,
     project_root_path: Option<&PathBuf>,
     engine: &mut PolicyEngine,
+    command_defs: &CommandDefinitions,
 ) -> HookOutput {
     // If parsing had errors, be conservative and ask
     if has_parse_errors {
@@ -304,6 +343,25 @@ fn evaluate_compound(
             resolve_command("", None)
         };
 
+        // Parse command for structured flags and args
+        let parsed_cmd = if !extracted.command.is_empty() {
+            command_parser::parse_command(
+                &extracted.command,
+                command_defs,
+                project_root_path.map(|p| p.as_path()),
+            )
+        } else {
+            command_parser::ParsedCommand {
+                parsed_flags: std::collections::HashMap::new(),
+                positional_args: vec![],
+                subcommand: None,
+            }
+        };
+
+        // Serialize to JSON for PolicyInput
+        let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
+        let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
+
         // Build policy input with chain info
         let policy_input = PolicyInput {
             tool: "Bash".to_string(),
@@ -324,9 +382,9 @@ fn evaluate_compound(
             resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
             is_symlink: Some(resolved.is_symlink),
             symlink_source: resolved.symlink_source,
-            parsed_flags: None,
-            positional_args: None,
-            subcommand: None,
+            parsed_flags: parsed_flags_json,
+            positional_args: positional_args_json,
+            subcommand: parsed_cmd.subcommand,
         };
 
         // Evaluate
@@ -377,6 +435,9 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     let cwd_path = PathBuf::from(&cwd);
     let session_id = hook_input.session_id.clone().unwrap_or_default();
 
+    // Load command definitions
+    let command_defs = CommandDefinitions::builtin();
+
     // Detect project root
     let project_root_detected = detect_project_root(&cwd_path);
     let project_root_str = project_root_detected
@@ -409,5 +470,6 @@ fn run_hook_inner() -> Result<HookOutput, String> {
         &project_root_str,
         project_root_detected.as_ref(),
         &mut engine,
+        &command_defs,
     ))
 }
