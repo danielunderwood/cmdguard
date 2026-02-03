@@ -1,5 +1,6 @@
 mod cli;
 mod command_defs;
+mod command_parser;
 mod extractor;
 mod flags;
 mod input;
