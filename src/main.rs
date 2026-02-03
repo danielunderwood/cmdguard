@@ -6,6 +6,7 @@ mod logging;
 mod output;
 mod paths;
 mod policy;
+mod resolver;
 mod test_runner;
 mod tokenizer;
 mod parser;
