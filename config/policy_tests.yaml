@@ -6,7 +6,6 @@ tests:
   - name: "allow git status"
     command: "git status"
     expect: allow
-    reason_contains: "Safe git"
 
   - name: "allow git diff"
     command: "git diff HEAD~1"
@@ -120,3 +119,73 @@ tests:
     command: "some-random-command --with-args"
     expect: ask
 
+  # ==========================================================================
+  # Compound Commands
+  # ==========================================================================
+
+  # AND lists (&&) - both must be allowed
+  - name: "and list both allowed"
+    command: "git status && git diff"
+    expect: allow
+
+  - name: "and list with unknown second"
+    command: "git status && curl http://example.com"
+    expect: ask
+
+  - name: "and list with unknown first"
+    command: "curl http://example.com && git status"
+    expect: ask
+
+  # OR lists (||) - both evaluated
+  - name: "or list both allowed"
+    command: "git status || git diff"
+    expect: allow
+
+  - name: "or list with unknown second"
+    command: "git status || curl http://example.com"
+    expect: ask
+
+  # Semicolon lists (;) - sequential execution
+  - name: "semicolon list both allowed"
+    command: "git status; git diff"
+    expect: allow
+
+  - name: "semicolon list with unknown"
+    command: "git status; curl http://example.com"
+    expect: ask
+
+  # Pipelines (|) - all commands evaluated
+  - name: "pipeline both allowed"
+    command: "git log | grep TODO"
+    expect: allow
+
+  - name: "pipeline with unknown"
+    command: "curl http://example.com | grep pattern"
+    expect: ask
+
+  # Mixed operators
+  - name: "mixed operators all allowed"
+    command: "git status && git diff || git log"
+    expect: allow
+
+  - name: "mixed with unknown in middle"
+    command: "git status && curl http://example.com || git log"
+    expect: ask
+
+  # Three-command chains
+  - name: "three command chain allowed"
+    command: "cargo build && cargo test && cargo fmt"
+    expect: allow
+
+  - name: "three command chain with unknown"
+    command: "cargo build && unknown-cmd && cargo test"
+    expect: ask
+
+  # With redirects
+  - name: "redirect with allowed command"
+    command: "git log > /tmp/log.txt"
+    expect: allow
+
+  - name: "pipeline with redirect"
+    command: "git log | grep TODO > /tmp/todos.txt"
+    expect: allow

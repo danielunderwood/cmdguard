@@ -2,31 +2,32 @@ package claude.permissions.stdlib
 
 import future.keywords.in
 import future.keywords.every
+import future.keywords.if
 
-flag_value(flag) := input.command[i + 1] {
+flag_value(flag) := input.command[i + 1] if {
 	input.command[i] == flag
 	i + 1 < count(input.command)
 	not startswith(input.command[i + 1], "-")
 }
 
-git_subcommand := input.command[1] {
+git_subcommand := input.command[1] if {
 	input.command[0] == "git"
 	count(input.command) > 1
 	not startswith(input.command[1], "-")
 }
 
-path_outside_project {
+path_outside_project if {
 	some path in input.paths
 	not startswith(path.resolved, input.project_root)
 }
 
-all_paths_in_project {
+all_paths_in_project if {
 	count(input.paths) > 0
 	every path in input.paths {
 		startswith(path.resolved, input.project_root)
 	}
 }
 
-no_paths {
+no_paths if {
 	count(input.paths) == 0
 }
