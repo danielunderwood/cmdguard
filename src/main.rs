@@ -21,6 +21,7 @@ use logging::init_logging;
 use output::HookOutput;
 use paths::detect_paths;
 use policy::{PolicyEngine, PolicyInput};
+use resolver::{detect_project_root, resolve_command};
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -109,6 +110,13 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
     let policy_dir = get_policy_dir(policy_dir);
     let cwd_path = PathBuf::from(cwd);
 
+    // Detect project root
+    let project_root_detected = detect_project_root(&cwd_path);
+    let project_root_str = project_root_detected
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| cwd.to_string());
+
     // Parse for compound operators
     let parse_result = parse_command(command);
 
@@ -154,6 +162,13 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
         let flags_expanded = expand_flags(&extracted.command);
         let paths = detect_paths(&extracted.command, &cwd_path);
 
+        // Resolve the command binary and trust zone
+        let resolved = if !extracted.command.is_empty() {
+            resolve_command(&extracted.command[0], project_root_detected.as_ref().map(|p| p.as_path()))
+        } else {
+            resolve_command("", None)
+        };
+
         println!("Command:    {:?}", extracted.command);
         if !extracted.wrapper_chain.is_empty() {
             println!("Wrappers:   {:?}", extracted.wrapper_chain);
@@ -164,6 +179,16 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
         if !paths.is_empty() {
             println!("Paths:      {:?}", paths.iter().map(|p| &p.raw).collect::<Vec<_>>());
         }
+        println!("Binary:     {}", resolved.binary_name);
+        if let Some(path) = &resolved.resolved_path {
+            println!("Resolved:   {}", path);
+        }
+        println!("Trust Zone: {:?}", resolved.resolved_trust_zone);
+        if resolved.is_symlink {
+            if let Some(source) = &resolved.symlink_source {
+                println!("Symlink:    {}", source);
+            }
+        }
 
         let policy_input = PolicyInput {
             tool: "Bash".to_string(),
@@ -173,17 +198,17 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
             flags_expanded,
             paths,
             cwd: cwd.to_string(),
-            project_root: cwd.to_string(),
+            project_root: project_root_str.clone(),
             session_id: "eval".to_string(),
             chain_position: Some(cmd.position),
             chain_length: Some(cmd.chain_length),
             chain_operator: cmd.next_operator.clone(),
-            command_as_typed: None,
-            binary_name: None,
-            resolved_path: None,
-            resolved_trust_zone: None,
-            is_symlink: None,
-            symlink_source: None,
+            command_as_typed: Some(resolved.command_as_typed),
+            binary_name: Some(resolved.binary_name),
+            resolved_path: resolved.resolved_path,
+            resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
+            is_symlink: Some(resolved.is_symlink),
+            symlink_source: resolved.symlink_source,
         };
 
         let result = engine.evaluate(&policy_input);
@@ -205,7 +230,8 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
         cwd,
         &cwd_path,
         "eval",
-        cwd,
+        &project_root_str,
+        project_root_detected.as_ref(),
         &mut engine,
     );
     println!("{}", serde_json::to_string_pretty(&final_output).unwrap_or_default());
@@ -239,6 +265,7 @@ fn evaluate_compound(
     cwd_path: &PathBuf,
     session_id: &str,
     project_root: &str,
+    project_root_path: Option<&PathBuf>,
     engine: &mut PolicyEngine,
 ) -> HookOutput {
     // If parsing had errors, be conservative and ask
@@ -265,6 +292,13 @@ fn evaluate_compound(
         // Detect paths
         let paths = detect_paths(&extracted.command, cwd_path);
 
+        // Resolve the command binary and trust zone
+        let resolved = if !extracted.command.is_empty() {
+            resolve_command(&extracted.command[0], project_root_path.map(|p| p.as_path()))
+        } else {
+            resolve_command("", None)
+        };
+
         // Build policy input with chain info
         let policy_input = PolicyInput {
             tool: "Bash".to_string(),
@@ -279,12 +313,12 @@ fn evaluate_compound(
             chain_position: Some(cmd.position),
             chain_length: Some(cmd.chain_length),
             chain_operator: cmd.next_operator.clone(),
-            command_as_typed: None,
-            binary_name: None,
-            resolved_path: None,
-            resolved_trust_zone: None,
-            is_symlink: None,
-            symlink_source: None,
+            command_as_typed: Some(resolved.command_as_typed),
+            binary_name: Some(resolved.binary_name),
+            resolved_path: resolved.resolved_path,
+            resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
+            is_symlink: Some(resolved.is_symlink),
+            symlink_source: resolved.symlink_source,
         };
 
         // Evaluate
@@ -335,8 +369,12 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     let cwd_path = PathBuf::from(&cwd);
     let session_id = hook_input.session_id.clone().unwrap_or_default();
 
-    // Determine project root (for now, use cwd)
-    let project_root = cwd.clone();
+    // Detect project root
+    let project_root_detected = detect_project_root(&cwd_path);
+    let project_root_str = project_root_detected
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| cwd.clone());
 
     // Parse command for compound operators
     let parse_result = parse_command(raw_command);
@@ -360,7 +398,8 @@ fn run_hook_inner() -> Result<HookOutput, String> {
         &cwd,
         &cwd_path,
         &session_id,
-        &project_root,
+        &project_root_str,
+        project_root_detected.as_ref(),
         &mut engine,
     ))
 }
