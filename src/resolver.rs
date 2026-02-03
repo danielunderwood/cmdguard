@@ -30,6 +30,92 @@ pub struct ResolvedCommand {
     pub symlink_source: Option<String>,
 }
 
+/// Holds the default paths for each trust zone
+#[derive(Debug, Clone)]
+pub struct TrustZonePaths {
+    pub system: Vec<PathBuf>,
+    pub user: Vec<PathBuf>,
+}
+
+impl TrustZonePaths {
+    /// Get default paths for the current platform
+    pub fn defaults() -> Self {
+        let home = dirs::home_dir();
+
+        let mut system = vec![
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+            PathBuf::from("/usr/sbin"),
+            PathBuf::from("/sbin"),
+        ];
+
+        let mut user = Vec::new();
+
+        // Add user paths with home expansion
+        if let Some(ref home) = home {
+            user.extend([
+                home.join(".local/bin"),
+                home.join("bin"),
+                home.join(".cargo/bin"),
+                home.join(".go/bin"),
+                home.join("go/bin"),
+            ]);
+        }
+
+        // Platform-specific additions
+        #[cfg(target_os = "macos")]
+        {
+            system.extend([
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/usr/local/sbin"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/opt/homebrew/sbin"),
+            ]);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            system.extend([
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/usr/local/sbin"),
+                PathBuf::from("/snap/bin"),
+            ]);
+
+            if let Some(ref home) = home {
+                user.extend([
+                    home.join(".pyenv/shims"),
+                    home.join(".rbenv/shims"),
+                    home.join(".asdf/shims"),
+                ]);
+            }
+        }
+
+        // NixOS detection
+        if Path::new("/nix/store").exists() {
+            system.extend([
+                PathBuf::from("/run/current-system/sw/bin"),
+                PathBuf::from("/nix/var/nix/profiles/default/bin"),
+            ]);
+
+            if let Some(ref home) = home {
+                user.push(home.join(".nix-profile/bin"));
+            }
+        }
+
+        TrustZonePaths { system, user }
+    }
+
+    /// Check if a path is in the system zone
+    pub fn is_system(&self, path: &Path) -> bool {
+        self.system.iter().any(|p| path.starts_with(p))
+    }
+
+    /// Check if a path is in the user zone
+    pub fn is_user(&self, path: &Path) -> bool {
+        self.user.iter().any(|p| path.starts_with(p))
+    }
+}
+
 /// Resolve a command to its binary location and classify trust zone
 pub fn resolve_command(command: &str, project_root: Option<&Path>) -> ResolvedCommand {
     // TODO: Implement in later tasks
@@ -122,5 +208,40 @@ mod tests {
 
         let root = validate_project_root(Path::new("/Users/dev/myapp"));
         assert!(root.is_some());
+    }
+
+    #[test]
+    fn test_trust_zone_paths_defaults() {
+        let paths = TrustZonePaths::defaults();
+
+        // System paths should always include /usr/bin
+        assert!(paths.system.contains(&PathBuf::from("/usr/bin")));
+
+        // Should have some user paths if home dir exists
+        if dirs::home_dir().is_some() {
+            assert!(!paths.user.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_is_system_path() {
+        let paths = TrustZonePaths::defaults();
+
+        assert!(paths.is_system(Path::new("/usr/bin/git")));
+        assert!(paths.is_system(Path::new("/bin/ls")));
+        assert!(!paths.is_system(Path::new("/home/user/bin/tool")));
+    }
+
+    #[test]
+    fn test_is_user_path() {
+        let paths = TrustZonePaths::defaults();
+
+        if let Some(home) = dirs::home_dir() {
+            let user_bin = home.join(".local/bin/mytool");
+            assert!(paths.is_user(&user_bin));
+
+            let cargo_bin = home.join(".cargo/bin/rustfmt");
+            assert!(paths.is_user(&cargo_bin));
+        }
     }
 }
