@@ -143,6 +143,9 @@ impl TestRunner {
                 resolved_trust_zone: None,
                 is_symlink: None,
                 symlink_source: None,
+                parsed_flags: None,
+                positional_args: None,
+                subcommand: None,
             };
 
             let result = self.engine.evaluate(&policy_input);

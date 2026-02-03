@@ -36,6 +36,16 @@ pub struct PolicyInput {
     pub is_symlink: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symlink_source: Option<String>,
+    // Parsed command fields
+    /// Parsed flags from command (name -> value)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parsed_flags: Option<serde_json::Value>,
+    /// Parsed positional arguments
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub positional_args: Option<serde_json::Value>,
+    /// Subcommand if present (e.g., "push" for "git push")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subcommand: Option<String>,
 }
 
 pub struct PolicyResult {
@@ -202,6 +212,9 @@ mod tests {
             resolved_trust_zone: None,
             is_symlink: None,
             symlink_source: None,
+            parsed_flags: None,
+            positional_args: None,
+            subcommand: None,
         }
     }
 

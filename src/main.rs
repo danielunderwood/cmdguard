@@ -211,6 +211,9 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
             resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
             is_symlink: Some(resolved.is_symlink),
             symlink_source: resolved.symlink_source,
+            parsed_flags: None,
+            positional_args: None,
+            subcommand: None,
         };
 
         let result = engine.evaluate(&policy_input);
@@ -321,6 +324,9 @@ fn evaluate_compound(
             resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
             is_symlink: Some(resolved.is_symlink),
             symlink_source: resolved.symlink_source,
+            parsed_flags: None,
+            positional_args: None,
+            subcommand: None,
         };
 
         // Evaluate
