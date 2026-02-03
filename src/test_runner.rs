@@ -137,6 +137,12 @@ impl TestRunner {
                 chain_position: Some(cmd.position),
                 chain_length: Some(cmd.chain_length),
                 chain_operator: cmd.next_operator.clone(),
+                command_as_typed: None,
+                binary_name: None,
+                resolved_path: None,
+                resolved_trust_zone: None,
+                is_symlink: None,
+                symlink_source: None,
             };
 
             let result = self.engine.evaluate(&policy_input);

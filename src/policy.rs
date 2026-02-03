@@ -23,6 +23,19 @@ pub struct PolicyInput {
     pub chain_length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_operator: Option<String>,
+    // Trust zone fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_as_typed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_trust_zone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_symlink: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symlink_source: Option<String>,
 }
 
 pub struct PolicyResult {
@@ -183,6 +196,12 @@ mod tests {
             chain_position: None,
             chain_length: None,
             chain_operator: None,
+            command_as_typed: None,
+            binary_name: None,
+            resolved_path: None,
+            resolved_trust_zone: None,
+            is_symlink: None,
+            symlink_source: None,
         }
     }
 
