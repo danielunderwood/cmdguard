@@ -212,17 +212,44 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
         };
 
         // Display parsed structure
-        if let Some(subcommand) = &parsed_cmd.subcommand {
-            println!("Subcommand: {}", subcommand);
-        }
-        if !parsed_cmd.parsed_flags.is_empty() {
-            println!("Parsed Flags: {:?}", parsed_cmd.parsed_flags);
-        }
-        if !parsed_cmd.positional_args.is_empty() {
-            println!("Positional Args:");
-            for arg in &parsed_cmd.positional_args {
-                println!("  {}: {:?}", arg.name, arg.values);
+        println!("Parsed:");
+
+        // Flags
+        println!("  Flags:");
+        if parsed_cmd.parsed_flags.is_empty() {
+            println!("    (none)");
+        } else {
+            for (name, value) in &parsed_cmd.parsed_flags {
+                match value {
+                    command_parser::FlagValue::Bool(b) => println!("    {}: {}", name, b),
+                    command_parser::FlagValue::String(s) => println!("    {}: \"{}\"", name, s),
+                }
             }
+        }
+
+        // Positional arguments
+        println!("  Positional:");
+        if parsed_cmd.positional_args.is_empty() {
+            println!("    (none)");
+        } else {
+            for arg in &parsed_cmd.positional_args {
+                println!("    {}:", arg.name);
+                for value in &arg.values {
+                    if let Some(zone) = &value.trust_zone {
+                        println!("      - {} ({}, {})", value.raw, value.value_type, zone);
+                    } else {
+                        println!("      - {} ({})", value.raw, value.value_type);
+                    }
+                }
+            }
+        }
+
+        // Subcommand
+        println!("  Subcommand:");
+        if let Some(subcommand) = &parsed_cmd.subcommand {
+            println!("    {}", subcommand);
+        } else {
+            println!("    (none)");
         }
 
         // Serialize to JSON for PolicyInput
