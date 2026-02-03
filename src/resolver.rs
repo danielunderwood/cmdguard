@@ -1,4 +1,6 @@
 use serde::Serialize;
+use std::env;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Trust zone classification for a binary
@@ -174,6 +176,45 @@ fn validate_project_root(path: &Path) -> Option<PathBuf> {
     Some(path.to_path_buf())
 }
 
+/// Find a command in PATH, returning the full path where it was found
+/// Returns None if not found
+///
+/// If command contains '/', treats it as a direct path (not searched in PATH)
+pub fn find_in_path(command: &str) -> Option<PathBuf> {
+    // If command contains a path separator, treat as direct path
+    if command.contains('/') {
+        let path = PathBuf::from(command);
+        if is_executable(&path) {
+            return Some(path);
+        }
+        return None;
+    }
+
+    // Get PATH environment variable
+    let path_var = env::var("PATH").ok()?;
+
+    // Search each directory in PATH
+    for dir in env::split_paths(&path_var) {
+        let candidate = dir.join(command);
+        if is_executable(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+/// Check if a path exists and is executable
+fn is_executable(path: &Path) -> bool {
+    match path.metadata() {
+        Ok(metadata) => {
+            // Check if it's a file and has executable permission
+            metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0)
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +284,57 @@ mod tests {
             let cargo_bin = home.join(".cargo/bin/rustfmt");
             assert!(paths.is_user(&cargo_bin));
         }
+    }
+
+    #[test]
+    fn test_find_in_path_common_commands() {
+        // These commands should exist on most Unix systems
+        let git = find_in_path("git");
+        // git might not be installed, so just check the logic works
+        if git.is_some() {
+            let git_path = git.unwrap();
+            assert!(git_path.exists());
+            assert!(git_path.to_string_lossy().contains("git"));
+        }
+
+        // ls should definitely exist
+        let ls = find_in_path("ls");
+        assert!(ls.is_some());
+        let ls_path = ls.unwrap();
+        assert!(ls_path.exists());
+    }
+
+    #[test]
+    fn test_find_in_path_not_found() {
+        let result = find_in_path("this_command_definitely_does_not_exist_12345");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_in_path_direct_path() {
+        // Test with a direct path
+        let result = find_in_path("/bin/ls");
+        if Path::new("/bin/ls").exists() {
+            assert!(result.is_some());
+            assert_eq!(result.unwrap(), PathBuf::from("/bin/ls"));
+        }
+    }
+
+    #[test]
+    fn test_find_in_path_relative_path() {
+        // Relative paths should be treated as direct paths
+        let result = find_in_path("./nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_is_executable() {
+        // /bin/ls should be executable
+        if Path::new("/bin/ls").exists() {
+            assert!(is_executable(Path::new("/bin/ls")));
+        }
+
+        // A non-existent file should not be executable
+        assert!(!is_executable(Path::new("/nonexistent/path")));
     }
 }
