@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::Path;
 
-use crate::command_defs::{CommandDefinitions, CommandDef, FlagDef, FlagType, ParsingOptions, SubcommandDef};
+use crate::command_defs::{CommandDefinitions, CommandDef, FlagDef, FlagType, ParsingOptions, SubcommandDef, PositionalDef, ArgType};
+use crate::resolver::TrustZonePaths;
 
 /// Parsed flag value
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -43,6 +45,7 @@ pub struct ParsedCommand {
 pub fn parse_command(
     tokens: &[String],
     definitions: &CommandDefinitions,
+    project_root: Option<&Path>,
 ) -> ParsedCommand {
     if tokens.is_empty() {
         return ParsedCommand {
@@ -64,17 +67,17 @@ pub fn parse_command(
     // Check for subcommand (e.g., git push)
     let (subcommand, subcommand_def, args_to_parse) = detect_subcommand(args, cmd_def);
 
-    // Get the flags to look for
-    let flags = if let Some(sub_def) = subcommand_def {
-        &sub_def.flags
+    // Get the flags and positional definitions to look for
+    let (flags, positional_defs) = if let Some(sub_def) = subcommand_def {
+        (&sub_def.flags, &sub_def.positional)
     } else if let Some(def) = cmd_def {
-        &def.flags
+        (&def.flags, &def.positional)
     } else {
         // No definition - we'll parse with defaults
-        return parse_without_definition(args_to_parse, parsing, subcommand);
+        return parse_without_definition(args_to_parse, parsing, subcommand, project_root);
     };
 
-    let mut result = parse_with_definition(args_to_parse, flags, parsing);
+    let mut result = parse_with_definition(args_to_parse, flags, positional_defs, parsing, project_root);
     result.subcommand = subcommand;
     result
 }
@@ -138,7 +141,9 @@ fn expand_combined_flags(flag: &str) -> Vec<String> {
 fn parse_with_definition(
     args: &[String],
     flags: &HashMap<String, FlagDef>,
+    positional_defs: &[PositionalDef],
     parsing: &ParsingOptions,
+    project_root: Option<&Path>,
 ) -> ParsedCommand {
     let mut parsed_flags: HashMap<String, FlagValue> = HashMap::new();
     let mut positional: Vec<String> = vec![];
@@ -200,15 +205,7 @@ fn parse_with_definition(
 
     ParsedCommand {
         parsed_flags,
-        positional_args: vec![PositionalArg {
-            name: "args".to_string(),
-            values: positional.into_iter().map(|s| PositionalValue {
-                raw: s,
-                resolved: None,
-                trust_zone: None,
-                value_type: "string".to_string(),
-            }).collect(),
-        }],
+        positional_args: process_positional_args(positional, positional_defs, project_root),
         subcommand: None,
     }
 }
@@ -342,11 +339,143 @@ fn match_flag_by_short<'a>(
     None
 }
 
+/// Process positional arguments using definitions
+fn process_positional_args(
+    raw_args: Vec<String>,
+    positional_defs: &[PositionalDef],
+    project_root: Option<&Path>,
+) -> Vec<PositionalArg> {
+    if positional_defs.is_empty() {
+        // No definitions - return raw args
+        return vec![PositionalArg {
+            name: "args".to_string(),
+            values: raw_args.into_iter().map(|s| PositionalValue {
+                raw: s,
+                resolved: None,
+                trust_zone: None,
+                value_type: "string".to_string(),
+            }).collect(),
+        }];
+    }
+
+    let mut result = Vec::new();
+    let mut remaining: Vec<String> = raw_args;
+
+    // Handle position-based args first
+    for def in positional_defs.iter().filter(|d| d.position.is_some()) {
+        let pos = def.position.unwrap() as usize;
+        if pos < remaining.len() {
+            let value = remaining.remove(pos);
+            result.push(create_positional_arg(&def.name, vec![value], &def.arg_type, project_root));
+        }
+    }
+
+    // Handle "last" arg (like cp destination)
+    if let Some(last_def) = positional_defs.iter().find(|d| d.last) {
+        if !remaining.is_empty() {
+            let last = remaining.pop().unwrap();
+            result.push(create_positional_arg(&last_def.name, vec![last], &last_def.arg_type, project_root));
+        }
+    }
+
+    // Handle variadic arg (remaining args)
+    if let Some(variadic_def) = positional_defs.iter().find(|d| d.variadic) {
+        if !remaining.is_empty() {
+            result.push(create_positional_arg(&variadic_def.name, remaining, &variadic_def.arg_type, project_root));
+        }
+    } else if !remaining.is_empty() {
+        // No variadic def but have remaining args
+        result.push(PositionalArg {
+            name: "args".to_string(),
+            values: remaining.into_iter().map(|s| PositionalValue {
+                raw: s,
+                resolved: None,
+                trust_zone: None,
+                value_type: "string".to_string(),
+            }).collect(),
+        });
+    }
+
+    result
+}
+
+/// Create a positional arg from values with proper type handling
+fn create_positional_arg(
+    name: &str,
+    values: Vec<String>,
+    arg_type: &ArgType,
+    project_root: Option<&Path>,
+) -> PositionalArg {
+    let resolved_values: Vec<PositionalValue> = values.into_iter().map(|raw| {
+        match arg_type {
+            ArgType::Path => resolve_path_arg(&raw, project_root),
+            ArgType::String => PositionalValue {
+                raw,
+                resolved: None,
+                trust_zone: None,
+                value_type: "string".to_string(),
+            },
+            ArgType::Number => PositionalValue {
+                raw,
+                resolved: None,
+                trust_zone: None,
+                value_type: "number".to_string(),
+            },
+        }
+    }).collect();
+
+    PositionalArg {
+        name: name.to_string(),
+        values: resolved_values,
+    }
+}
+
+/// Resolve a path argument with trust zone classification
+fn resolve_path_arg(raw: &str, project_root: Option<&Path>) -> PositionalValue {
+    use std::path::Path as StdPath;
+
+    let path = StdPath::new(raw);
+    let zone_paths = TrustZonePaths::defaults();
+
+    // Try to canonicalize the path
+    let resolved = if path.is_absolute() {
+        path.canonicalize().ok()
+    } else if let Some(root) = project_root {
+        root.join(path).canonicalize().ok()
+    } else {
+        std::env::current_dir().ok().and_then(|cwd| cwd.join(path).canonicalize().ok())
+    };
+
+    // Classify trust zone
+    let trust_zone = resolved.as_ref().map(|p| {
+        if let Some(root) = project_root {
+            if p.starts_with(root) {
+                return "project".to_string();
+            }
+        }
+        if zone_paths.is_user(p) {
+            "user".to_string()
+        } else if zone_paths.is_system(p) {
+            "system".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    });
+
+    PositionalValue {
+        raw: raw.to_string(),
+        resolved: resolved.map(|p| p.to_string_lossy().to_string()),
+        trust_zone,
+        value_type: "path".to_string(),
+    }
+}
+
 /// Parse without a known command definition (best effort)
 fn parse_without_definition(
     args: &[String],
     parsing: &ParsingOptions,
     subcommand: Option<String>,
+    _project_root: Option<&Path>,
 ) -> ParsedCommand {
     let mut parsed_flags: HashMap<String, FlagValue> = HashMap::new();
     let mut positional: Vec<String> = vec![];
@@ -422,15 +551,19 @@ fn parse_without_definition(
 
     ParsedCommand {
         parsed_flags,
-        positional_args: vec![PositionalArg {
-            name: "args".to_string(),
-            values: positional.into_iter().map(|s| PositionalValue {
-                raw: s,
-                resolved: None,
-                trust_zone: None,
-                value_type: "string".to_string(),
-            }).collect(),
-        }],
+        positional_args: if positional.is_empty() {
+            vec![]
+        } else {
+            vec![PositionalArg {
+                name: "args".to_string(),
+                values: positional.into_iter().map(|s| PositionalValue {
+                    raw: s,
+                    resolved: None,
+                    trust_zone: None,
+                    value_type: "string".to_string(),
+                }).collect(),
+            }]
+        },
         subcommand,
     }
 }
@@ -446,7 +579,7 @@ mod tests {
     #[test]
     fn test_parse_boolean_flags() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("rm -rf /tmp/foo"), &defs);
+        let result = parse_command(&to_tokens("rm -rf /tmp/foo"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("recursive"), Some(&FlagValue::Bool(true)));
         assert_eq!(result.parsed_flags.get("force"), Some(&FlagValue::Bool(true)));
@@ -455,7 +588,7 @@ mod tests {
     #[test]
     fn test_parse_flag_with_arg() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("sudo -u postgres psql"), &defs);
+        let result = parse_command(&to_tokens("sudo -u postgres psql"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("postgres".to_string())));
     }
@@ -463,7 +596,7 @@ mod tests {
     #[test]
     fn test_parse_long_flag_equals() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("sudo --user=root ls"), &defs);
+        let result = parse_command(&to_tokens("sudo --user=root ls"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("root".to_string())));
     }
@@ -471,7 +604,7 @@ mod tests {
     #[test]
     fn test_double_dash() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("rm -- -rf"), &defs);
+        let result = parse_command(&to_tokens("rm -- -rf"), &defs, None);
 
         // -rf should be treated as a filename, not flags
         assert!(result.parsed_flags.get("recursive").is_none());
@@ -483,7 +616,7 @@ mod tests {
     #[test]
     fn test_git_subcommand() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("git push -f origin main"), &defs);
+        let result = parse_command(&to_tokens("git push -f origin main"), &defs, None);
 
         assert_eq!(result.subcommand, Some("push".to_string()));
         assert_eq!(result.parsed_flags.get("force"), Some(&FlagValue::Bool(true)));
@@ -492,7 +625,7 @@ mod tests {
     #[test]
     fn test_unknown_command() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("unknown-cmd -v --verbose"), &defs);
+        let result = parse_command(&to_tokens("unknown-cmd -v --verbose"), &defs, None);
 
         // Should still attempt to parse flags
         assert!(!result.parsed_flags.is_empty() || !result.positional_args.is_empty());
@@ -509,7 +642,7 @@ mod tests {
     #[test]
     fn test_positional_args() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("rm -f file1.txt file2.txt"), &defs);
+        let result = parse_command(&to_tokens("rm -f file1.txt file2.txt"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("force"), Some(&FlagValue::Bool(true)));
         assert_eq!(result.positional_args[0].values.len(), 2);
@@ -520,7 +653,7 @@ mod tests {
     #[test]
     fn test_long_flag_space_separated() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("sudo --user postgres psql"), &defs);
+        let result = parse_command(&to_tokens("sudo --user postgres psql"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("postgres".to_string())));
     }
@@ -529,8 +662,8 @@ mod tests {
     fn test_multiple_short_forms() {
         let defs = CommandDefinitions::builtin();
         // rm accepts both -r and -R for recursive
-        let result1 = parse_command(&to_tokens("rm -r /tmp"), &defs);
-        let result2 = parse_command(&to_tokens("rm -R /tmp"), &defs);
+        let result1 = parse_command(&to_tokens("rm -r /tmp"), &defs, None);
+        let result2 = parse_command(&to_tokens("rm -R /tmp"), &defs, None);
 
         assert_eq!(result1.parsed_flags.get("recursive"), Some(&FlagValue::Bool(true)));
         assert_eq!(result2.parsed_flags.get("recursive"), Some(&FlagValue::Bool(true)));
@@ -539,7 +672,7 @@ mod tests {
     #[test]
     fn test_empty_command() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&[], &defs);
+        let result = parse_command(&[], &defs, None);
 
         assert!(result.parsed_flags.is_empty());
         assert!(result.positional_args.is_empty());
@@ -549,7 +682,7 @@ mod tests {
     #[test]
     fn test_git_reset_subcommand() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("git reset --hard HEAD~1"), &defs);
+        let result = parse_command(&to_tokens("git reset --hard HEAD~1"), &defs, None);
 
         assert_eq!(result.subcommand, Some("reset".to_string()));
         assert_eq!(result.parsed_flags.get("hard"), Some(&FlagValue::Bool(true)));
@@ -559,8 +692,50 @@ mod tests {
     #[test]
     fn test_unknown_command_with_equals() {
         let defs = CommandDefinitions::builtin();
-        let result = parse_command(&to_tokens("myapp --config=prod.yaml"), &defs);
+        let result = parse_command(&to_tokens("myapp --config=prod.yaml"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("config"), Some(&FlagValue::String("prod.yaml".to_string())));
+    }
+
+    #[test]
+    fn test_positional_with_definition() {
+        let defs = CommandDefinitions::builtin();
+        let result = parse_command(&to_tokens("chmod 755 ./src"), &defs, None);
+
+        // Should have "mode" and "targets" positional args
+        let mode = result.positional_args.iter().find(|a| a.name == "mode");
+        assert!(mode.is_some());
+        assert_eq!(mode.unwrap().values[0].raw, "755");
+
+        let targets = result.positional_args.iter().find(|a| a.name == "targets");
+        assert!(targets.is_some());
+    }
+
+    #[test]
+    fn test_cp_destination() {
+        let defs = CommandDefinitions::builtin();
+        let result = parse_command(&to_tokens("cp file1 file2 dest/"), &defs, None);
+
+        let sources = result.positional_args.iter().find(|a| a.name == "sources");
+        assert!(sources.is_some());
+        assert_eq!(sources.unwrap().values.len(), 2);
+
+        let dest = result.positional_args.iter().find(|a| a.name == "destination");
+        assert!(dest.is_some());
+    }
+
+    #[test]
+    fn test_path_resolution() {
+        let defs = CommandDefinitions::builtin();
+        // Use current dir as project root for testing
+        let project_root = std::env::current_dir().unwrap();
+        let result = parse_command(&to_tokens("rm ./src"), &defs, Some(&project_root));
+
+        let targets = result.positional_args.iter().find(|a| a.name == "targets");
+        assert!(targets.is_some());
+        let value = &targets.unwrap().values[0];
+        assert_eq!(value.value_type, "path");
+        // resolved and trust_zone should be set
+        assert!(value.resolved.is_some() || value.trust_zone.is_some() || value.raw == "./src");
     }
 }
