@@ -137,6 +137,42 @@ pub fn resolve_symlinks(path: &Path) -> (Option<PathBuf>, bool) {
     }
 }
 
+/// Classify a path into a trust zone
+/// Classification is based on where the binary was found, not where it resolves to
+fn classify_trust_zone(
+    path: &Path,
+    project_root: Option<&Path>,
+    zone_paths: &TrustZonePaths,
+) -> TrustZone {
+    // First, try to get an absolute path for comparison
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        // For relative paths, try to canonicalize for comparison
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    };
+
+    // 1. Check project zone first
+    if let Some(root) = project_root {
+        if abs_path.starts_with(root) {
+            return TrustZone::Project;
+        }
+    }
+
+    // 2. Check user paths
+    if zone_paths.is_user(&abs_path) {
+        return TrustZone::User;
+    }
+
+    // 3. Check system paths
+    if zone_paths.is_system(&abs_path) {
+        return TrustZone::System;
+    }
+
+    // 4. Default to unknown
+    TrustZone::Unknown
+}
+
 /// Resolve a command to its binary location and classify trust zone
 pub fn resolve_command(command: &str, project_root: Option<&Path>) -> ResolvedCommand {
     let command_as_typed = command.to_string();
@@ -148,13 +184,20 @@ pub fn resolve_command(command: &str, project_root: Option<&Path>) -> ResolvedCo
     // Find the command in PATH
     let found_path = find_in_path(command);
 
+    // Get zone paths for classification
+    let zone_paths = TrustZonePaths::defaults();
+
     match found_path {
         Some(path_in_path) => {
             // Resolve symlinks
             let (resolved_path, is_symlink) = resolve_symlinks(&path_in_path);
 
-            // Classification will be added in next task
-            let resolved_trust_zone = TrustZone::Unknown;
+            // Classify based on where found in PATH (not where it resolves to!)
+            let resolved_trust_zone = classify_trust_zone(
+                &path_in_path,
+                project_root,
+                &zone_paths,
+            );
 
             ResolvedCommand {
                 command_as_typed,
@@ -428,5 +471,79 @@ mod tests {
             assert_eq!(result.binary_name, "ls");
             assert!(result.resolved_path.is_some());
         }
+    }
+
+    #[test]
+    fn test_classify_trust_zone_system() {
+        let zone_paths = TrustZonePaths::defaults();
+
+        let zone = classify_trust_zone(
+            Path::new("/usr/bin/git"),
+            None,
+            &zone_paths,
+        );
+        assert_eq!(zone, TrustZone::System);
+
+        let zone = classify_trust_zone(
+            Path::new("/bin/ls"),
+            None,
+            &zone_paths,
+        );
+        assert_eq!(zone, TrustZone::System);
+    }
+
+    #[test]
+    fn test_classify_trust_zone_user() {
+        let zone_paths = TrustZonePaths::defaults();
+
+        if let Some(home) = dirs::home_dir() {
+            let user_bin = home.join(".local/bin/mytool");
+            let zone = classify_trust_zone(&user_bin, None, &zone_paths);
+            assert_eq!(zone, TrustZone::User);
+
+            let cargo_bin = home.join(".cargo/bin/rustfmt");
+            let zone = classify_trust_zone(&cargo_bin, None, &zone_paths);
+            assert_eq!(zone, TrustZone::User);
+        }
+    }
+
+    #[test]
+    fn test_classify_trust_zone_project() {
+        let zone_paths = TrustZonePaths::defaults();
+        let project_root = PathBuf::from("/home/user/myproject");
+
+        let zone = classify_trust_zone(
+            Path::new("/home/user/myproject/node_modules/.bin/eslint"),
+            Some(&project_root),
+            &zone_paths,
+        );
+        assert_eq!(zone, TrustZone::Project);
+    }
+
+    #[test]
+    fn test_classify_trust_zone_unknown() {
+        let zone_paths = TrustZonePaths::defaults();
+
+        let zone = classify_trust_zone(
+            Path::new("/some/random/path/tool"),
+            None,
+            &zone_paths,
+        );
+        assert_eq!(zone, TrustZone::Unknown);
+    }
+
+    #[test]
+    fn test_resolve_command_with_classification() {
+        // ls should be found and classified as System (or Unknown on NixOS without standard paths)
+        let result = resolve_command("ls", None);
+        assert!(result.resolved_path.is_some());
+
+        // On NixOS, commands may be in /nix/store directly which is Unknown
+        // On regular systems, they should be in system paths
+        // Either is acceptable for this test
+        assert!(
+            result.resolved_trust_zone == TrustZone::System
+            || result.resolved_trust_zone == TrustZone::Unknown
+        );
     }
 }
