@@ -65,19 +65,46 @@ pub fn parse_command(
         .unwrap_or(&definitions.defaults);
 
     // Check for subcommand (e.g., git push)
-    let (subcommand, subcommand_def, args_to_parse) = detect_subcommand(args, cmd_def);
+    let (subcommand, subcommand_def, _args_after_subcommand) = detect_subcommand(args, cmd_def);
 
-    // Get the flags and positional definitions to look for
-    let (flags, positional_defs) = if let Some(sub_def) = subcommand_def {
-        (&sub_def.flags, &sub_def.positional)
-    } else if let Some(def) = cmd_def {
+    // For commands with subcommands, we need to parse flags both before and after the subcommand
+    // Example: git -C / status --short
+    //   Top-level flags: -C /
+    //   Subcommand: status
+    //   Subcommand flags: --short
+
+    if let Some(sub_def) = subcommand_def {
+        if let Some(def) = cmd_def {
+            // Parse the entire args with both top-level and subcommand flags combined
+            let mut combined_flags = def.flags.clone();
+            combined_flags.extend(sub_def.flags.clone());
+
+            let result = parse_with_definition_skip_token(
+                args,
+                &combined_flags,
+                &sub_def.positional,
+                parsing,
+                project_root,
+                subcommand.as_ref() // Skip the subcommand name in positional args
+            );
+
+            return ParsedCommand {
+                parsed_flags: result.parsed_flags,
+                positional_args: result.positional_args,
+                subcommand,
+            };
+        }
+    }
+
+    // No subcommand case
+    let (flags, positional_defs) = if let Some(def) = cmd_def {
         (&def.flags, &def.positional)
     } else {
         // No definition - we'll parse with defaults
-        return parse_without_definition(args_to_parse, parsing, subcommand, project_root);
+        return parse_without_definition(args, parsing, subcommand, project_root);
     };
 
-    let mut result = parse_with_definition(args_to_parse, flags, positional_defs, parsing, project_root);
+    let mut result = parse_with_definition_skip_token(args, flags, positional_defs, parsing, project_root, None);
     result.subcommand = subcommand;
     result
 }
@@ -103,19 +130,71 @@ fn detect_subcommand<'a>(
         return (None, None, args);
     }
 
-    let first_arg = &args[0];
+    // For commands with both top-level flags and subcommands (like git),
+    // we need to skip over flags to find the subcommand
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
 
-    // Don't treat flags as subcommands
-    if first_arg.starts_with('-') {
-        return (None, None, args);
+        // If we hit a non-flag, check if it's a subcommand
+        if !arg.starts_with('-') {
+            if let Some(sub_def) = cmd_def.subcommands.get(arg) {
+                // Found a subcommand - return everything after it
+                return (Some(arg.clone()), Some(sub_def), &args[i+1..]);
+            } else {
+                // Not a subcommand, stop looking
+                return (None, None, args);
+            }
+        }
+
+        // Skip this flag
+        i += 1;
+
+        // If it's a flag that takes an argument, skip the argument too
+        // Check both short and long forms
+        if arg.starts_with("--") {
+            // Long flag
+            let flag_name = arg.strip_prefix("--").unwrap_or(arg);
+            // Check for = form
+            if flag_name.contains('=') {
+                continue; // Already contains value
+            }
+            // Check if this flag takes an argument
+            if flag_takes_arg(&cmd_def.flags, arg) {
+                i += 1; // Skip next token (the argument)
+            }
+        } else if arg.starts_with('-') && arg.len() > 1 {
+            // Short flag(s)
+            let last_char = arg.chars().last().unwrap();
+            let last_flag = format!("-{}", last_char);
+            if flag_takes_arg(&cmd_def.flags, &last_flag) {
+                i += 1; // Skip next token (the argument)
+            }
+        }
     }
 
-    // Check if it's a known subcommand
-    if let Some(sub_def) = cmd_def.subcommands.get(first_arg) {
-        (Some(first_arg.clone()), Some(sub_def), &args[1..])
-    } else {
-        (None, None, args)
+    // No subcommand found
+    (None, None, args)
+}
+
+/// Check if a flag takes an argument
+fn flag_takes_arg(flags: &HashMap<String, FlagDef>, flag_str: &str) -> bool {
+    // Try to find this flag in the definitions
+    for def in flags.values() {
+        // Check short forms
+        if def.short.contains(&flag_str.to_string()) {
+            return matches!(def.flag_type, FlagType::WithArg | FlagType::WithOptionalArg);
+        }
+        // Check long form
+        if let Some(long) = &def.long {
+            let long_without_dashes = long.strip_prefix("--").unwrap_or(long);
+            let flag_without_dashes = flag_str.strip_prefix("--").unwrap_or(flag_str);
+            if long_without_dashes == flag_without_dashes {
+                return matches!(def.flag_type, FlagType::WithArg | FlagType::WithOptionalArg);
+            }
+        }
     }
+    false
 }
 
 /// Expand combined short flags like "-rf" into ["-r", "-f"]
@@ -137,13 +216,14 @@ fn expand_combined_flags(flag: &str) -> Vec<String> {
     chars.iter().map(|c| format!("-{}", c)).collect()
 }
 
-/// Parse with known flag definitions
-fn parse_with_definition(
+/// Parse with known flag definitions, optionally skipping a specific token
+fn parse_with_definition_skip_token(
     args: &[String],
     flags: &HashMap<String, FlagDef>,
     positional_defs: &[PositionalDef],
     parsing: &ParsingOptions,
     project_root: Option<&Path>,
+    skip_token: Option<&String>,
 ) -> ParsedCommand {
     let mut parsed_flags: HashMap<String, FlagValue> = HashMap::new();
     let mut positional: Vec<String> = vec![];
@@ -162,6 +242,13 @@ fn parse_with_definition(
 
         // Non-flag or flags ended
         if flags_ended || !arg.starts_with('-') || arg == "-" {
+            // Skip the token if it matches skip_token (e.g., subcommand name)
+            if let Some(skip) = skip_token {
+                if arg == skip {
+                    i += 1;
+                    continue;
+                }
+            }
             positional.push(arg.clone());
             i += 1;
             continue;

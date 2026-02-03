@@ -322,9 +322,30 @@ impl CommandDefinitions {
 
         // git with subcommands
         commands.insert("git".to_string(), CommandDef {
-            flags: HashMap::new(),
+            flags: HashMap::from([
+                ("directory".to_string(), FlagDef {
+                    short: vec!["-C".to_string()],
+                    long: None,
+                    flag_type: FlagType::WithArg,
+                }),
+            ]),
             positional: vec![],
             subcommands: HashMap::from([
+                ("status".to_string(), SubcommandDef {
+                    flags: HashMap::from([
+                        ("short".to_string(), FlagDef {
+                            short: vec!["-s".to_string()],
+                            long: Some("--short".to_string()),
+                            flag_type: FlagType::Boolean,
+                        }),
+                        ("branch".to_string(), FlagDef {
+                            short: vec!["-b".to_string()],
+                            long: Some("--branch".to_string()),
+                            flag_type: FlagType::Boolean,
+                        }),
+                    ]),
+                    positional: vec![],
+                }),
                 ("push".to_string(), SubcommandDef {
                     flags: HashMap::from([
                         ("force".to_string(), FlagDef {
