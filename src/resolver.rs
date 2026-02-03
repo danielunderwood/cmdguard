@@ -118,19 +118,68 @@ impl TrustZonePaths {
     }
 }
 
+/// Resolve symlinks in a path and determine if it was a symlink
+/// Returns (resolved_path, is_symlink)
+/// If resolution fails, returns (None, false)
+pub fn resolve_symlinks(path: &Path) -> (Option<PathBuf>, bool) {
+    // Try to canonicalize (resolves all symlinks)
+    match path.canonicalize() {
+        Ok(resolved) => {
+            // Check if the path was a symlink by comparing
+            // We need to check the original path, not the resolved one
+            let is_symlink = path.symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+
+            (Some(resolved), is_symlink)
+        }
+        Err(_) => (None, false),
+    }
+}
+
 /// Resolve a command to its binary location and classify trust zone
 pub fn resolve_command(command: &str, project_root: Option<&Path>) -> ResolvedCommand {
-    // TODO: Implement in later tasks
-    ResolvedCommand {
-        command_as_typed: command.to_string(),
-        binary_name: Path::new(command)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| command.to_string()),
-        resolved_path: None,
-        resolved_trust_zone: TrustZone::Unknown,
-        is_symlink: false,
-        symlink_source: None,
+    let command_as_typed = command.to_string();
+    let binary_name = Path::new(command)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| command.to_string());
+
+    // Find the command in PATH
+    let found_path = find_in_path(command);
+
+    match found_path {
+        Some(path_in_path) => {
+            // Resolve symlinks
+            let (resolved_path, is_symlink) = resolve_symlinks(&path_in_path);
+
+            // Classification will be added in next task
+            let resolved_trust_zone = TrustZone::Unknown;
+
+            ResolvedCommand {
+                command_as_typed,
+                binary_name,
+                resolved_path: resolved_path.map(|p| p.to_string_lossy().to_string()),
+                resolved_trust_zone,
+                is_symlink,
+                symlink_source: if is_symlink {
+                    Some(path_in_path.to_string_lossy().to_string())
+                } else {
+                    None
+                },
+            }
+        }
+        None => {
+            // Command not found
+            ResolvedCommand {
+                command_as_typed,
+                binary_name,
+                resolved_path: None,
+                resolved_trust_zone: TrustZone::Unknown,
+                is_symlink: false,
+                symlink_source: None,
+            }
+        }
     }
 }
 
@@ -336,5 +385,48 @@ mod tests {
 
         // A non-existent file should not be executable
         assert!(!is_executable(Path::new("/nonexistent/path")));
+    }
+
+    #[test]
+    fn test_resolve_symlinks_regular_file() {
+        // /bin/ls should exist and resolve
+        if Path::new("/bin/ls").exists() {
+            let (resolved, _is_symlink) = resolve_symlinks(Path::new("/bin/ls"));
+            assert!(resolved.is_some());
+        }
+    }
+
+    #[test]
+    fn test_resolve_symlinks_nonexistent() {
+        let (resolved, is_symlink) = resolve_symlinks(Path::new("/nonexistent/path"));
+        assert!(resolved.is_none());
+        assert!(!is_symlink);
+    }
+
+    #[test]
+    fn test_resolve_command_found() {
+        // ls should be found on any Unix system
+        let result = resolve_command("ls", None);
+        assert_eq!(result.command_as_typed, "ls");
+        assert_eq!(result.binary_name, "ls");
+        assert!(result.resolved_path.is_some());
+    }
+
+    #[test]
+    fn test_resolve_command_not_found() {
+        let result = resolve_command("nonexistent_command_xyz", None);
+        assert_eq!(result.binary_name, "nonexistent_command_xyz");
+        assert!(result.resolved_path.is_none());
+        assert_eq!(result.resolved_trust_zone, TrustZone::Unknown);
+    }
+
+    #[test]
+    fn test_resolve_command_direct_path() {
+        if Path::new("/bin/ls").exists() {
+            let result = resolve_command("/bin/ls", None);
+            assert_eq!(result.command_as_typed, "/bin/ls");
+            assert_eq!(result.binary_name, "ls");
+            assert!(result.resolved_path.is_some());
+        }
     }
 }
