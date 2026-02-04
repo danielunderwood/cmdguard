@@ -48,8 +48,9 @@ fn main() {
             command,
             cwd,
             policy_dir,
+            show_input,
         }) => {
-            run_eval(&command, &cwd, policy_dir);
+            run_eval(&command, &cwd, policy_dir, show_input);
         }
         Some(Commands::Version) => {
             println!("claude-permissions {}", env!("CARGO_PKG_VERSION"));
@@ -110,7 +111,7 @@ fn run_tests(file: Option<PathBuf>, verbose: bool, policy_dir: Option<PathBuf>) 
     }
 }
 
-fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
+fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: bool) {
     let _guard = init_logging();
     let policy_dir = get_policy_dir(policy_dir);
     let cwd_path = PathBuf::from(cwd);
@@ -289,6 +290,14 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
             positional_args: positional_args_json,
             subcommand: parsed_cmd.subcommand,
         };
+
+        // Show Rego input if requested
+        if show_input {
+            println!("Rego Input:");
+            if let Ok(json) = serde_json::to_string_pretty(&policy_input) {
+                println!("{}", json);
+            }
+        }
 
         let result = engine.evaluate(&policy_input);
         println!("Decision:   {:?}", result.decision);

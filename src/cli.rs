@@ -39,6 +39,10 @@ pub enum Commands {
         /// Policy directory
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
+
+        /// Show the JSON input sent to Rego (for policy debugging)
+        #[arg(short, long)]
+        show_input: bool,
     },
 
     /// Print version information
