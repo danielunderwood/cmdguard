@@ -55,8 +55,32 @@
   },
 
   # Command definitions can also be customized here
-  # These supplement the built-in definitions
+  # These are merged with built-in definitions (not replaced)
   commands = {
+    # Example: Add subcommands to built-in git
+    # This extends the existing git definition, adding new subcommands
+    git = {
+      subcommands = {
+        # Add git stash support
+        stash = {
+          flags = {
+            push = { long = "--push", type = "boolean" },
+            pop = { long = "--pop", type = "boolean" },
+          },
+          positional = [],
+        },
+        # Add git rebase support
+        rebase = {
+          flags = {
+            interactive = { short = ["-i"], long = "--interactive", type = "boolean" },
+            abort = { long = "--abort", type = "boolean" },
+            continue = { long = "--continue", type = "boolean" },
+          },
+          positional = [],
+        },
+      },
+    },
+
     # Example: Define flags for a custom tool
     my_custom_tool = {
       flags = {

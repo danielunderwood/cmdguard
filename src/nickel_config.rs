@@ -13,6 +13,16 @@ pub struct WrapperExtractResult {
     pub wrapper_name: String,
 }
 
+/// Result of validating a Nickel configuration
+#[derive(Debug)]
+pub struct ValidationResult {
+    pub valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub wrappers: Vec<String>,
+    pub commands: Vec<String>,
+}
+
 /// Nickel configuration context
 pub struct NickelConfig {
     context: Option<nickel_lang::Context>,
@@ -74,6 +84,138 @@ impl NickelConfig {
     /// Check if Nickel config is loaded
     pub fn is_loaded(&self) -> bool {
         self.context.is_some()
+    }
+
+    /// Validate a Nickel configuration file and return detailed results
+    pub fn validate(config_dir: &Path) -> ValidationResult {
+        let ncl_path = config_dir.join("commands.ncl");
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let mut wrappers = Vec::new();
+        let mut commands = Vec::new();
+
+        if !ncl_path.exists() {
+            return ValidationResult {
+                valid: true,
+                errors: vec![],
+                warnings: vec!["No commands.ncl file found".to_string()],
+                wrappers: vec![],
+                commands: vec![],
+            };
+        }
+
+        let content = match std::fs::read_to_string(&ncl_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return ValidationResult {
+                    valid: false,
+                    errors: vec![format!("Failed to read file: {}", e)],
+                    warnings: vec![],
+                    wrappers: vec![],
+                    commands: vec![],
+                };
+            }
+        };
+
+        let mut context = nickel_lang::Context::new();
+
+        // Try to evaluate the config
+        let expr = match context.eval_deep(&content) {
+            Ok(e) => e,
+            Err(e) => {
+                // Format the error nicely
+                let error_msg = format!("{:?}", e);
+                // Try to extract the key error info
+                if error_msg.contains("UnboundIdentifier") {
+                    if let Some(start) = error_msg.find("ident: `") {
+                        if let Some(end) = error_msg[start..].find("`,") {
+                            let ident = &error_msg[start + 8..start + end];
+                            errors.push(format!("Undefined identifier: `{}`", ident));
+                            errors.push("Hint: For recursive functions, use `let rec` instead of `let`".to_string());
+                        }
+                    }
+                } else if error_msg.contains("TypecheckError") {
+                    errors.push("Type check error in Nickel config".to_string());
+                    errors.push(format!("Details: {}", error_msg));
+                } else if error_msg.contains("ParseError") {
+                    errors.push("Syntax error in Nickel config".to_string());
+                    errors.push(format!("Details: {}", error_msg));
+                } else {
+                    errors.push(format!("Nickel evaluation error: {}", error_msg));
+                }
+
+                return ValidationResult {
+                    valid: false,
+                    errors,
+                    warnings,
+                    wrappers,
+                    commands,
+                };
+            }
+        };
+
+        // Check structure
+        let config_record = match expr.as_record() {
+            Some(r) => r,
+            None => {
+                errors.push("Config must be a record (object)".to_string());
+                return ValidationResult {
+                    valid: false,
+                    errors,
+                    warnings,
+                    wrappers,
+                    commands,
+                };
+            }
+        };
+
+        // Validate wrappers section
+        if let Some(wrappers_expr) = config_record.value_by_name("wrappers") {
+            if let Some(wrappers_record) = wrappers_expr.as_record() {
+                for (name, def_opt) in wrappers_record {
+                    if let Some(def) = def_opt {
+                        if let Some(def_record) = def.as_record() {
+                            if def_record.value_by_name("extract").is_some() {
+                                wrappers.push(name.to_string());
+                            } else {
+                                warnings.push(format!(
+                                    "Wrapper '{}' has no 'extract' function",
+                                    name
+                                ));
+                            }
+                        } else {
+                            errors.push(format!(
+                                "Wrapper '{}' must be a record with 'extract' function",
+                                name
+                            ));
+                        }
+                    }
+                }
+            } else {
+                errors.push("'wrappers' must be a record".to_string());
+            }
+        }
+
+        // Validate commands section
+        if let Some(commands_expr) = config_record.value_by_name("commands") {
+            if let Some(commands_record) = commands_expr.as_record() {
+                for (name, def_opt) in commands_record {
+                    if def_opt.is_some() {
+                        commands.push(name.to_string());
+                    }
+                }
+            } else {
+                errors.push("'commands' must be a record".to_string());
+            }
+        }
+
+        ValidationResult {
+            valid: errors.is_empty(),
+            errors,
+            warnings,
+            wrappers,
+            commands,
+        }
     }
 
     /// Check if a custom wrapper extractor is defined for the given command

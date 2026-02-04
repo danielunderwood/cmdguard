@@ -45,6 +45,13 @@ pub enum Commands {
         show_input: bool,
     },
 
+    /// Validate Nickel configuration file
+    Validate {
+        /// Policy directory (default: ~/.config/claude-permissions)
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
+    },
+
     /// Print version information
     Version,
 }

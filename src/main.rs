@@ -52,6 +52,9 @@ fn main() {
         }) => {
             run_eval(&command, &cwd, policy_dir, show_input);
         }
+        Some(Commands::Validate { policy_dir }) => {
+            run_validate(policy_dir);
+        }
         Some(Commands::Version) => {
             println!("claude-permissions {}", env!("CARGO_PKG_VERSION"));
         }
@@ -59,6 +62,49 @@ fn main() {
             // Default: run as hook (read from stdin)
             run_hook();
         }
+    }
+}
+
+fn run_validate(policy_dir: Option<PathBuf>) {
+    let policy_dir = get_policy_dir(policy_dir);
+    let ncl_path = policy_dir.join("commands.ncl");
+
+    println!("Validating: {}", ncl_path.display());
+    println!();
+
+    let result = NickelConfig::validate(&policy_dir);
+
+    if !result.errors.is_empty() {
+        println!("Errors:");
+        for error in &result.errors {
+            println!("  - {}", error);
+        }
+        println!();
+    }
+
+    if !result.warnings.is_empty() {
+        println!("Warnings:");
+        for warning in &result.warnings {
+            println!("  - {}", warning);
+        }
+        println!();
+    }
+
+    if !result.wrappers.is_empty() {
+        println!("Wrappers defined: {}", result.wrappers.join(", "));
+    }
+
+    if !result.commands.is_empty() {
+        println!("Commands defined: {}", result.commands.join(", "));
+    }
+
+    if result.valid {
+        println!();
+        println!("Config is valid.");
+    } else {
+        println!();
+        println!("Config has errors.");
+        std::process::exit(1);
     }
 }
 
