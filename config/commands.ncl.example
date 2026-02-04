@@ -92,6 +92,19 @@
         { name = "targets", type = "path", variadic = true },
       ],
     },
+
+    # Example: curl with repeatable headers
+    # The "repeatable" type collects multiple occurrences into an array
+    curl = {
+      flags = {
+        silent = { short = ["-s"], type = "boolean" },
+        header = { short = ["-H"], long = "--header", type = "repeatable" },
+        data = { short = ["-d"], long = "--data", type = "with_arg" },
+      },
+      positional = [
+        { name = "url", type = "string" },
+      ],
+    },
   },
 
   # Global parsing defaults (optional - these are the defaults)

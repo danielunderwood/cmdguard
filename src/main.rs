@@ -280,6 +280,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
                 match value {
                     command_parser::FlagValue::Bool(b) => println!("    {}: {}", name, b),
                     command_parser::FlagValue::String(s) => println!("    {}: \"{}\"", name, s),
+                    command_parser::FlagValue::Array(arr) => println!("    {}: {:?}", name, arr),
                 }
             }
         }

@@ -8,6 +8,9 @@ pub enum FlagType {
     Boolean,
     WithArg,
     WithOptionalArg,
+    /// Flag that can appear multiple times, collecting values into an array
+    /// Example: curl -H "header1" -H "header2"
+    Repeatable,
 }
 
 /// Positional argument type
@@ -106,6 +109,14 @@ pub struct CommandDefinitions {
 }
 
 impl CommandDefinitions {
+    /// Create from a map of commands (useful for testing)
+    pub fn from_map(commands: HashMap<String, CommandDef>) -> Self {
+        Self {
+            commands,
+            defaults: ParsingOptions::default(),
+        }
+    }
+
     /// Get built-in default definitions
     pub fn builtin() -> Self {
         let mut commands = HashMap::new();

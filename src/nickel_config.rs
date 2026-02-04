@@ -457,6 +457,7 @@ impl NickelConfig {
             "boolean" => FlagType::Boolean,
             "with_arg" => FlagType::WithArg,
             "with_optional_arg" => FlagType::WithOptionalArg,
+            "repeatable" => FlagType::Repeatable,
             _ => FlagType::Boolean,
         };
 

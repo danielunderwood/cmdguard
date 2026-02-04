@@ -11,6 +11,8 @@ use crate::resolver::TrustZonePaths;
 pub enum FlagValue {
     Bool(bool),
     String(String),
+    /// Array of values for repeatable flags (e.g., curl -H "h1" -H "h2")
+    Array(Vec<String>),
 }
 
 /// A parsed positional argument value
@@ -183,14 +185,14 @@ fn flag_takes_arg(flags: &HashMap<String, FlagDef>, flag_str: &str) -> bool {
     for def in flags.values() {
         // Check short forms
         if def.short.contains(&flag_str.to_string()) {
-            return matches!(def.flag_type, FlagType::WithArg | FlagType::WithOptionalArg);
+            return matches!(def.flag_type, FlagType::WithArg | FlagType::WithOptionalArg | FlagType::Repeatable);
         }
         // Check long form
         if let Some(long) = &def.long {
             let long_without_dashes = long.strip_prefix("--").unwrap_or(long);
             let flag_without_dashes = flag_str.strip_prefix("--").unwrap_or(flag_str);
             if long_without_dashes == flag_without_dashes {
-                return matches!(def.flag_type, FlagType::WithArg | FlagType::WithOptionalArg);
+                return matches!(def.flag_type, FlagType::WithArg | FlagType::WithOptionalArg | FlagType::Repeatable);
             }
         }
     }
@@ -256,9 +258,9 @@ fn parse_with_definition_skip_token(
 
         // Handle long flags (--foo, --foo=bar)
         if arg.starts_with("--") {
-            let (consumed, flag_name, value) = parse_long_flag(arg, &args[i+1..], flags);
+            let (consumed, flag_name, value, is_repeatable) = parse_long_flag(arg, &args[i+1..], flags);
             if let Some(name) = flag_name {
-                parsed_flags.insert(name, value);
+                insert_flag(&mut parsed_flags, name, value, is_repeatable);
             }
             i += consumed;
             continue;
@@ -279,9 +281,9 @@ fn parse_with_definition_skip_token(
                 &[]
             };
 
-            let (consumed, flag_name, value) = parse_short_flag(short, remaining, flags);
+            let (consumed, flag_name, value, is_repeatable) = parse_short_flag(short, remaining, flags);
             if let Some(name) = flag_name {
-                parsed_flags.insert(name, value);
+                insert_flag(&mut parsed_flags, name, value, is_repeatable);
             }
             if consumed > 0 {
                 extra_consumed = consumed;
@@ -298,12 +300,12 @@ fn parse_with_definition_skip_token(
 }
 
 /// Parse a long flag like --user=root or --force
-/// Returns (tokens_consumed, flag_name, value)
+/// Returns (tokens_consumed, flag_name, value, is_repeatable)
 fn parse_long_flag(
     arg: &str,
     remaining: &[String],
     flags: &HashMap<String, FlagDef>,
-) -> (usize, Option<String>, FlagValue) {
+) -> (usize, Option<String>, FlagValue, bool) {
     // Strip --
     let without_dashes = &arg[2..];
 
@@ -317,83 +319,104 @@ fn parse_long_flag(
             match def.flag_type {
                 FlagType::Boolean => {
                     // Boolean flags shouldn't use = form, but handle it anyway
-                    return (1, Some(name), FlagValue::Bool(true));
+                    return (1, Some(name), FlagValue::Bool(true), false);
                 }
                 FlagType::WithArg | FlagType::WithOptionalArg => {
-                    return (1, Some(name), FlagValue::String(value_part.to_string()));
+                    return (1, Some(name), FlagValue::String(value_part.to_string()), false);
+                }
+                FlagType::Repeatable => {
+                    return (1, Some(name), FlagValue::String(value_part.to_string()), true);
                 }
             }
         }
 
         // Unknown flag with =, treat as positional
-        return (1, None, FlagValue::Bool(false));
+        return (1, None, FlagValue::Bool(false), false);
     }
 
     // No = form: --force or --user root
     if let Some((name, def)) = match_flag_by_long(without_dashes, flags) {
         match def.flag_type {
             FlagType::Boolean => {
-                return (1, Some(name), FlagValue::Bool(true));
+                return (1, Some(name), FlagValue::Bool(true), false);
             }
             FlagType::WithArg => {
                 // Needs an argument
                 if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (2, Some(name), FlagValue::String(remaining[0].clone()));
+                    return (2, Some(name), FlagValue::String(remaining[0].clone()), false);
                 } else {
                     // Missing required argument, treat as boolean
-                    return (1, Some(name), FlagValue::Bool(true));
+                    return (1, Some(name), FlagValue::Bool(true), false);
                 }
             }
             FlagType::WithOptionalArg => {
                 // Optional argument
                 if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (2, Some(name), FlagValue::String(remaining[0].clone()));
+                    return (2, Some(name), FlagValue::String(remaining[0].clone()), false);
                 } else {
-                    return (1, Some(name), FlagValue::Bool(true));
+                    return (1, Some(name), FlagValue::Bool(true), false);
+                }
+            }
+            FlagType::Repeatable => {
+                // Needs an argument
+                if !remaining.is_empty() && !remaining[0].starts_with('-') {
+                    return (2, Some(name), FlagValue::String(remaining[0].clone()), true);
+                } else {
+                    // Missing required argument, skip
+                    return (1, Some(name), FlagValue::Bool(true), true);
                 }
             }
         }
     }
 
     // Unknown flag, skip it
-    (1, None, FlagValue::Bool(false))
+    (1, None, FlagValue::Bool(false), false)
 }
 
 /// Parse a short flag like -u root or -f
-/// Returns (tokens_consumed, flag_name, value)
+/// Returns (tokens_consumed, flag_name, value, is_repeatable)
 fn parse_short_flag(
     arg: &str,
     remaining: &[String],
     flags: &HashMap<String, FlagDef>,
-) -> (usize, Option<String>, FlagValue) {
+) -> (usize, Option<String>, FlagValue, bool) {
     // Find matching flag definition
     if let Some((name, def)) = match_flag_by_short(arg, flags) {
         match def.flag_type {
             FlagType::Boolean => {
-                return (0, Some(name), FlagValue::Bool(true));
+                return (0, Some(name), FlagValue::Bool(true), false);
             }
             FlagType::WithArg => {
                 // Needs an argument
                 if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (1, Some(name), FlagValue::String(remaining[0].clone()));
+                    return (1, Some(name), FlagValue::String(remaining[0].clone()), false);
                 } else {
                     // Missing required argument, treat as boolean
-                    return (0, Some(name), FlagValue::Bool(true));
+                    return (0, Some(name), FlagValue::Bool(true), false);
                 }
             }
             FlagType::WithOptionalArg => {
                 // Optional argument
                 if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (1, Some(name), FlagValue::String(remaining[0].clone()));
+                    return (1, Some(name), FlagValue::String(remaining[0].clone()), false);
                 } else {
-                    return (0, Some(name), FlagValue::Bool(true));
+                    return (0, Some(name), FlagValue::Bool(true), false);
+                }
+            }
+            FlagType::Repeatable => {
+                // Needs an argument
+                if !remaining.is_empty() && !remaining[0].starts_with('-') {
+                    return (1, Some(name), FlagValue::String(remaining[0].clone()), true);
+                } else {
+                    // Missing required argument, skip
+                    return (0, Some(name), FlagValue::Bool(true), true);
                 }
             }
         }
     }
 
     // Unknown flag, skip it
-    (0, None, FlagValue::Bool(false))
+    (0, None, FlagValue::Bool(false), false)
 }
 
 /// Find a flag definition by long form
@@ -424,6 +447,41 @@ fn match_flag_by_short<'a>(
         }
     }
     None
+}
+
+/// Insert a flag value, handling repeatable flags by accumulating into arrays
+fn insert_flag(
+    parsed_flags: &mut HashMap<String, FlagValue>,
+    name: String,
+    value: FlagValue,
+    is_repeatable: bool,
+) {
+    if is_repeatable {
+        // For repeatable flags, accumulate values into an array
+        match parsed_flags.get_mut(&name) {
+            Some(FlagValue::Array(arr)) => {
+                // Already have an array, append to it
+                if let FlagValue::String(s) = value {
+                    arr.push(s);
+                }
+            }
+            Some(_) => {
+                // Existing non-array value (shouldn't happen, but handle gracefully)
+                if let FlagValue::String(s) = value {
+                    parsed_flags.insert(name, FlagValue::Array(vec![s]));
+                }
+            }
+            None => {
+                // First occurrence, create array with single value
+                if let FlagValue::String(s) = value {
+                    parsed_flags.insert(name, FlagValue::Array(vec![s]));
+                }
+            }
+        }
+    } else {
+        // Non-repeatable flag, just insert (overwrites if duplicate)
+        parsed_flags.insert(name, value);
+    }
 }
 
 /// Process positional arguments using definitions
@@ -824,5 +882,91 @@ mod tests {
         assert_eq!(value.value_type, "path");
         // resolved and trust_zone should be set
         assert!(value.resolved.is_some() || value.trust_zone.is_some() || value.raw == "./src");
+    }
+
+    #[test]
+    fn test_repeatable_flags() {
+        use crate::command_defs::{CommandDef, FlagDef, ParsingOptions};
+
+        // Create custom definitions with a repeatable flag
+        let mut commands = HashMap::new();
+        let mut flags = HashMap::new();
+        flags.insert("header".to_string(), FlagDef {
+            short: vec!["-H".to_string()],
+            long: Some("--header".to_string()),
+            flag_type: FlagType::Repeatable,
+        });
+        commands.insert("curl".to_string(), CommandDef {
+            flags,
+            positional: vec![],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        let defs = CommandDefinitions::from_map(commands);
+        // Pre-tokenized (as the real tokenizer would produce)
+        let tokens = vec![
+            "curl".to_string(),
+            "-H".to_string(),
+            "Accept: application/json".to_string(),
+            "-H".to_string(),
+            "Authorization: Bearer token".to_string(),
+            "https://api.example.com".to_string(),
+        ];
+        let result = parse_command(&tokens, &defs, None);
+
+        // Should have array of headers
+        let headers = result.parsed_flags.get("header");
+        assert!(headers.is_some(), "Expected 'header' flag to be present");
+        match headers.unwrap() {
+            FlagValue::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert_eq!(arr[0], "Accept: application/json");
+                assert_eq!(arr[1], "Authorization: Bearer token");
+            }
+            other => panic!("Expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_repeatable_flags_single_occurrence() {
+        use crate::command_defs::{CommandDef, FlagDef, ParsingOptions};
+
+        let mut commands = HashMap::new();
+        let mut flags = HashMap::new();
+        flags.insert("header".to_string(), FlagDef {
+            short: vec!["-H".to_string()],
+            long: None,
+            flag_type: FlagType::Repeatable,
+        });
+        commands.insert("curl".to_string(), CommandDef {
+            flags,
+            positional: vec![],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        let defs = CommandDefinitions::from_map(commands);
+        // Pre-tokenized
+        let tokens = vec![
+            "curl".to_string(),
+            "-H".to_string(),
+            "Content-Type: text/html".to_string(),
+            "https://example.com".to_string(),
+        ];
+        let result = parse_command(&tokens, &defs, None);
+
+        // Even single occurrence should be an array
+        let headers = result.parsed_flags.get("header");
+        assert!(headers.is_some());
+        match headers.unwrap() {
+            FlagValue::Array(arr) => {
+                assert_eq!(arr.len(), 1);
+                assert_eq!(arr[0], "Content-Type: text/html");
+            }
+            other => panic!("Expected Array, got {:?}", other),
+        }
     }
 }
