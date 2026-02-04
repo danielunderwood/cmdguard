@@ -1,3 +1,4 @@
+use crate::nickel_config::NickelConfig;
 use crate::tokenizer::tokenize;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -7,12 +8,16 @@ pub struct ExtractedCommand {
 }
 
 /// Extract the real command from wrapper commands
-pub fn extract_command(tokens: &[String]) -> ExtractedCommand {
+///
+/// If a NickelConfig is provided, it will try user-defined extractors first
+/// before falling back to built-in extractors.
+pub fn extract_command(tokens: &[String], mut nickel_config: Option<&mut NickelConfig>) -> ExtractedCommand {
     let mut wrapper_chain = Vec::new();
     let mut current = tokens.to_vec();
 
     loop {
-        match try_extract_wrapper(&current) {
+        // Reborrow nickel_config each iteration to avoid move
+        match try_extract_wrapper(&current, nickel_config.as_deref_mut()) {
             Some((wrapper, inner)) => {
                 wrapper_chain.push(wrapper);
                 current = inner;
@@ -27,13 +32,21 @@ pub fn extract_command(tokens: &[String]) -> ExtractedCommand {
     }
 }
 
-fn try_extract_wrapper(tokens: &[String]) -> Option<(String, Vec<String>)> {
+fn try_extract_wrapper(tokens: &[String], nickel_config: Option<&mut NickelConfig>) -> Option<(String, Vec<String>)> {
     if tokens.is_empty() {
         return None;
     }
 
     let cmd = &tokens[0];
 
+    // Try Nickel-defined extractor first
+    if let Some(config) = nickel_config {
+        if let Some(result) = config.extract_wrapper(cmd, tokens) {
+            return Some((result.wrapper_name, result.remaining));
+        }
+    }
+
+    // Fall back to built-in extractors
     match cmd.as_str() {
         "sudo" => extract_sudo(tokens),
         "env" => extract_env(tokens),
@@ -209,7 +222,7 @@ mod tests {
     #[test]
     fn test_no_wrapper() {
         let tokens = to_vec(&["git", "status"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["git", "status"]));
         assert!(result.wrapper_chain.is_empty());
     }
@@ -217,7 +230,7 @@ mod tests {
     #[test]
     fn test_sudo() {
         let tokens = to_vec(&["sudo", "rm", "-rf", "/"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["rm", "-rf", "/"]));
         assert_eq!(result.wrapper_chain, vec!["sudo"]);
     }
@@ -225,7 +238,7 @@ mod tests {
     #[test]
     fn test_sudo_with_flags() {
         let tokens = to_vec(&["sudo", "-u", "root", "ls"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["ls"]));
         assert_eq!(result.wrapper_chain, vec!["sudo"]);
     }
@@ -233,7 +246,7 @@ mod tests {
     #[test]
     fn test_env() {
         let tokens = to_vec(&["env", "FOO=bar", "BAZ=qux", "echo", "hello"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["echo", "hello"]));
         assert_eq!(result.wrapper_chain, vec!["env"]);
     }
@@ -241,7 +254,7 @@ mod tests {
     #[test]
     fn test_nix_develop() {
         let tokens = to_vec(&["nix", "develop", "--command", "git", "status"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["git", "status"]));
         assert_eq!(result.wrapper_chain, vec!["nix develop"]);
     }
@@ -249,7 +262,7 @@ mod tests {
     #[test]
     fn test_bash_c() {
         let tokens = to_vec(&["bash", "-c", "git status"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["git", "status"]));
         assert_eq!(result.wrapper_chain, vec!["bash"]);
     }
@@ -257,7 +270,7 @@ mod tests {
     #[test]
     fn test_nested_wrappers() {
         let tokens = to_vec(&["sudo", "bash", "-c", "git status"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["git", "status"]));
         assert_eq!(result.wrapper_chain, vec!["sudo", "bash"]);
     }
@@ -265,7 +278,7 @@ mod tests {
     #[test]
     fn test_nix_shell_run() {
         let tokens = to_vec(&["nix-shell", "--run", "cargo build"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["cargo", "build"]));
         assert_eq!(result.wrapper_chain, vec!["nix-shell"]);
     }
@@ -273,7 +286,7 @@ mod tests {
     #[test]
     fn test_poetry_run() {
         let tokens = to_vec(&["poetry", "run", "pytest", "-v"]);
-        let result = extract_command(&tokens);
+        let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["pytest", "-v"]));
         assert_eq!(result.wrapper_chain, vec!["poetry run"]);
     }

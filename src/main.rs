@@ -5,6 +5,7 @@ mod extractor;
 mod flags;
 mod input;
 mod logging;
+mod nickel_config;
 mod output;
 mod paths;
 mod policy;
@@ -17,6 +18,7 @@ use clap::Parser;
 use cli::{Cli, Commands};
 use command_defs::CommandDefinitions;
 use extractor::extract_command;
+use nickel_config::NickelConfig;
 use parser::{parse_command, ParsedCommand};
 use flags::expand_flags;
 use input::parse_input;
@@ -113,8 +115,16 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
     let policy_dir = get_policy_dir(policy_dir);
     let cwd_path = PathBuf::from(cwd);
 
-    // Load command definitions
-    let command_defs = CommandDefinitions::builtin();
+    // Load Nickel config for custom wrappers and command definitions
+    let mut nickel_config = NickelConfig::load(&policy_dir);
+
+    // Load command definitions (built-in + custom from Nickel)
+    let mut command_defs = CommandDefinitions::builtin();
+    let custom_commands = nickel_config.get_command_definitions();
+    if !custom_commands.is_empty() {
+        debug!("Merging {} custom command definitions", custom_commands.len());
+        command_defs.merge(custom_commands);
+    }
 
     // Detect project root
     let project_root_detected = detect_project_root(&cwd_path);
@@ -164,7 +174,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
             continue;
         }
 
-        let extracted = extract_command(&tokens);
+        let extracted = extract_command(&tokens, Some(&mut nickel_config));
         let flags_expanded = expand_flags(&extracted.command);
         let paths = detect_paths(&extracted.command, &cwd_path);
 
@@ -303,6 +313,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>) {
         project_root_detected.as_ref(),
         &mut engine,
         &command_defs,
+        &mut nickel_config,
     );
     println!("{}", serde_json::to_string_pretty(&final_output).unwrap_or_default());
 }
@@ -338,6 +349,7 @@ fn evaluate_compound(
     project_root_path: Option<&PathBuf>,
     engine: &mut PolicyEngine,
     command_defs: &CommandDefinitions,
+    nickel_config: &mut NickelConfig,
 ) -> HookOutput {
     // If parsing had errors, be conservative and ask
     if has_parse_errors {
@@ -352,7 +364,7 @@ fn evaluate_compound(
         };
 
         // Extract from wrappers
-        let extracted = extract_command(&tokens);
+        let extracted = extract_command(&tokens, Some(nickel_config));
         if extracted.command.is_empty() {
             continue;
         }
@@ -462,8 +474,19 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     let cwd_path = PathBuf::from(&cwd);
     let session_id = hook_input.session_id.clone().unwrap_or_default();
 
-    // Load command definitions
-    let command_defs = CommandDefinitions::builtin();
+    // Load policy engine and Nickel config
+    let policy_dir = get_policy_dir(None);
+
+    // Load Nickel config for custom wrappers and command definitions
+    let mut nickel_config = NickelConfig::load(&policy_dir);
+
+    // Load command definitions (built-in + custom from Nickel)
+    let mut command_defs = CommandDefinitions::builtin();
+    let custom_commands = nickel_config.get_command_definitions();
+    if !custom_commands.is_empty() {
+        debug!("Merging {} custom command definitions", custom_commands.len());
+        command_defs.merge(custom_commands);
+    }
 
     // Detect project root
     let project_root_detected = detect_project_root(&cwd_path);
@@ -481,7 +504,6 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     );
 
     // Load policy engine
-    let policy_dir = get_policy_dir(None);
     let mut engine = PolicyEngine::new();
     engine
         .load_policies_from_dir(&policy_dir)
@@ -498,5 +520,6 @@ fn run_hook_inner() -> Result<HookOutput, String> {
         project_root_detected.as_ref(),
         &mut engine,
         &command_defs,
+        &mut nickel_config,
     ))
 }

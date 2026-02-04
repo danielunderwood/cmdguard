@@ -116,7 +116,7 @@ impl TestRunner {
                 continue;
             }
 
-            let extracted = extract_command(&tokens);
+            let extracted = extract_command(&tokens, None);
             if extracted.command.is_empty() {
                 continue;
             }

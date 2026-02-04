@@ -1,0 +1,78 @@
+# Example Nickel configuration for claude-permissions
+#
+# This file shows how to define custom wrapper extractors.
+# To use: copy to ~/.config/claude-permissions/commands.ncl
+#
+# Wrapper extract functions take an array of tokens and return either:
+#   - { remaining = [...], wrapper_name = "..." } to extract a wrapper
+#   - null if this isn't a wrapper invocation
+
+{
+  wrappers = {
+    # Example: Custom tool that wraps other commands
+    # Usage: my_tool run <command>
+    my_tool = {
+      extract = fun tokens =>
+        let len = std.array.length tokens in
+        if len >= 3 && std.array.at 1 tokens == "run" then
+          { remaining = std.array.slice 2 len tokens, wrapper_name = "my_tool run" }
+        else
+          null
+    },
+
+    # Example: Flatpak wrapper
+    # Usage: flatpak run <app-id> [command]
+    flatpak = {
+      extract = fun tokens =>
+        let len = std.array.length tokens in
+        if len >= 4 && std.array.at 1 tokens == "run" then
+          # Skip: flatpak run <app-id> -> remaining is the command
+          { remaining = std.array.slice 3 len tokens, wrapper_name = "flatpak run" }
+        else
+          null
+    },
+
+    # Example: SSH wrapper (simplified - skips first arg as host)
+    # Usage: ssh user@host <command>
+    ssh = {
+      extract = fun tokens =>
+        let len = std.array.length tokens in
+        # Simple version: assume ssh <host> <command...>
+        if len >= 3 then
+          { remaining = std.array.slice 2 len tokens, wrapper_name = "ssh" }
+        else
+          null
+    },
+
+    # Example: Override built-in sudo with custom logic
+    # This shows how to intercept before the built-in
+    # sudo = {
+    #   extract = fun tokens =>
+    #     let len = std.array.length tokens in
+    #     # ... custom sudo extraction logic ...
+    #     null  # or a result record
+    # },
+  },
+
+  # Command definitions can also be customized here
+  # These supplement the built-in definitions
+  commands = {
+    # Example: Define flags for a custom tool
+    my_custom_tool = {
+      flags = {
+        verbose = { short = ["-v"], long = "--verbose", type = "boolean" },
+        output = { short = ["-o"], long = "--output", type = "with_arg" },
+      },
+      positional = [
+        { name = "input", type = "path", variadic = false },
+        { name = "targets", type = "path", variadic = true },
+      ],
+    },
+  },
+
+  # Global parsing defaults (optional - these are the defaults)
+  defaults = {
+    combine_short_flags = true,
+    double_dash_ends_flags = true,
+  },
+}

@@ -426,4 +426,13 @@ impl CommandDefinitions {
     pub fn get(&self, name: &str) -> Option<&CommandDef> {
         self.commands.get(name)
     }
+
+    /// Merge custom command definitions into this set
+    ///
+    /// Custom definitions override built-in definitions for the same command name.
+    pub fn merge(&mut self, custom: HashMap<String, CommandDef>) {
+        for (name, def) in custom {
+            self.commands.insert(name, def);
+        }
+    }
 }
