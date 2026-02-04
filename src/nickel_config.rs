@@ -1,6 +1,6 @@
 //! Nickel configuration runtime for user-defined wrapper extractors and command definitions.
 
-use crate::command_defs::{CommandDef, FlagDef, FlagType, PositionalDef, ArgType, ParsingOptions};
+use crate::command_defs::{CommandDef, FlagDef, FlagType, PositionalDef, ArgType, ParsingOptions, SubcommandDef};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -326,6 +326,7 @@ impl NickelConfig {
 
         let mut flags = HashMap::new();
         let mut positional = Vec::new();
+        let mut subcommands = HashMap::new();
 
         // Parse flags
         if let Some(flags_expr) = record.value_by_name("flags") {
@@ -351,6 +352,19 @@ impl NickelConfig {
             }
         }
 
+        // Parse subcommands
+        if let Some(subcommands_expr) = record.value_by_name("subcommands") {
+            if let Some(subcommands_record) = subcommands_expr.as_record() {
+                for (subcmd_name, subcmd_def_opt) in subcommands_record {
+                    if let Some(subcmd_def_expr) = subcmd_def_opt {
+                        if let Some(subcmd_def) = Self::parse_subcommand_def(&subcmd_def_expr) {
+                            subcommands.insert(subcmd_name.to_string(), subcmd_def);
+                        }
+                    }
+                }
+            }
+        }
+
         // Parse is_wrapper
         let is_wrapper = record
             .value_by_name("is_wrapper")
@@ -366,9 +380,46 @@ impl NickelConfig {
         Some(CommandDef {
             flags,
             positional,
-            subcommands: HashMap::new(), // TODO: subcommand support
+            subcommands,
             is_wrapper,
             parsing,
+        })
+    }
+
+    /// Parse a subcommand definition from a Nickel expression
+    fn parse_subcommand_def(expr: &nickel_lang::Expr) -> Option<SubcommandDef> {
+        let record = expr.as_record()?;
+
+        let mut flags = HashMap::new();
+        let mut positional = Vec::new();
+
+        // Parse flags
+        if let Some(flags_expr) = record.value_by_name("flags") {
+            if let Some(flags_record) = flags_expr.as_record() {
+                for (flag_name, flag_def_opt) in flags_record {
+                    if let Some(flag_def_expr) = flag_def_opt {
+                        if let Some(flag_def) = Self::parse_flag_def(&flag_def_expr) {
+                            flags.insert(flag_name.to_string(), flag_def);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse positional arguments
+        if let Some(positional_expr) = record.value_by_name("positional") {
+            if let Some(positional_array) = positional_expr.as_array() {
+                for (idx, pos_def_expr) in positional_array.into_iter().enumerate() {
+                    if let Some(pos_def) = Self::parse_positional_def(&pos_def_expr, idx) {
+                        positional.push(pos_def);
+                    }
+                }
+            }
+        }
+
+        Some(SubcommandDef {
+            flags,
+            positional,
         })
     }
 
@@ -720,6 +771,53 @@ mod tests {
 
         let commands = config.get_command_definitions();
         assert!(commands.is_empty());
+        drop(dir);
+    }
+
+    #[test]
+    fn test_get_command_definitions_with_subcommands() {
+        let content = r#"
+{
+  commands = {
+    git = {
+      subcommands = {
+        rev-parse = {
+          flags = {
+            verify = { long = "--verify", type = "boolean" },
+          },
+          positional = [
+            { name = "revision", type = "string" },
+          ],
+        },
+        stash = {
+          flags = {
+            push = { long = "--push", type = "boolean" },
+          },
+          positional = [],
+        },
+      },
+    }
+  }
+}
+"#;
+        let (dir, path) = create_temp_config(content);
+        let mut config = NickelConfig::load(&path);
+
+        let commands = config.get_command_definitions();
+        assert!(commands.contains_key("git"));
+
+        let git = commands.get("git").unwrap();
+        assert!(git.subcommands.contains_key("rev-parse"));
+        assert!(git.subcommands.contains_key("stash"));
+
+        let rev_parse = git.subcommands.get("rev-parse").unwrap();
+        assert!(rev_parse.flags.contains_key("verify"));
+        assert_eq!(rev_parse.positional.len(), 1);
+        assert_eq!(rev_parse.positional[0].name, "revision");
+
+        let stash = git.subcommands.get("stash").unwrap();
+        assert!(stash.flags.contains_key("push"));
+        assert!(stash.positional.is_empty());
         drop(dir);
     }
 }
