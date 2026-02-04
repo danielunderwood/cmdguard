@@ -583,3 +583,322 @@ impl CommandDefinitions {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_flag(short: &[&str], long: Option<&str>, flag_type: FlagType) -> FlagDef {
+        FlagDef {
+            short: short.iter().map(|s| s.to_string()).collect(),
+            long: long.map(|s| s.to_string()),
+            flag_type,
+        }
+    }
+
+    fn make_positional(name: &str, arg_type: ArgType) -> PositionalDef {
+        PositionalDef {
+            name: name.to_string(),
+            arg_type,
+            position: None,
+            variadic: false,
+            last: false,
+            optional: false,
+        }
+    }
+
+    fn make_subcommand(flags: HashMap<String, FlagDef>, positional: Vec<PositionalDef>) -> SubcommandDef {
+        SubcommandDef { flags, positional }
+    }
+
+    #[test]
+    fn test_merge_adds_new_subcommand_to_existing_command() {
+        let mut defs = CommandDefinitions::builtin();
+
+        // git exists in builtins, add a new subcommand
+        let mut custom = HashMap::new();
+        let mut git_subcommands = HashMap::new();
+        git_subcommands.insert(
+            "my-custom-subcmd".to_string(),
+            make_subcommand(HashMap::new(), vec![make_positional("arg", ArgType::String)]),
+        );
+        custom.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![],
+                subcommands: git_subcommands,
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // Verify git exists before merge
+        assert!(defs.get("git").is_some());
+        let git_before = defs.get("git").unwrap();
+        assert!(!git_before.subcommands.contains_key("my-custom-subcmd"));
+
+        defs.merge(custom);
+
+        // After merge, git should still exist and have the new subcommand
+        let git = defs.get("git").unwrap();
+        assert!(git.subcommands.contains_key("my-custom-subcmd"));
+        // Original subcommands should still be there
+        assert!(git.subcommands.contains_key("status"));
+        assert!(git.subcommands.contains_key("push"));
+    }
+
+    #[test]
+    fn test_merge_overrides_existing_subcommand() {
+        let mut defs = CommandDefinitions::builtin();
+
+        // git log exists in builtins, override it with custom definition
+        let mut custom = HashMap::new();
+        let mut git_subcommands = HashMap::new();
+
+        // Custom log with different flags
+        let mut custom_log_flags = HashMap::new();
+        custom_log_flags.insert(
+            "my-custom-flag".to_string(),
+            make_flag(&["-x"], Some("--my-custom-flag"), FlagType::Boolean),
+        );
+        git_subcommands.insert(
+            "log".to_string(),
+            make_subcommand(custom_log_flags, vec![]),
+        );
+
+        custom.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![],
+                subcommands: git_subcommands,
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        defs.merge(custom);
+
+        let git = defs.get("git").unwrap();
+        let log = git.subcommands.get("log").unwrap();
+        // Custom flag should be present
+        assert!(log.flags.contains_key("my-custom-flag"));
+        // Original flags from builtin log are REPLACED (not merged at subcommand level)
+        // The entire subcommand definition is replaced
+    }
+
+    #[test]
+    fn test_merge_adds_new_flag_to_existing_command() {
+        let mut defs = CommandDefinitions::builtin();
+
+        let mut custom = HashMap::new();
+        let mut git_flags = HashMap::new();
+        git_flags.insert(
+            "my-new-flag".to_string(),
+            make_flag(&["-z"], Some("--my-new-flag"), FlagType::WithArg),
+        );
+
+        custom.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: git_flags,
+                positional: vec![],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        defs.merge(custom);
+
+        let git = defs.get("git").unwrap();
+        // New flag should be added
+        assert!(git.flags.contains_key("my-new-flag"));
+        // Original git flags should still be there
+        assert!(git.flags.contains_key("directory"));
+    }
+
+    #[test]
+    fn test_merge_overrides_existing_flag() {
+        let mut defs = CommandDefinitions::builtin();
+
+        // Override git's -C/directory flag with a different type
+        let mut custom = HashMap::new();
+        let mut git_flags = HashMap::new();
+        git_flags.insert(
+            "directory".to_string(),
+            make_flag(&["-D"], Some("--directory"), FlagType::Boolean), // Changed from WithArg to Boolean, different short
+        );
+
+        custom.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: git_flags,
+                positional: vec![],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        let git_before = defs.get("git").unwrap();
+        assert!(matches!(git_before.flags.get("directory").unwrap().flag_type, FlagType::WithArg));
+
+        defs.merge(custom);
+
+        let git = defs.get("git").unwrap();
+        // Flag should be overridden
+        assert!(matches!(git.flags.get("directory").unwrap().flag_type, FlagType::Boolean));
+        // Short flag should also be updated
+        assert!(git.flags.get("directory").unwrap().short.contains(&"-D".to_string()));
+    }
+
+    #[test]
+    fn test_merge_adds_completely_new_command() {
+        let mut defs = CommandDefinitions::builtin();
+
+        let mut custom = HashMap::new();
+        let mut flags = HashMap::new();
+        flags.insert(
+            "verbose".to_string(),
+            make_flag(&["-v"], Some("--verbose"), FlagType::Boolean),
+        );
+
+        custom.insert(
+            "my-brand-new-tool".to_string(),
+            CommandDef {
+                flags,
+                positional: vec![make_positional("file", ArgType::Path)],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // Verify it doesn't exist before
+        assert!(defs.get("my-brand-new-tool").is_none());
+
+        defs.merge(custom);
+
+        // Should exist after merge
+        let tool = defs.get("my-brand-new-tool").unwrap();
+        assert!(tool.flags.contains_key("verbose"));
+        assert_eq!(tool.positional.len(), 1);
+        assert_eq!(tool.positional[0].name, "file");
+    }
+
+    #[test]
+    fn test_merge_appends_new_positional_args() {
+        let mut defs = CommandDefinitions::builtin();
+
+        let mut custom = HashMap::new();
+        custom.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![
+                    make_positional("custom-arg", ArgType::String),
+                ],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        let git_before = defs.get("git").unwrap();
+        let pos_count_before = git_before.positional.len();
+
+        defs.merge(custom);
+
+        let git = defs.get("git").unwrap();
+        // Should have one more positional arg
+        assert_eq!(git.positional.len(), pos_count_before + 1);
+        assert!(git.positional.iter().any(|p| p.name == "custom-arg"));
+    }
+
+    #[test]
+    fn test_merge_does_not_duplicate_positional_by_name() {
+        let mut defs = CommandDefinitions::builtin();
+
+        // First add a custom positional
+        let mut custom1 = HashMap::new();
+        custom1.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![make_positional("my-arg", ArgType::String)],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+        defs.merge(custom1);
+
+        let git_after_first = defs.get("git").unwrap();
+        let pos_count_after_first = git_after_first.positional.len();
+
+        // Now try to add the same positional again
+        let mut custom2 = HashMap::new();
+        custom2.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![make_positional("my-arg", ArgType::Path)], // Same name, different type
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+        defs.merge(custom2);
+
+        let git = defs.get("git").unwrap();
+        // Count should not have increased
+        assert_eq!(git.positional.len(), pos_count_after_first);
+        // Original type should be preserved (first one wins)
+        let my_arg = git.positional.iter().find(|p| p.name == "my-arg").unwrap();
+        assert!(matches!(my_arg.arg_type, ArgType::String));
+    }
+
+    #[test]
+    fn test_merge_preserves_original_command_structure() {
+        let mut defs = CommandDefinitions::builtin();
+
+        // Add only a subcommand, nothing else
+        let mut custom = HashMap::new();
+        let mut git_subcommands = HashMap::new();
+        git_subcommands.insert(
+            "my-subcmd".to_string(),
+            make_subcommand(HashMap::new(), vec![]),
+        );
+        custom.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![],
+                subcommands: git_subcommands,
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // Capture original structure
+        let git_before = defs.get("git").unwrap();
+        let original_flags: Vec<_> = git_before.flags.keys().cloned().collect();
+        let original_subcommands: Vec<_> = git_before.subcommands.keys().cloned().collect();
+
+        defs.merge(custom);
+
+        let git = defs.get("git").unwrap();
+        // All original flags should still exist
+        for flag in &original_flags {
+            assert!(git.flags.contains_key(flag), "Missing flag: {}", flag);
+        }
+        // All original subcommands should still exist
+        for subcmd in &original_subcommands {
+            assert!(git.subcommands.contains_key(subcmd), "Missing subcommand: {}", subcmd);
+        }
+        // Plus the new one
+        assert!(git.subcommands.contains_key("my-subcmd"));
+    }
+}
