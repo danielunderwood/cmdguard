@@ -257,15 +257,27 @@ pub fn detect_project_root(cwd: &Path) -> Option<PathBuf> {
 }
 
 fn validate_project_root(path: &Path) -> Option<PathBuf> {
-    let path_str = path.to_string_lossy();
-
+    // Check the original path string against invalid roots first
+    // (before canonicalization, which might resolve symlinks)
+    let orig_str = path.to_string_lossy();
     for invalid in INVALID_PROJECT_ROOTS {
-        if path_str == *invalid {
+        if orig_str == *invalid {
             return None;
         }
     }
 
-    Some(path.to_path_buf())
+    // Canonicalize to get absolute path for reliable comparison
+    let canonical = path.canonicalize().ok()?;
+    let canonical_str = canonical.to_string_lossy();
+
+    // Also check canonical path against invalid roots
+    for invalid in INVALID_PROJECT_ROOTS {
+        if canonical_str == *invalid {
+            return None;
+        }
+    }
+
+    Some(canonical)
 }
 
 /// Find a command in PATH, returning the full path where it was found
@@ -336,11 +348,14 @@ mod tests {
 
     #[test]
     fn test_valid_root_accepted() {
-        let root = validate_project_root(Path::new("/home/user/project"));
+        // Use temp directory which exists and isn't in the invalid list
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = validate_project_root(temp_dir.path());
         assert!(root.is_some());
 
-        let root = validate_project_root(Path::new("/Users/dev/myapp"));
-        assert!(root.is_some());
+        // The returned path should be canonicalized (absolute)
+        let root_path = root.unwrap();
+        assert!(root_path.is_absolute());
     }
 
     #[test]
