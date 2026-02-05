@@ -1,8 +1,12 @@
+use crate::command_defs::CommandDefinitions;
+use crate::command_parser;
 use crate::extractor::extract_command;
 use crate::flags::expand_flags;
+use crate::nickel_config::NickelConfig;
 use crate::output::Decision;
 use crate::paths::detect_paths;
 use crate::policy::{PolicyEngine, PolicyInput};
+use crate::resolver::resolve_command;
 use crate::tokenizer::tokenize;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -58,13 +62,30 @@ pub struct TestResult {
 
 pub struct TestRunner {
     engine: PolicyEngine,
+    command_defs: CommandDefinitions,
+    nickel_config: NickelConfig,
 }
 
 impl TestRunner {
     pub fn new(policy_dir: &Path) -> Result<Self, String> {
         let mut engine = PolicyEngine::new();
         engine.load_policies_from_dir(policy_dir)?;
-        Ok(TestRunner { engine })
+
+        // Load Nickel config for custom wrappers and command definitions
+        let nickel_config = NickelConfig::load(policy_dir);
+
+        // Load command definitions (built-in + custom from Nickel)
+        let mut command_defs = CommandDefinitions::builtin();
+        let custom_commands = nickel_config.get_command_definitions();
+        if !custom_commands.is_empty() {
+            command_defs.merge(custom_commands);
+        }
+
+        Ok(TestRunner {
+            engine,
+            command_defs,
+            nickel_config,
+        })
     }
 
     pub fn run_tests(&mut self, test_file: &TestFile) -> Vec<TestResult> {
@@ -116,13 +137,36 @@ impl TestRunner {
                 continue;
             }
 
-            let extracted = extract_command(&tokens, None);
+            let extracted = extract_command(&tokens, Some(&mut self.nickel_config));
             if extracted.command.is_empty() {
                 continue;
             }
 
             let flags_expanded = expand_flags(&extracted.command);
             let paths = detect_paths(&extracted.command, &cwd_path);
+
+            // Resolve the command binary and trust zone
+            let resolved = if !extracted.command.is_empty() {
+                resolve_command(&extracted.command[0], None)
+            } else {
+                resolve_command("", None)
+            };
+
+            // Parse command for structured flags and args
+            let parsed_cmd = if !extracted.command.is_empty() {
+                command_parser::parse_command(&extracted.command, &self.command_defs, None)
+            } else {
+                command_parser::ParsedCommand {
+                    parsed_flags: std::collections::HashMap::new(),
+                    positional_args: vec![],
+                    subcommand: None,
+                }
+            };
+
+            // Serialize to JSON for PolicyInput
+            let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
+            let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
+            let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
 
             let policy_input = PolicyInput {
                 tool: "Bash".to_string(),
@@ -137,16 +181,16 @@ impl TestRunner {
                 chain_position: Some(cmd.position),
                 chain_length: Some(cmd.chain_length),
                 chain_operator: cmd.next_operator.clone(),
-                command_as_typed: None,
-                binary_name: None,
-                resolved_path: None,
-                resolved_trust_zone: None,
-                is_symlink: None,
-                symlink_source: None,
-                parsed_flags: None,
-                positional_args: None,
-                positional: None,
-                subcommand: None,
+                command_as_typed: Some(resolved.command_as_typed),
+                binary_name: Some(resolved.binary_name),
+                resolved_path: resolved.resolved_path,
+                resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
+                is_symlink: Some(resolved.is_symlink),
+                symlink_source: resolved.symlink_source,
+                parsed_flags: parsed_flags_json,
+                positional_args: positional_args_json,
+                positional: positional_map_json,
+                subcommand: parsed_cmd.subcommand,
             };
 
             let result = self.engine.evaluate(&policy_input);

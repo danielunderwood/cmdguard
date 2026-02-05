@@ -92,20 +92,20 @@ impl NickelConfig {
         }
     }
 
-    /// Extract wrapper names from combined sources
+    /// Extract wrapper names from user config (wrappers are user-defined only)
     fn extract_wrapper_names_from_sources(
-        builtins_src: Option<&str>,
+        _builtins_src: Option<&str>,
         user_src: Option<&str>,
     ) -> Vec<String> {
-        let combined_source = match (builtins_src, user_src) {
-            (Some(b), Some(u)) => format!("({}) & ({})", b, u),
-            (Some(b), None) => b.to_string(),
-            (None, Some(u)) => u.to_string(),
-            (None, None) => return vec![],
+        // Wrappers are only defined in user config, not builtins
+        // So we only need to look at user_src
+        let source = match user_src {
+            Some(s) => s,
+            None => return vec![],
         };
 
         let mut context = nickel_lang::Context::new();
-        match context.eval_deep(&combined_source) {
+        match context.eval_deep(source) {
             Ok(expr) => {
                 let names = Self::extract_wrapper_names(&expr);
                 debug!(?names, "Found wrapper names");
@@ -383,14 +383,10 @@ impl NickelConfig {
         }
     }
 
-    /// Get combined source for wrapper evaluation (builtins & user merged at Nickel level)
+    /// Get user source for wrapper evaluation (wrappers are user-defined only)
     fn get_combined_source(&self) -> Option<String> {
-        match (&self.builtins_source, &self.user_source) {
-            (Some(b), Some(u)) => Some(format!("({}) & ({})", b, u)),
-            (Some(b), None) => Some(b.clone()),
-            (None, Some(u)) => Some(u.clone()),
-            (None, None) => None,
-        }
+        // Wrappers are only defined in user config, not builtins
+        self.user_source.clone()
     }
 
     /// Get command definitions from Nickel config

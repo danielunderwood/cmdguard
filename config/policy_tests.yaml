@@ -23,9 +23,9 @@ tests:
     command: "git commit -m 'test commit'"
     expect: ask
 
-  - name: "ask for git push -f"
+  - name: "deny git push -f"
     command: "git push -f origin main"
-    expect: ask 
+    expect: deny
 
   # ==========================================================================
   # Wrapper Extraction
