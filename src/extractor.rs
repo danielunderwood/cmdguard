@@ -39,6 +39,12 @@ fn try_extract_wrapper(tokens: &[String], nickel_config: Option<&mut NickelConfi
 
     let cmd = &tokens[0];
 
+    // Handle inline environment variables: VAR=value command
+    // This is a shell feature where VAR=value sets env for just that command
+    if is_env_assignment(cmd) {
+        return extract_inline_env(tokens);
+    }
+
     // Try Nickel-defined extractor first
     if let Some(config) = nickel_config {
         if let Some(result) = config.extract_wrapper(cmd, tokens) {
@@ -56,6 +62,52 @@ fn try_extract_wrapper(tokens: &[String], nickel_config: Option<&mut NickelConfi
         "sh" | "bash" | "zsh" => extract_shell_c(tokens),
         "poetry" => extract_poetry(tokens),
         _ => None,
+    }
+}
+
+/// Check if a token is an environment variable assignment (VAR=value)
+fn is_env_assignment(token: &str) -> bool {
+    // Pattern: starts with letter or underscore, followed by alphanumeric/underscore, then =
+    // Examples: FOO=bar, RUST_LOG=debug, _VAR=value
+    if let Some(eq_pos) = token.find('=') {
+        if eq_pos == 0 {
+            return false; // Can't start with =
+        }
+        let name = &token[..eq_pos];
+        let mut chars = name.chars();
+        // First char must be letter or underscore
+        if let Some(first) = chars.next() {
+            if !first.is_ascii_alphabetic() && first != '_' {
+                return false;
+            }
+            // Rest must be alphanumeric or underscore
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+/// Extract inline environment variable assignments: VAR=value [VAR2=value2...] command
+fn extract_inline_env(tokens: &[String]) -> Option<(String, Vec<String>)> {
+    // Skip all leading VAR=value tokens
+    let mut idx = 0;
+    while idx < tokens.len() && is_env_assignment(&tokens[idx]) {
+        idx += 1;
+    }
+
+    if idx > 0 && idx < tokens.len() {
+        // Collect the env vars for the wrapper name
+        let env_vars: Vec<_> = tokens[..idx].iter().map(|s| {
+            // Just show the variable name, not the value
+            s.split('=').next().unwrap_or(s)
+        }).collect();
+        let wrapper_name = format!("env:{}", env_vars.join(","));
+        Some((wrapper_name, tokens[idx..].to_vec()))
+    } else {
+        None
     }
 }
 
@@ -289,5 +341,61 @@ mod tests {
         let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["pytest", "-v"]));
         assert_eq!(result.wrapper_chain, vec!["poetry run"]);
+    }
+
+    #[test]
+    fn test_inline_env_single() {
+        let tokens = to_vec(&["RUST_LOG=debug", "cargo", "run"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["cargo", "run"]));
+        assert_eq!(result.wrapper_chain, vec!["env:RUST_LOG"]);
+    }
+
+    #[test]
+    fn test_inline_env_multiple() {
+        let tokens = to_vec(&["FOO=bar", "BAZ=qux", "echo", "hello"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["echo", "hello"]));
+        assert_eq!(result.wrapper_chain, vec!["env:FOO,BAZ"]);
+    }
+
+    #[test]
+    fn test_inline_env_with_wrapper() {
+        let tokens = to_vec(&["RUST_LOG=debug", "sudo", "cargo", "build"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["cargo", "build"]));
+        assert_eq!(result.wrapper_chain, vec!["env:RUST_LOG", "sudo"]);
+    }
+
+    #[test]
+    fn test_inline_env_underscore_prefix() {
+        let tokens = to_vec(&["_MY_VAR=value", "command"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["command"]));
+        assert_eq!(result.wrapper_chain, vec!["env:_MY_VAR"]);
+    }
+
+    #[test]
+    fn test_not_env_assignment_no_equals() {
+        let tokens = to_vec(&["echo", "hello"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["echo", "hello"]));
+        assert!(result.wrapper_chain.is_empty());
+    }
+
+    #[test]
+    fn test_not_env_assignment_starts_with_equals() {
+        let tokens = to_vec(&["=value", "command"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["=value", "command"]));
+        assert!(result.wrapper_chain.is_empty());
+    }
+
+    #[test]
+    fn test_not_env_assignment_starts_with_number() {
+        let tokens = to_vec(&["1VAR=value", "command"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["1VAR=value", "command"]));
+        assert!(result.wrapper_chain.is_empty());
     }
 }
