@@ -336,6 +336,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         // Serialize to JSON for PolicyInput
         let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
         let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
+        let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
 
         let policy_input = PolicyInput {
             tool: "Bash".to_string(),
@@ -358,6 +359,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             symlink_source: resolved.symlink_source,
             parsed_flags: parsed_flags_json,
             positional_args: positional_args_json,
+            positional: positional_map_json,
             subcommand: parsed_cmd.subcommand,
         };
 
@@ -479,6 +481,7 @@ fn evaluate_compound(
         // Serialize to JSON for PolicyInput
         let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
         let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
+        let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
 
         // Build policy input with chain info
         let policy_input = PolicyInput {
@@ -502,6 +505,7 @@ fn evaluate_compound(
             symlink_source: resolved.symlink_source,
             parsed_flags: parsed_flags_json,
             positional_args: positional_args_json,
+            positional: positional_map_json,
             subcommand: parsed_cmd.subcommand,
         };
 

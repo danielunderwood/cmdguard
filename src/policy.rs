@@ -40,9 +40,13 @@ pub struct PolicyInput {
     /// Parsed flags from command (name -> value)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parsed_flags: Option<serde_json::Value>,
-    /// Parsed positional arguments
+    /// Parsed positional arguments (array format for iteration)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub positional_args: Option<serde_json::Value>,
+    /// Parsed positional arguments (map format for direct access by name)
+    /// Access as: input.positional.url[0].raw
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub positional: Option<serde_json::Value>,
     /// Subcommand if present (e.g., "push" for "git push")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subcommand: Option<String>,
@@ -214,6 +218,7 @@ mod tests {
             symlink_source: None,
             parsed_flags: None,
             positional_args: None,
+            positional: None,
             subcommand: None,
         }
     }

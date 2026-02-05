@@ -145,6 +145,7 @@ impl TestRunner {
                 symlink_source: None,
                 parsed_flags: None,
                 positional_args: None,
+                positional: None,
                 subcommand: None,
             };
 

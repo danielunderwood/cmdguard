@@ -43,6 +43,17 @@ pub struct ParsedCommand {
     pub subcommand: Option<String>,
 }
 
+impl ParsedCommand {
+    /// Get positional args as a map by name for easier access in policies
+    /// Returns: { "url": [{ raw, resolved, trust_zone, type }], ... }
+    pub fn positional_as_map(&self) -> HashMap<String, &Vec<PositionalValue>> {
+        self.positional_args
+            .iter()
+            .map(|arg| (arg.name.clone(), &arg.values))
+            .collect()
+    }
+}
+
 /// Parse a command's tokens into structured flags and positional args
 pub fn parse_command(
     tokens: &[String],
@@ -506,7 +517,7 @@ fn process_positional_args(
     let mut result = Vec::new();
     let mut remaining: Vec<String> = raw_args;
 
-    // Handle position-based args first
+    // Handle position-based args first (explicit index)
     for def in positional_defs.iter().filter(|d| d.position.is_some()) {
         let pos = def.position.unwrap() as usize;
         if pos < remaining.len() {
@@ -523,13 +534,28 @@ fn process_positional_args(
         }
     }
 
-    // Handle variadic arg (remaining args)
+    // Get sequential positional defs (not position-based, not last, not variadic)
+    let sequential_defs: Vec<_> = positional_defs
+        .iter()
+        .filter(|d| d.position.is_none() && !d.last && !d.variadic)
+        .collect();
+
+    // Assign remaining args to sequential positional definitions in order
+    for def in sequential_defs {
+        if remaining.is_empty() {
+            break;
+        }
+        let value = remaining.remove(0);
+        result.push(create_positional_arg(&def.name, vec![value], &def.arg_type, project_root));
+    }
+
+    // Handle variadic arg (remaining args after sequential)
     if let Some(variadic_def) = positional_defs.iter().find(|d| d.variadic) {
         if !remaining.is_empty() {
             result.push(create_positional_arg(&variadic_def.name, remaining, &variadic_def.arg_type, project_root));
         }
     } else if !remaining.is_empty() {
-        // No variadic def but have remaining args
+        // No variadic def but have remaining args - use generic "args"
         result.push(PositionalArg {
             name: "args".to_string(),
             values: remaining.into_iter().map(|s| PositionalValue {
