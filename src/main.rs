@@ -117,6 +117,29 @@ fn get_policy_dir(override_dir: Option<PathBuf>) -> PathBuf {
     })
 }
 
+/// Get the project-local policy directory if it exists
+fn get_project_policy_dir(project_root: Option<&PathBuf>) -> Option<PathBuf> {
+    project_root.map(|root| root.join(".claude/permissions")).filter(|p| p.exists())
+}
+
+/// Load policies from global directory and optionally from project-local directory
+fn load_all_policies(
+    engine: &mut PolicyEngine,
+    global_dir: &PathBuf,
+    project_root: Option<&PathBuf>,
+) -> Result<(), String> {
+    // Load global policies first
+    engine.load_policies_from_dir(global_dir)?;
+
+    // Load project-local policies if they exist (they merge with global via shared 'rules' map)
+    if let Some(project_policy_dir) = get_project_policy_dir(project_root) {
+        debug!(?project_policy_dir, "Loading project-local policies");
+        engine.load_policies_from_dir(&project_policy_dir)?;
+    }
+
+    Ok(())
+}
+
 fn run_tests(file: Option<PathBuf>, verbose: bool, policy_dir: Option<PathBuf>) {
     let policy_dir = get_policy_dir(policy_dir);
 
@@ -196,9 +219,9 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
     }
     println!();
 
-    // Load engine
+    // Load engine with global and project-local policies
     let mut engine = PolicyEngine::new();
-    if let Err(e) = engine.load_policies_from_dir(&policy_dir) {
+    if let Err(e) = load_all_policies(&mut engine, &policy_dir, project_root_detected.as_ref()) {
         eprintln!("Error loading policies: {}", e);
         return;
     }
@@ -559,10 +582,9 @@ fn run_hook_inner() -> Result<HookOutput, String> {
         "Parsed command"
     );
 
-    // Load policy engine
+    // Load policy engine with global and project-local policies
     let mut engine = PolicyEngine::new();
-    engine
-        .load_policies_from_dir(&policy_dir)
+    load_all_policies(&mut engine, &policy_dir, project_root_detected.as_ref())
         .map_err(|e| format!("Failed to load policies: {}", e))?;
 
     // Evaluate compound command
