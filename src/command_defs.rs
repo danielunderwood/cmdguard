@@ -110,6 +110,7 @@ pub struct CommandDefinitions {
 
 impl CommandDefinitions {
     /// Create from a map of commands (useful for testing)
+    #[cfg(test)]
     pub fn from_map(commands: HashMap<String, CommandDef>) -> Self {
         Self {
             commands,
@@ -117,443 +118,11 @@ impl CommandDefinitions {
         }
     }
 
-    /// Get built-in default definitions
+
+    /// Get built-in default definitions (empty - real definitions come from builtins.ncl)
     pub fn builtin() -> Self {
-        let mut commands = HashMap::new();
-
-        // rm
-        commands.insert(
-            "rm".to_string(),
-            CommandDef {
-                flags: HashMap::from([
-                    (
-                        "recursive".to_string(),
-                        FlagDef {
-                            short: vec!["-r".to_string(), "-R".to_string()],
-                            long: Some("--recursive".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                    (
-                        "force".to_string(),
-                        FlagDef {
-                            short: vec!["-f".to_string()],
-                            long: Some("--force".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                    (
-                        "no_preserve_root".to_string(),
-                        FlagDef {
-                            short: vec![],
-                            long: Some("--no-preserve-root".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                ]),
-                positional: vec![PositionalDef {
-                    name: "targets".to_string(),
-                    arg_type: ArgType::Path,
-                    position: None,
-                    variadic: true,
-                    last: false,
-                    optional: false,
-                }],
-                subcommands: HashMap::new(),
-                is_wrapper: false,
-                parsing: ParsingOptions::default(),
-            },
-        );
-
-        // chmod
-        commands.insert(
-            "chmod".to_string(),
-            CommandDef {
-                flags: HashMap::from([(
-                    "recursive".to_string(),
-                    FlagDef {
-                        short: vec!["-R".to_string()],
-                        long: Some("--recursive".to_string()),
-                        flag_type: FlagType::Boolean,
-                    },
-                )]),
-                positional: vec![
-                    PositionalDef {
-                        name: "mode".to_string(),
-                        arg_type: ArgType::String,
-                        position: Some(0),
-                        variadic: false,
-                        last: false,
-                        optional: false,
-                    },
-                    PositionalDef {
-                        name: "targets".to_string(),
-                        arg_type: ArgType::Path,
-                        position: None,
-                        variadic: true,
-                        last: false,
-                        optional: false,
-                    },
-                ],
-                subcommands: HashMap::new(),
-                is_wrapper: false,
-                parsing: ParsingOptions::default(),
-            },
-        );
-
-        // cp
-        commands.insert(
-            "cp".to_string(),
-            CommandDef {
-                flags: HashMap::from([
-                    (
-                        "recursive".to_string(),
-                        FlagDef {
-                            short: vec!["-r".to_string(), "-R".to_string()],
-                            long: Some("--recursive".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                    (
-                        "force".to_string(),
-                        FlagDef {
-                            short: vec!["-f".to_string()],
-                            long: Some("--force".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                    (
-                        "no_clobber".to_string(),
-                        FlagDef {
-                            short: vec!["-n".to_string()],
-                            long: Some("--no-clobber".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                ]),
-                positional: vec![
-                    PositionalDef {
-                        name: "sources".to_string(),
-                        arg_type: ArgType::Path,
-                        position: None,
-                        variadic: true,
-                        last: false,
-                        optional: false,
-                    },
-                    PositionalDef {
-                        name: "destination".to_string(),
-                        arg_type: ArgType::Path,
-                        position: None,
-                        variadic: false,
-                        last: true,
-                        optional: false,
-                    },
-                ],
-                subcommands: HashMap::new(),
-                is_wrapper: false,
-                parsing: ParsingOptions::default(),
-            },
-        );
-
-        // mv
-        commands.insert(
-            "mv".to_string(),
-            CommandDef {
-                flags: HashMap::from([
-                    (
-                        "force".to_string(),
-                        FlagDef {
-                            short: vec!["-f".to_string()],
-                            long: Some("--force".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                    (
-                        "no_clobber".to_string(),
-                        FlagDef {
-                            short: vec!["-n".to_string()],
-                            long: Some("--no-clobber".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                ]),
-                positional: vec![
-                    PositionalDef {
-                        name: "sources".to_string(),
-                        arg_type: ArgType::Path,
-                        position: None,
-                        variadic: true,
-                        last: false,
-                        optional: false,
-                    },
-                    PositionalDef {
-                        name: "destination".to_string(),
-                        arg_type: ArgType::Path,
-                        position: None,
-                        variadic: false,
-                        last: true,
-                        optional: false,
-                    },
-                ],
-                subcommands: HashMap::new(),
-                is_wrapper: false,
-                parsing: ParsingOptions::default(),
-            },
-        );
-
-        // chown
-        commands.insert(
-            "chown".to_string(),
-            CommandDef {
-                flags: HashMap::from([(
-                    "recursive".to_string(),
-                    FlagDef {
-                        short: vec!["-R".to_string()],
-                        long: Some("--recursive".to_string()),
-                        flag_type: FlagType::Boolean,
-                    },
-                )]),
-                positional: vec![
-                    PositionalDef {
-                        name: "owner".to_string(),
-                        arg_type: ArgType::String,
-                        position: Some(0),
-                        variadic: false,
-                        last: false,
-                        optional: false,
-                    },
-                    PositionalDef {
-                        name: "targets".to_string(),
-                        arg_type: ArgType::Path,
-                        position: None,
-                        variadic: true,
-                        last: false,
-                        optional: false,
-                    },
-                ],
-                subcommands: HashMap::new(),
-                is_wrapper: false,
-                parsing: ParsingOptions::default(),
-            },
-        );
-
-        // sudo
-        commands.insert(
-            "sudo".to_string(),
-            CommandDef {
-                flags: HashMap::from([
-                    (
-                        "user".to_string(),
-                        FlagDef {
-                            short: vec!["-u".to_string()],
-                            long: Some("--user".to_string()),
-                            flag_type: FlagType::WithArg,
-                        },
-                    ),
-                    (
-                        "group".to_string(),
-                        FlagDef {
-                            short: vec!["-g".to_string()],
-                            long: Some("--group".to_string()),
-                            flag_type: FlagType::WithArg,
-                        },
-                    ),
-                    (
-                        "stdin".to_string(),
-                        FlagDef {
-                            short: vec!["-S".to_string()],
-                            long: Some("--stdin".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                    (
-                        "login".to_string(),
-                        FlagDef {
-                            short: vec!["-i".to_string()],
-                            long: Some("--login".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                    (
-                        "preserve_env".to_string(),
-                        FlagDef {
-                            short: vec!["-E".to_string()],
-                            long: Some("--preserve-env".to_string()),
-                            flag_type: FlagType::Boolean,
-                        },
-                    ),
-                ]),
-                positional: vec![],
-                subcommands: HashMap::new(),
-                is_wrapper: true,
-                parsing: ParsingOptions::default(),
-            },
-        );
-
-        // git with subcommands
-        commands.insert(
-            "git".to_string(),
-            CommandDef {
-                flags: HashMap::from([(
-                    "directory".to_string(),
-                    FlagDef {
-                        short: vec!["-C".to_string()],
-                        long: None,
-                        flag_type: FlagType::WithArg,
-                    },
-                )]),
-                positional: vec![],
-                subcommands: HashMap::from([
-                    (
-                        "status".to_string(),
-                        SubcommandDef {
-                            flags: HashMap::from([
-                                (
-                                    "short".to_string(),
-                                    FlagDef {
-                                        short: vec!["-s".to_string()],
-                                        long: Some("--short".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                                (
-                                    "branch".to_string(),
-                                    FlagDef {
-                                        short: vec!["-b".to_string()],
-                                        long: Some("--branch".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                            ]),
-                            positional: vec![],
-                        },
-                    ),
-                    (
-                        "push".to_string(),
-                        SubcommandDef {
-                            flags: HashMap::from([
-                                (
-                                    "force".to_string(),
-                                    FlagDef {
-                                        short: vec!["-f".to_string()],
-                                        long: Some("--force".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                                (
-                                    "force_with_lease".to_string(),
-                                    FlagDef {
-                                        short: vec![],
-                                        long: Some("--force-with-lease".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                                (
-                                    "delete".to_string(),
-                                    FlagDef {
-                                        short: vec!["-d".to_string()],
-                                        long: Some("--delete".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                                (
-                                    "set_upstream".to_string(),
-                                    FlagDef {
-                                        short: vec!["-u".to_string()],
-                                        long: Some("--set-upstream".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                            ]),
-                            positional: vec![],
-                        },
-                    ),
-                    (
-                        "reset".to_string(),
-                        SubcommandDef {
-                            flags: HashMap::from([
-                                (
-                                    "hard".to_string(),
-                                    FlagDef {
-                                        short: vec![],
-                                        long: Some("--hard".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                                (
-                                    "soft".to_string(),
-                                    FlagDef {
-                                        short: vec![],
-                                        long: Some("--soft".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                                (
-                                    "mixed".to_string(),
-                                    FlagDef {
-                                        short: vec![],
-                                        long: Some("--mixed".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                            ]),
-                            positional: vec![],
-                        },
-                    ),
-                    (
-                        "clean".to_string(),
-                        SubcommandDef {
-                            flags: HashMap::from([
-                                (
-                                    "force".to_string(),
-                                    FlagDef {
-                                        short: vec!["-f".to_string()],
-                                        long: Some("--force".to_string()),
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                                (
-                                    "directories".to_string(),
-                                    FlagDef {
-                                        short: vec!["-d".to_string()],
-                                        long: None,
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                                (
-                                    "ignored".to_string(),
-                                    FlagDef {
-                                        short: vec!["-x".to_string()],
-                                        long: None,
-                                        flag_type: FlagType::Boolean,
-                                    },
-                                ),
-                            ]),
-                            positional: vec![],
-                        },
-                    ),
-                    (
-                        "log".to_string(),
-                        SubcommandDef {
-                            flags: HashMap::new(),
-                            positional: vec![],
-                        },
-                    ),
-                    (
-                        "diff".to_string(),
-                        SubcommandDef {
-                            flags: HashMap::new(),
-                            positional: vec![],
-                        },
-                    ),
-                ]),
-                is_wrapper: false,
-                parsing: ParsingOptions::default(),
-            },
-        );
-
         CommandDefinitions {
-            commands,
+            commands: HashMap::new(),
             defaults: ParsingOptions::default(),
         }
     }
@@ -570,10 +139,25 @@ impl CommandDefinitions {
     pub fn merge(&mut self, custom: HashMap<String, CommandDef>) {
         for (name, custom_def) in custom {
             if let Some(existing) = self.commands.get_mut(&name) {
-                // Deep merge: add custom subcommands and flags to existing command
+                // Deep merge: merge subcommands (not replace)
                 for (subcmd_name, subcmd_def) in custom_def.subcommands {
-                    existing.subcommands.insert(subcmd_name, subcmd_def);
+                    if let Some(existing_subcmd) = existing.subcommands.get_mut(&subcmd_name) {
+                        // Deep merge the subcommand: add custom flags to existing
+                        for (flag_name, flag_def) in subcmd_def.flags {
+                            existing_subcmd.flags.insert(flag_name, flag_def);
+                        }
+                        // Merge positional args
+                        for pos_def in subcmd_def.positional {
+                            if !existing_subcmd.positional.iter().any(|p| p.name == pos_def.name) {
+                                existing_subcmd.positional.push(pos_def);
+                            }
+                        }
+                    } else {
+                        // New subcommand, just insert
+                        existing.subcommands.insert(subcmd_name, subcmd_def);
+                    }
                 }
+                // Merge top-level flags
                 for (flag_name, flag_def) in custom_def.flags {
                     existing.flags.insert(flag_name, flag_def);
                 }
@@ -622,9 +206,156 @@ mod tests {
         SubcommandDef { flags, positional }
     }
 
+    /// Create test definitions (used by tests that need command definitions)
+    fn test_definitions() -> CommandDefinitions {
+        let mut commands = HashMap::new();
+
+        // git with subcommands
+        commands.insert("git".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("directory".to_string(), make_flag(&["-C"], None, FlagType::WithArg)),
+            ]),
+            positional: vec![],
+            subcommands: HashMap::from([
+                ("status".to_string(), make_subcommand(
+                    HashMap::from([
+                        ("short".to_string(), make_flag(&["-s"], Some("--short"), FlagType::Boolean)),
+                    ]),
+                    vec![],
+                )),
+                ("push".to_string(), make_subcommand(
+                    HashMap::from([
+                        ("force".to_string(), make_flag(&["-f"], Some("--force"), FlagType::Boolean)),
+                    ]),
+                    vec![],
+                )),
+                ("reset".to_string(), make_subcommand(
+                    HashMap::from([
+                        ("hard".to_string(), make_flag(&[], Some("--hard"), FlagType::Boolean)),
+                    ]),
+                    vec![],
+                )),
+            ]),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // rm
+        commands.insert("rm".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("recursive".to_string(), make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean)),
+                ("force".to_string(), make_flag(&["-f"], Some("--force"), FlagType::Boolean)),
+            ]),
+            positional: vec![PositionalDef {
+                name: "targets".to_string(),
+                arg_type: ArgType::Path,
+                position: None,
+                variadic: true,
+                last: false,
+                optional: false,
+            }],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // chmod
+        commands.insert("chmod".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("recursive".to_string(), make_flag(&["-R"], Some("--recursive"), FlagType::Boolean)),
+            ]),
+            positional: vec![
+                PositionalDef {
+                    name: "mode".to_string(),
+                    arg_type: ArgType::String,
+                    position: Some(0),
+                    variadic: false,
+                    last: false,
+                    optional: false,
+                },
+                PositionalDef {
+                    name: "targets".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: true,
+                    last: false,
+                    optional: false,
+                },
+            ],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // cp
+        commands.insert("cp".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("recursive".to_string(), make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean)),
+            ]),
+            positional: vec![
+                PositionalDef {
+                    name: "sources".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: true,
+                    last: false,
+                    optional: false,
+                },
+                PositionalDef {
+                    name: "destination".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: false,
+                    last: true,
+                    optional: false,
+                },
+            ],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // cargo
+        commands.insert("cargo".to_string(), CommandDef {
+            flags: HashMap::new(),
+            positional: vec![],
+            subcommands: HashMap::from([
+                ("build".to_string(), make_subcommand(
+                    HashMap::from([
+                        ("release".to_string(), make_flag(&["-r"], Some("--release"), FlagType::Boolean)),
+                    ]),
+                    vec![],
+                )),
+            ]),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // npm
+        commands.insert("npm".to_string(), CommandDef {
+            flags: HashMap::new(),
+            positional: vec![],
+            subcommands: HashMap::from([
+                ("install".to_string(), make_subcommand(
+                    HashMap::from([
+                        ("save_dev".to_string(), make_flag(&["-D"], Some("--save-dev"), FlagType::Boolean)),
+                    ]),
+                    vec![],
+                )),
+            ]),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        CommandDefinitions {
+            commands,
+            defaults: ParsingOptions::default(),
+        }
+    }
+
     #[test]
     fn test_merge_adds_new_subcommand_to_existing_command() {
-        let mut defs = CommandDefinitions::builtin();
+        let mut defs = test_definitions();
 
         // git exists in builtins, add a new subcommand
         let mut custom = HashMap::new();
@@ -661,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_merge_overrides_existing_subcommand() {
-        let mut defs = CommandDefinitions::builtin();
+        let mut defs = test_definitions();
 
         // git log exists in builtins, override it with custom definition
         let mut custom = HashMap::new();
@@ -701,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_merge_adds_new_flag_to_existing_command() {
-        let mut defs = CommandDefinitions::builtin();
+        let mut defs = test_definitions();
 
         let mut custom = HashMap::new();
         let mut git_flags = HashMap::new();
@@ -732,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_merge_overrides_existing_flag() {
-        let mut defs = CommandDefinitions::builtin();
+        let mut defs = test_definitions();
 
         // Override git's -C/directory flag with a different type
         let mut custom = HashMap::new();
@@ -767,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_merge_adds_completely_new_command() {
-        let mut defs = CommandDefinitions::builtin();
+        let mut defs = test_definitions();
 
         let mut custom = HashMap::new();
         let mut flags = HashMap::new();
@@ -801,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_merge_appends_new_positional_args() {
-        let mut defs = CommandDefinitions::builtin();
+        let mut defs = test_definitions();
 
         let mut custom = HashMap::new();
         custom.insert(
@@ -830,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_merge_does_not_duplicate_positional_by_name() {
-        let mut defs = CommandDefinitions::builtin();
+        let mut defs = test_definitions();
 
         // First add a custom positional
         let mut custom1 = HashMap::new();
@@ -873,7 +604,7 @@ mod tests {
 
     #[test]
     fn test_merge_preserves_original_command_structure() {
-        let mut defs = CommandDefinitions::builtin();
+        let mut defs = test_definitions();
 
         // Add only a subcommand, nothing else
         let mut custom = HashMap::new();

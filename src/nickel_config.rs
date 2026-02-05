@@ -25,49 +25,95 @@ pub struct ValidationResult {
 
 /// Nickel configuration context
 pub struct NickelConfig {
-    context: Option<nickel_lang::Context>,
-    /// The evaluated config expression, kept for querying
-    config_source: Option<String>,
+    /// Builtins source (builtins.ncl)
+    builtins_source: Option<String>,
+    /// User config source (commands.ncl)
+    user_source: Option<String>,
     /// Cached wrapper names that have extract functions
     wrapper_names: Vec<String>,
 }
 
 impl NickelConfig {
-    /// Create new config, loading from file if it exists
+    /// Create new config, loading builtins and user config separately
     pub fn load(config_dir: &Path) -> Self {
-        let ncl_path = config_dir.join("commands.ncl");
+        let builtins_path = config_dir.join("builtins.ncl");
+        let user_path = config_dir.join("commands.ncl");
 
-        if !ncl_path.exists() {
-            debug!(?ncl_path, "No Nickel config file found");
+        // Load and validate builtins
+        let builtins_source = Self::load_and_validate(&builtins_path, "builtins.ncl");
+
+        // Load and validate user config
+        let user_source = Self::load_and_validate(&user_path, "commands.ncl");
+
+        // If neither file exists, return empty config
+        if builtins_source.is_none() && user_source.is_none() {
             return Self::empty();
         }
 
-        let content = match std::fs::read_to_string(&ncl_path) {
+        // Extract wrapper names from combined config
+        let wrapper_names = Self::extract_wrapper_names_from_sources(
+            builtins_source.as_deref(),
+            user_source.as_deref(),
+        );
+
+        Self {
+            builtins_source,
+            user_source,
+            wrapper_names,
+        }
+    }
+
+    /// Load and validate a single Nickel file
+    fn load_and_validate(path: &Path, name: &str) -> Option<String> {
+        if !path.exists() {
+            debug!(?path, "No {} found", name);
+            return None;
+        }
+
+        let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
-                warn!(?ncl_path, error = ?e, "Failed to read Nickel config");
-                return Self::empty();
+                warn!(?path, error = ?e, "Failed to read {}", name);
+                return None;
             }
         };
 
+        // Validate the Nickel file parses correctly
         let mut context = nickel_lang::Context::new();
-
-        // Evaluate the config to verify it's valid
         match context.eval_deep(&content) {
-            Ok(expr) => {
-                // Extract wrapper names that have extract functions
-                let wrapper_names = Self::extract_wrapper_names(&expr);
-                debug!(?wrapper_names, "Loaded Nickel config");
-
-                Self {
-                    context: Some(context),
-                    config_source: Some(content),
-                    wrapper_names,
-                }
+            Ok(_) => {
+                debug!(?path, "Loaded {}", name);
+                Some(content)
             }
             Err(e) => {
-                warn!(?ncl_path, error = ?e, "Failed to parse Nickel config");
-                Self::empty()
+                warn!(?path, error = ?e, "Failed to parse {}", name);
+                None
+            }
+        }
+    }
+
+    /// Extract wrapper names from combined sources
+    fn extract_wrapper_names_from_sources(
+        builtins_src: Option<&str>,
+        user_src: Option<&str>,
+    ) -> Vec<String> {
+        let combined_source = match (builtins_src, user_src) {
+            (Some(b), Some(u)) => format!("({}) & ({})", b, u),
+            (Some(b), None) => b.to_string(),
+            (None, Some(u)) => u.to_string(),
+            (None, None) => return vec![],
+        };
+
+        let mut context = nickel_lang::Context::new();
+        match context.eval_deep(&combined_source) {
+            Ok(expr) => {
+                let names = Self::extract_wrapper_names(&expr);
+                debug!(?names, "Found wrapper names");
+                names
+            }
+            Err(e) => {
+                warn!(error = ?e, "Failed to extract wrapper names");
+                vec![]
             }
         }
     }
@@ -75,15 +121,72 @@ impl NickelConfig {
     /// Create an empty config (no Nickel functions)
     pub fn empty() -> Self {
         Self {
-            context: None,
-            config_source: None,
+            builtins_source: None,
+            user_source: None,
             wrapper_names: vec![],
         }
     }
 
     /// Check if Nickel config is loaded
+    #[cfg(test)]
     pub fn is_loaded(&self) -> bool {
-        self.context.is_some()
+        self.builtins_source.is_some() || self.user_source.is_some()
+    }
+
+    /// Get command definitions from builtins only
+    pub fn get_builtin_command_definitions(&self) -> HashMap<String, CommandDef> {
+        self.builtins_source
+            .as_ref()
+            .map(|s| Self::parse_command_definitions_from_source(s))
+            .unwrap_or_default()
+    }
+
+    /// Get command definitions from user config only
+    pub fn get_user_command_definitions(&self) -> HashMap<String, CommandDef> {
+        self.user_source
+            .as_ref()
+            .map(|s| Self::parse_command_definitions_from_source(s))
+            .unwrap_or_default()
+    }
+
+    /// Parse command definitions from a Nickel source string
+    fn parse_command_definitions_from_source(source: &str) -> HashMap<String, CommandDef> {
+        let mut context = nickel_lang::Context::new();
+        match context.eval_deep(source) {
+            Ok(expr) => Self::parse_commands_from_expr(&expr),
+            Err(_) => HashMap::new(),
+        }
+    }
+
+    /// Parse commands from an evaluated Nickel expression
+    fn parse_commands_from_expr(expr: &nickel_lang::Expr) -> HashMap<String, CommandDef> {
+        let mut commands = HashMap::new();
+
+        let config_record = match expr.as_record() {
+            Some(r) => r,
+            None => return commands,
+        };
+
+        let commands_expr = match config_record.value_by_name("commands") {
+            Some(e) => e,
+            None => return commands,
+        };
+
+        let commands_record = match commands_expr.as_record() {
+            Some(r) => r,
+            None => return commands,
+        };
+
+        for (cmd_name, cmd_def_opt) in commands_record {
+            if let Some(cmd_def_expr) = cmd_def_opt {
+                if let Some(cmd_def) = Self::parse_command_def(&cmd_def_expr) {
+                    debug!(%cmd_name, "Loaded command definition from Nickel");
+                    commands.insert(cmd_name.to_string(), cmd_def);
+                }
+            }
+        }
+
+        commands
     }
 
     /// Validate a Nickel configuration file and return detailed results
@@ -239,19 +342,20 @@ impl NickelConfig {
             return None;
         }
 
-        let context = self.context.as_mut()?;
-        let config_source = self.config_source.as_ref()?;
+        // Get the combined source for wrapper evaluation
+        let combined_source = self.get_combined_source()?;
 
         // Build expression to call: (config.wrappers.<name>.extract) tokens
         let tokens_json = serde_json::to_string(tokens).ok()?;
 
         let call_expr = format!(
             "let config = {} in (config.wrappers.{}.extract) {}",
-            config_source, name, tokens_json
+            combined_source, name, tokens_json
         );
 
         debug!(%name, "Calling Nickel wrapper extract");
 
+        let mut context = nickel_lang::Context::new();
         match context.eval_deep(&call_expr) {
             Ok(result) => {
                 // Check if result is null
@@ -279,41 +383,63 @@ impl NickelConfig {
         }
     }
 
+    /// Get combined source for wrapper evaluation (builtins & user merged at Nickel level)
+    fn get_combined_source(&self) -> Option<String> {
+        match (&self.builtins_source, &self.user_source) {
+            (Some(b), Some(u)) => Some(format!("({}) & ({})", b, u)),
+            (Some(b), None) => Some(b.clone()),
+            (None, Some(u)) => Some(u.clone()),
+            (None, None) => None,
+        }
+    }
+
     /// Get command definitions from Nickel config
     ///
     /// Returns a HashMap of command name -> CommandDef for commands defined
-    /// in the `commands` section of the Nickel config.
-    pub fn get_command_definitions(&mut self) -> HashMap<String, CommandDef> {
-        let mut commands = HashMap::new();
+    /// in the `commands` section of both builtins and user config, with
+    /// user definitions deep-merged on top of builtins.
+    pub fn get_command_definitions(&self) -> HashMap<String, CommandDef> {
+        let mut commands = self.get_builtin_command_definitions();
+        let user_commands = self.get_user_command_definitions();
 
-        let context = match self.context.as_mut() {
-            Some(c) => c,
-            None => return commands,
-        };
-
-        let config_source = match self.config_source.as_ref() {
-            Some(s) => s,
-            None => return commands,
-        };
-
-        // Evaluate to get the commands section
-        let expr_str = format!("let config = {} in config.commands", config_source);
-        let commands_expr = match context.eval_deep(&expr_str) {
-            Ok(e) => e,
-            Err(_) => return commands, // No commands section or error
-        };
-
-        let commands_record = match commands_expr.as_record() {
-            Some(r) => r,
-            None => return commands,
-        };
-
-        for (cmd_name, cmd_def_opt) in commands_record {
-            if let Some(cmd_def_expr) = cmd_def_opt {
-                if let Some(cmd_def) = Self::parse_command_def(&cmd_def_expr) {
-                    debug!(%cmd_name, "Loaded command definition from Nickel");
-                    commands.insert(cmd_name.to_string(), cmd_def);
+        // Deep merge user commands on top of builtins
+        for (cmd_name, user_def) in user_commands {
+            if let Some(existing) = commands.get_mut(&cmd_name) {
+                // Deep merge: add user flags to existing
+                for (flag_name, flag_def) in user_def.flags {
+                    existing.flags.insert(flag_name, flag_def);
                 }
+
+                // Deep merge subcommands
+                for (subcmd_name, subcmd_def) in user_def.subcommands {
+                    if let Some(existing_subcmd) = existing.subcommands.get_mut(&subcmd_name) {
+                        // Merge subcommand flags
+                        for (flag_name, flag_def) in subcmd_def.flags {
+                            existing_subcmd.flags.insert(flag_name, flag_def);
+                        }
+                        // Merge positional if user provides any
+                        if !subcmd_def.positional.is_empty() {
+                            existing_subcmd.positional = subcmd_def.positional;
+                        }
+                    } else {
+                        // New subcommand from user
+                        existing.subcommands.insert(subcmd_name, subcmd_def);
+                    }
+                }
+
+                // Override positional if user provides any
+                if !user_def.positional.is_empty() {
+                    existing.positional = user_def.positional;
+                }
+
+                // Override is_wrapper if user sets it
+                if user_def.is_wrapper {
+                    existing.is_wrapper = true;
+                }
+            } else {
+                // New command from user
+                debug!(%cmd_name, "Adding user command definition");
+                commands.insert(cmd_name, user_def);
             }
         }
 
@@ -576,6 +702,17 @@ mod tests {
         (dir, config_path)
     }
 
+    fn create_temp_config_with_builtins(
+        builtins: &str,
+        user: &str,
+    ) -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().to_path_buf();
+        fs::write(config_path.join("builtins.ncl"), builtins).unwrap();
+        fs::write(config_path.join("commands.ncl"), user).unwrap();
+        (dir, config_path)
+    }
+
     #[test]
     fn test_load_missing_file() {
         let dir = TempDir::new().unwrap();
@@ -745,7 +882,7 @@ mod tests {
 }
 "#;
         let (dir, path) = create_temp_config(content);
-        let mut config = NickelConfig::load(&path);
+        let config = NickelConfig::load(&path);
 
         let commands = config.get_command_definitions();
         assert!(commands.contains_key("my_tool"));
@@ -768,7 +905,7 @@ mod tests {
 }
 "#;
         let (dir, path) = create_temp_config(content);
-        let mut config = NickelConfig::load(&path);
+        let config = NickelConfig::load(&path);
 
         let commands = config.get_command_definitions();
         assert!(commands.is_empty());
@@ -802,7 +939,7 @@ mod tests {
 }
 "#;
         let (dir, path) = create_temp_config(content);
-        let mut config = NickelConfig::load(&path);
+        let config = NickelConfig::load(&path);
 
         let commands = config.get_command_definitions();
         assert!(commands.contains_key("git"));
@@ -819,6 +956,287 @@ mod tests {
         let stash = git.subcommands.get("stash").unwrap();
         assert!(stash.flags.contains_key("push"));
         assert!(stash.positional.is_empty());
+        drop(dir);
+    }
+
+    // ==========================================================================
+    // Tests for separate loading and Rust merge behavior
+    // ==========================================================================
+
+    #[test]
+    fn test_load_builtins_only() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().to_path_buf();
+
+        // Only create builtins.ncl, no commands.ncl
+        let builtins = r#"
+{
+  commands = {
+    git = {
+      flags = {
+        directory = { short = ["-C"], type = "with_arg" },
+      },
+      subcommands = {
+        push = {
+          flags = {
+            force = { short = ["-f"], long = "--force", type = "boolean" },
+          },
+        },
+      },
+    },
+  },
+}
+"#;
+        fs::write(config_path.join("builtins.ncl"), builtins).unwrap();
+
+        let config = NickelConfig::load(&config_path);
+        assert!(config.is_loaded());
+
+        let commands = config.get_command_definitions();
+        assert!(commands.contains_key("git"));
+
+        let git = commands.get("git").unwrap();
+        assert!(git.flags.contains_key("directory"));
+        assert!(git.subcommands.contains_key("push"));
+        assert!(git.subcommands.get("push").unwrap().flags.contains_key("force"));
+
+        drop(dir);
+    }
+
+    #[test]
+    fn test_deep_merge_user_adds_subcommand_preserves_builtin_flags() {
+        // Builtins define git with push.force flag
+        let builtins = r#"
+{
+  commands = {
+    git = {
+      flags = {
+        directory = { short = ["-C"], type = "with_arg" },
+      },
+      subcommands = {
+        push = {
+          flags = {
+            force = { short = ["-f"], long = "--force", type = "boolean" },
+            delete = { short = ["-d"], long = "--delete", type = "boolean" },
+          },
+        },
+      },
+    },
+  },
+}
+"#;
+        // User adds new subcommand without touching push
+        let user = r#"
+{
+  commands = {
+    git = {
+      subcommands = {
+        town = {
+          positional = [{ name = "subcmd", type = "string" }],
+        },
+      },
+    },
+  },
+}
+"#;
+        let (dir, path) = create_temp_config_with_builtins(builtins, user);
+        let config = NickelConfig::load(&path);
+
+        let commands = config.get_command_definitions();
+        let git = commands.get("git").unwrap();
+
+        // Builtin flags should still exist
+        assert!(git.flags.contains_key("directory"), "git -C flag should exist");
+
+        // Builtin subcommand push with flags should still exist
+        assert!(git.subcommands.contains_key("push"), "push subcommand should exist");
+        let push = git.subcommands.get("push").unwrap();
+        assert!(push.flags.contains_key("force"), "push --force flag should exist");
+        assert!(push.flags.contains_key("delete"), "push --delete flag should exist");
+
+        // User subcommand should also exist
+        assert!(git.subcommands.contains_key("town"), "town subcommand should exist");
+        let town = git.subcommands.get("town").unwrap();
+        assert_eq!(town.positional.len(), 1);
+        assert_eq!(town.positional[0].name, "subcmd");
+
+        drop(dir);
+    }
+
+    #[test]
+    fn test_deep_merge_user_adds_flags_to_existing_subcommand() {
+        // Builtins define git push with force flag
+        let builtins = r#"
+{
+  commands = {
+    git = {
+      subcommands = {
+        push = {
+          flags = {
+            force = { short = ["-f"], long = "--force", type = "boolean" },
+          },
+        },
+      },
+    },
+  },
+}
+"#;
+        // User adds more flags to push subcommand
+        let user = r#"
+{
+  commands = {
+    git = {
+      subcommands = {
+        push = {
+          flags = {
+            set_upstream = { short = ["-u"], long = "--set-upstream", type = "boolean" },
+          },
+        },
+      },
+    },
+  },
+}
+"#;
+        let (dir, path) = create_temp_config_with_builtins(builtins, user);
+        let config = NickelConfig::load(&path);
+
+        let commands = config.get_command_definitions();
+        let git = commands.get("git").unwrap();
+        let push = git.subcommands.get("push").unwrap();
+
+        // Both builtin and user flags should exist
+        assert!(push.flags.contains_key("force"), "builtin force flag should exist");
+        assert!(push.flags.contains_key("set_upstream"), "user set_upstream flag should exist");
+
+        drop(dir);
+    }
+
+    #[test]
+    fn test_deep_merge_user_overrides_builtin_flag() {
+        // Builtins define rm with force flag using -f
+        let builtins = r#"
+{
+  commands = {
+    rm = {
+      flags = {
+        force = { short = ["-f"], long = "--force", type = "boolean" },
+        recursive = { short = ["-r"], long = "--recursive", type = "boolean" },
+      },
+    },
+  },
+}
+"#;
+        // User overrides force flag (maybe to change the short form)
+        let user = r#"
+{
+  commands = {
+    rm = {
+      flags = {
+        force = { short = ["-f", "-F"], long = "--force", type = "boolean" },
+      },
+    },
+  },
+}
+"#;
+        let (dir, path) = create_temp_config_with_builtins(builtins, user);
+        let config = NickelConfig::load(&path);
+
+        let commands = config.get_command_definitions();
+        let rm = commands.get("rm").unwrap();
+
+        // User's force flag should override builtin
+        let force = rm.flags.get("force").unwrap();
+        assert_eq!(force.short.len(), 2, "should have both -f and -F");
+        assert!(force.short.contains(&"-f".to_string()));
+        assert!(force.short.contains(&"-F".to_string()));
+
+        // Builtin recursive flag should still exist
+        assert!(rm.flags.contains_key("recursive"), "recursive flag should exist");
+
+        drop(dir);
+    }
+
+    #[test]
+    fn test_deep_merge_user_adds_new_command() {
+        // Builtins define git
+        let builtins = r#"
+{
+  commands = {
+    git = {
+      subcommands = {
+        status = {},
+      },
+    },
+  },
+}
+"#;
+        // User adds completely new command
+        let user = r#"
+{
+  commands = {
+    my_tool = {
+      flags = {
+        verbose = { short = ["-v"], long = "--verbose", type = "boolean" },
+      },
+    },
+  },
+}
+"#;
+        let (dir, path) = create_temp_config_with_builtins(builtins, user);
+        let config = NickelConfig::load(&path);
+
+        let commands = config.get_command_definitions();
+
+        // Both commands should exist
+        assert!(commands.contains_key("git"), "builtin git should exist");
+        assert!(commands.contains_key("my_tool"), "user my_tool should exist");
+
+        let my_tool = commands.get("my_tool").unwrap();
+        assert!(my_tool.flags.contains_key("verbose"));
+
+        drop(dir);
+    }
+
+    #[test]
+    fn test_get_builtin_and_user_definitions_separately() {
+        let builtins = r#"
+{
+  commands = {
+    git = {
+      subcommands = { push = {} },
+    },
+  },
+}
+"#;
+        let user = r#"
+{
+  commands = {
+    my_tool = {
+      flags = { verbose = { type = "boolean" } },
+    },
+  },
+}
+"#;
+        let (dir, path) = create_temp_config_with_builtins(builtins, user);
+        let config = NickelConfig::load(&path);
+
+        // Get definitions separately
+        let builtin_defs = config.get_builtin_command_definitions();
+        let user_defs = config.get_user_command_definitions();
+
+        // Builtins should only have git
+        assert!(builtin_defs.contains_key("git"));
+        assert!(!builtin_defs.contains_key("my_tool"));
+
+        // User should only have my_tool
+        assert!(user_defs.contains_key("my_tool"));
+        assert!(!user_defs.contains_key("git"));
+
+        // Combined should have both
+        let combined = config.get_command_definitions();
+        assert!(combined.contains_key("git"));
+        assert!(combined.contains_key("my_tool"));
+
         drop(dir);
     }
 }

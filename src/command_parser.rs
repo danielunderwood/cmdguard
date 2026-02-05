@@ -747,9 +747,164 @@ mod tests {
         s.split_whitespace().map(String::from).collect()
     }
 
+    fn make_flag(short: &[&str], long: Option<&str>, flag_type: FlagType) -> FlagDef {
+        FlagDef {
+            short: short.iter().map(|s| s.to_string()).collect(),
+            long: long.map(|s| s.to_string()),
+            flag_type,
+        }
+    }
+
+    fn make_subcommand(flags: HashMap<String, FlagDef>) -> SubcommandDef {
+        SubcommandDef { flags, positional: vec![] }
+    }
+
+    /// Test definitions for command parser tests
+    fn test_definitions() -> CommandDefinitions {
+        let mut commands = HashMap::new();
+
+        // rm
+        commands.insert("rm".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("recursive".to_string(), make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean)),
+                ("force".to_string(), make_flag(&["-f"], Some("--force"), FlagType::Boolean)),
+            ]),
+            positional: vec![PositionalDef {
+                name: "targets".to_string(),
+                arg_type: ArgType::Path,
+                position: None,
+                variadic: true,
+                last: false,
+                optional: false,
+            }],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // sudo
+        commands.insert("sudo".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("user".to_string(), make_flag(&["-u"], Some("--user"), FlagType::WithArg)),
+            ]),
+            positional: vec![],
+            subcommands: HashMap::new(),
+            is_wrapper: true,
+            parsing: ParsingOptions::default(),
+        });
+
+        // git
+        commands.insert("git".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("directory".to_string(), make_flag(&["-C"], None, FlagType::WithArg)),
+            ]),
+            positional: vec![],
+            subcommands: HashMap::from([
+                ("status".to_string(), make_subcommand(HashMap::from([
+                    ("short".to_string(), make_flag(&["-s"], Some("--short"), FlagType::Boolean)),
+                ]))),
+                ("push".to_string(), make_subcommand(HashMap::from([
+                    ("force".to_string(), make_flag(&["-f"], Some("--force"), FlagType::Boolean)),
+                ]))),
+                ("reset".to_string(), make_subcommand(HashMap::from([
+                    ("hard".to_string(), make_flag(&[], Some("--hard"), FlagType::Boolean)),
+                ]))),
+            ]),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // chmod
+        commands.insert("chmod".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("recursive".to_string(), make_flag(&["-R"], Some("--recursive"), FlagType::Boolean)),
+            ]),
+            positional: vec![
+                PositionalDef {
+                    name: "mode".to_string(),
+                    arg_type: ArgType::String,
+                    position: Some(0),
+                    variadic: false,
+                    last: false,
+                    optional: false,
+                },
+                PositionalDef {
+                    name: "targets".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: true,
+                    last: false,
+                    optional: false,
+                },
+            ],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // cp
+        commands.insert("cp".to_string(), CommandDef {
+            flags: HashMap::from([
+                ("recursive".to_string(), make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean)),
+            ]),
+            positional: vec![
+                PositionalDef {
+                    name: "sources".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: true,
+                    last: false,
+                    optional: false,
+                },
+                PositionalDef {
+                    name: "destination".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: false,
+                    last: true,
+                    optional: false,
+                },
+            ],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // cargo
+        commands.insert("cargo".to_string(), CommandDef {
+            flags: HashMap::new(),
+            positional: vec![],
+            subcommands: HashMap::from([
+                ("build".to_string(), make_subcommand(HashMap::from([
+                    ("release".to_string(), make_flag(&["-r"], Some("--release"), FlagType::Boolean)),
+                ]))),
+            ]),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        // npm
+        commands.insert("npm".to_string(), CommandDef {
+            flags: HashMap::new(),
+            positional: vec![],
+            subcommands: HashMap::from([
+                ("install".to_string(), make_subcommand(HashMap::from([
+                    ("save_dev".to_string(), make_flag(&["-D"], Some("--save-dev"), FlagType::Boolean)),
+                ]))),
+            ]),
+            is_wrapper: false,
+            parsing: ParsingOptions::default(),
+        });
+
+        CommandDefinitions {
+            commands,
+            defaults: ParsingOptions::default(),
+        }
+    }
+
     #[test]
     fn test_parse_boolean_flags() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("rm -rf /tmp/foo"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("recursive"), Some(&FlagValue::Bool(true)));
@@ -758,7 +913,7 @@ mod tests {
 
     #[test]
     fn test_parse_flag_with_arg() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("sudo -u postgres psql"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("postgres".to_string())));
@@ -766,7 +921,7 @@ mod tests {
 
     #[test]
     fn test_parse_long_flag_equals() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("sudo --user=root ls"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("root".to_string())));
@@ -774,7 +929,7 @@ mod tests {
 
     #[test]
     fn test_double_dash() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("rm -- -rf"), &defs, None);
 
         // -rf should be treated as a filename, not flags
@@ -786,7 +941,7 @@ mod tests {
 
     #[test]
     fn test_git_subcommand() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("git push -f origin main"), &defs, None);
 
         assert_eq!(result.subcommand, Some("push".to_string()));
@@ -795,7 +950,7 @@ mod tests {
 
     #[test]
     fn test_unknown_command() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("unknown-cmd -v --verbose"), &defs, None);
 
         // Should still attempt to parse flags
@@ -812,7 +967,7 @@ mod tests {
 
     #[test]
     fn test_positional_args() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("rm -f file1.txt file2.txt"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("force"), Some(&FlagValue::Bool(true)));
@@ -823,7 +978,7 @@ mod tests {
 
     #[test]
     fn test_long_flag_space_separated() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("sudo --user postgres psql"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("postgres".to_string())));
@@ -831,7 +986,7 @@ mod tests {
 
     #[test]
     fn test_multiple_short_forms() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         // rm accepts both -r and -R for recursive
         let result1 = parse_command(&to_tokens("rm -r /tmp"), &defs, None);
         let result2 = parse_command(&to_tokens("rm -R /tmp"), &defs, None);
@@ -842,7 +997,7 @@ mod tests {
 
     #[test]
     fn test_empty_command() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&[], &defs, None);
 
         assert!(result.parsed_flags.is_empty());
@@ -852,7 +1007,7 @@ mod tests {
 
     #[test]
     fn test_git_reset_subcommand() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("git reset --hard HEAD~1"), &defs, None);
 
         assert_eq!(result.subcommand, Some("reset".to_string()));
@@ -862,7 +1017,7 @@ mod tests {
 
     #[test]
     fn test_unknown_command_with_equals() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("myapp --config=prod.yaml"), &defs, None);
 
         assert_eq!(result.parsed_flags.get("config"), Some(&FlagValue::String("prod.yaml".to_string())));
@@ -870,7 +1025,7 @@ mod tests {
 
     #[test]
     fn test_positional_with_definition() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("chmod 755 ./src"), &defs, None);
 
         // Should have "mode" and "targets" positional args
@@ -884,7 +1039,7 @@ mod tests {
 
     #[test]
     fn test_cp_destination() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         let result = parse_command(&to_tokens("cp file1 file2 dest/"), &defs, None);
 
         let sources = result.positional_args.iter().find(|a| a.name == "sources");
@@ -897,7 +1052,7 @@ mod tests {
 
     #[test]
     fn test_path_resolution() {
-        let defs = CommandDefinitions::builtin();
+        let defs = test_definitions();
         // Use current dir as project root for testing
         let project_root = std::env::current_dir().unwrap();
         let result = parse_command(&to_tokens("rm ./src"), &defs, Some(&project_root));
@@ -994,5 +1149,23 @@ mod tests {
             }
             other => panic!("Expected Array, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_cargo_subcommand() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("cargo build --release"), &defs, None);
+
+        assert_eq!(result.subcommand, Some("build".to_string()));
+        assert_eq!(result.parsed_flags.get("release"), Some(&FlagValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_npm_install() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("npm install -D typescript"), &defs, None);
+
+        assert_eq!(result.subcommand, Some("install".to_string()));
+        assert_eq!(result.parsed_flags.get("save_dev"), Some(&FlagValue::Bool(true)));
     }
 }
