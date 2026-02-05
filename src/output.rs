@@ -49,6 +49,7 @@ impl HookOutput {
         }
     }
 
+    #[cfg(test)]
     pub fn allow() -> Self {
         Self::new(Decision::Allow, None)
     }
@@ -57,6 +58,7 @@ impl HookOutput {
         Self::new(Decision::Deny, Some(reason.to_string()))
     }
 
+    #[cfg(test)]
     pub fn ask() -> Self {
         Self::new(Decision::Ask, None)
     }
@@ -69,6 +71,16 @@ impl HookOutput {
         serde_json::to_string(self).unwrap_or_else(|_| {
             r#"{"hookSpecificOutput":{"permissionDecision":"ask"}}"#.to_string()
         })
+    }
+
+    /// Get the decision from this output
+    #[cfg(test)]
+    pub fn decision(&self) -> Decision {
+        match self.hook_specific_output.permission_decision.as_str() {
+            "allow" => Decision::Allow,
+            "deny" => Decision::Deny,
+            _ => Decision::Ask,
+        }
     }
 }
 

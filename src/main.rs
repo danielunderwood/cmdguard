@@ -1,5 +1,6 @@
 mod cli;
 mod command_defs;
+mod command_evaluator;
 mod command_parser;
 mod extractor;
 mod flags;
@@ -7,20 +8,21 @@ mod input;
 mod logging;
 mod nickel_config;
 mod output;
+mod parser;
 mod paths;
 mod policy;
 mod resolver;
 mod test_runner;
 mod tokenizer;
-mod parser;
 
 use clap::Parser;
 use cli::{Cli, Commands};
 use command_defs::CommandDefinitions;
+use command_evaluator::{CommandEvaluator, EvaluationContext};
 use extractor::extract_command;
-use nickel_config::NickelConfig;
-use parser::{parse_command, ParsedCommand};
 use flags::expand_flags;
+use nickel_config::NickelConfig;
+use parser::parse_command;
 use input::parse_input;
 use logging::init_logging;
 use output::HookOutput;
@@ -421,7 +423,7 @@ fn run_hook() {
 
 /// Evaluate a compound command, short-circuiting on first non-allow
 fn evaluate_compound(
-    parsed: &[ParsedCommand],
+    parsed: &[parser::ParsedCommand],
     has_parse_errors: bool,
     cwd: &str,
     cwd_path: &PathBuf,
@@ -432,106 +434,17 @@ fn evaluate_compound(
     command_defs: &CommandDefinitions,
     nickel_config: &mut NickelConfig,
 ) -> HookOutput {
-    // If parsing had errors, be conservative and ask
-    if has_parse_errors {
-        return HookOutput::ask_with_reason("Command contains unparseable constructs");
-    }
+    let mut evaluator = CommandEvaluator::new(engine, command_defs, nickel_config);
 
-    for cmd in parsed {
-        // Tokenize this individual command
-        let tokens = match tokenizer::tokenize(&cmd.text) {
-            Ok(t) if !t.is_empty() => t,
-            _ => continue, // Skip empty/invalid
-        };
+    let context = EvaluationContext {
+        cwd,
+        cwd_path,
+        session_id,
+        project_root_str: project_root,
+        project_root_path: project_root_path.map(|p| p.as_path()),
+    };
 
-        // Extract from wrappers
-        let extracted = extract_command(&tokens, Some(nickel_config));
-        if extracted.command.is_empty() {
-            continue;
-        }
-
-        // Expand flags
-        let flags_expanded = expand_flags(&extracted.command);
-
-        // Detect paths
-        let paths = detect_paths(&extracted.command, cwd_path);
-
-        // Resolve the command binary and trust zone
-        let resolved = if !extracted.command.is_empty() {
-            resolve_command(&extracted.command[0], project_root_path.map(|p| p.as_path()))
-        } else {
-            resolve_command("", None)
-        };
-
-        // Parse command for structured flags and args
-        let parsed_cmd = if !extracted.command.is_empty() {
-            command_parser::parse_command(
-                &extracted.command,
-                command_defs,
-                project_root_path.map(|p| p.as_path()),
-            )
-        } else {
-            command_parser::ParsedCommand {
-                parsed_flags: std::collections::HashMap::new(),
-                positional_args: vec![],
-                subcommand: None,
-            }
-        };
-
-        // Serialize to JSON for PolicyInput
-        let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
-        let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
-        let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
-
-        // Build policy input with chain info
-        let policy_input = PolicyInput {
-            tool: "Bash".to_string(),
-            raw_command: cmd.text.clone(),
-            command: extracted.command,
-            wrapper_chain: extracted.wrapper_chain,
-            flags_expanded,
-            paths,
-            cwd: cwd.to_string(),
-            project_root: project_root.to_string(),
-            session_id: session_id.to_string(),
-            chain_position: Some(cmd.position),
-            chain_length: Some(cmd.chain_length),
-            chain_operator: cmd.next_operator.clone(),
-            command_as_typed: Some(resolved.command_as_typed),
-            binary_name: Some(resolved.binary_name),
-            resolved_path: resolved.resolved_path,
-            resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
-            is_symlink: Some(resolved.is_symlink),
-            symlink_source: resolved.symlink_source,
-            parsed_flags: parsed_flags_json,
-            positional_args: positional_args_json,
-            positional: positional_map_json,
-            subcommand: parsed_cmd.subcommand,
-        };
-
-        // Evaluate
-        let result = engine.evaluate(&policy_input);
-
-        // Short-circuit on non-allow
-        match result.decision {
-            output::Decision::Allow => continue,
-            output::Decision::Deny => {
-                let reason = result.reason.unwrap_or_else(|| {
-                    format!("Denied at command {} of {}", cmd.position + 1, cmd.chain_length)
-                });
-                return HookOutput::deny(&reason);
-            }
-            output::Decision::Ask => {
-                let reason = result.reason.unwrap_or_else(|| {
-                    format!("Review needed for command {} of {}", cmd.position + 1, cmd.chain_length)
-                });
-                return HookOutput::ask_with_reason(&reason);
-            }
-        }
-    }
-
-    // All commands allowed
-    HookOutput::new(output::Decision::Allow, None)
+    evaluator.evaluate_compound(parsed, has_parse_errors, &context)
 }
 
 fn run_hook_inner() -> Result<HookOutput, String> {

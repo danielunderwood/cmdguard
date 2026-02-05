@@ -1,13 +1,8 @@
 use crate::command_defs::CommandDefinitions;
-use crate::command_parser;
-use crate::extractor::extract_command;
-use crate::flags::expand_flags;
+use crate::command_evaluator::{CommandEvaluator, EvaluationContext};
 use crate::nickel_config::NickelConfig;
 use crate::output::Decision;
-use crate::paths::detect_paths;
-use crate::policy::{PolicyEngine, PolicyInput};
-use crate::resolver::resolve_command;
-use crate::tokenizer::tokenize;
+use crate::policy::PolicyEngine;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -115,85 +110,26 @@ impl TestRunner {
             };
         }
 
-        // Evaluate each command, short-circuit on non-allow
+        // Set up evaluation context
         let cwd_path = PathBuf::from(&test.cwd);
+        let context = EvaluationContext {
+            cwd: &test.cwd,
+            cwd_path: &cwd_path,
+            session_id: "test",
+            project_root_str: &test.cwd,
+            project_root_path: None,
+        };
 
+        // Create evaluator with shared logic
+        let mut evaluator = CommandEvaluator::new(
+            &mut self.engine,
+            &self.command_defs,
+            &mut self.nickel_config,
+        );
+
+        // Evaluate each command, short-circuit on non-allow
         for cmd in &parse_result.commands {
-            let tokens = match tokenize(&cmd.text) {
-                Ok(t) => t,
-                Err(e) => {
-                    return TestResult {
-                        name: test.name.clone(),
-                        passed: false,
-                        expected: test.expect,
-                        actual: Decision::Ask,
-                        reason: None,
-                        error: Some(format!("Tokenize error: {}", e)),
-                    }
-                }
-            };
-
-            if tokens.is_empty() {
-                continue;
-            }
-
-            let extracted = extract_command(&tokens, Some(&mut self.nickel_config));
-            if extracted.command.is_empty() {
-                continue;
-            }
-
-            let flags_expanded = expand_flags(&extracted.command);
-            let paths = detect_paths(&extracted.command, &cwd_path);
-
-            // Resolve the command binary and trust zone
-            let resolved = if !extracted.command.is_empty() {
-                resolve_command(&extracted.command[0], None)
-            } else {
-                resolve_command("", None)
-            };
-
-            // Parse command for structured flags and args
-            let parsed_cmd = if !extracted.command.is_empty() {
-                command_parser::parse_command(&extracted.command, &self.command_defs, None)
-            } else {
-                command_parser::ParsedCommand {
-                    parsed_flags: std::collections::HashMap::new(),
-                    positional_args: vec![],
-                    subcommand: None,
-                }
-            };
-
-            // Serialize to JSON for PolicyInput
-            let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
-            let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
-            let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
-
-            let policy_input = PolicyInput {
-                tool: "Bash".to_string(),
-                raw_command: cmd.text.clone(),
-                command: extracted.command,
-                wrapper_chain: extracted.wrapper_chain,
-                flags_expanded,
-                paths,
-                cwd: test.cwd.clone(),
-                project_root: test.cwd.clone(),
-                session_id: "test".to_string(),
-                chain_position: Some(cmd.position),
-                chain_length: Some(cmd.chain_length),
-                chain_operator: cmd.next_operator.clone(),
-                command_as_typed: Some(resolved.command_as_typed),
-                binary_name: Some(resolved.binary_name),
-                resolved_path: resolved.resolved_path,
-                resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
-                is_symlink: Some(resolved.is_symlink),
-                symlink_source: resolved.symlink_source,
-                parsed_flags: parsed_flags_json,
-                positional_args: positional_args_json,
-                positional: positional_map_json,
-                subcommand: parsed_cmd.subcommand,
-            };
-
-            let result = self.engine.evaluate(&policy_input);
+            let result = evaluator.evaluate_single(cmd, &context);
 
             // Short-circuit on non-allow
             if result.decision != Decision::Allow {
