@@ -1,27 +1,109 @@
 # Example Nickel configuration for claude-permissions
 #
-# This file shows how to define custom wrapper extractors.
+# This file shows how to define custom wrapper extractors and command definitions.
 # To use: copy to ~/.config/claude-permissions/commands.ncl
 #
 # Wrapper extract functions take an array of tokens and return either:
 #   - { remaining = [...], wrapper_name = "..." } to extract a wrapper
 #   - null if this isn't a wrapper invocation
 
+# Helper: extract wrapper when command matches "cmd <arg> ..."
+let extract_after = fun tokens arg =>
+  let len = std.array.length tokens in
+  let command = std.array.at 0 tokens in
+  if len >= 3 && std.array.at 1 tokens == arg then
+    { remaining = std.array.slice 2 len tokens, wrapper_name = "%{command} %{arg}" }
+  else
+    null
+in
+
+# Helper: find index of element in array (returns null if not found)
+let find_index = fun arr elem =>
+  let len = std.array.length arr in
+  let go = fun idx =>
+    if idx >= len then
+      null
+    else if std.array.at idx arr == elem then
+      idx
+    else
+      go (idx + 1)
+  in
+  go 0
+in
+
 {
   wrappers = {
-    # Example: Custom tool that wraps other commands
-    # Usage: my_tool run <command>
-    my_tool = {
-      extract = fun tokens =>
-        let len = std.array.length tokens in
-        if len >= 3 && std.array.at 1 tokens == "run" then
-          { remaining = std.array.slice 2 len tokens, wrapper_name = "my_tool run" }
-        else
-          null
+    # =========================================================================
+    # Simple "run" subcommand wrappers
+    # =========================================================================
+    # These treat "cmd run <rest>" as a wrapper around <rest>
+
+    uv = {
+      extract = fun tokens => extract_after tokens "run"
     },
 
-    # Example: Flatpak wrapper
-    # Usage: flatpak run <app-id> [command]
+    # poetry run pytest -v  ->  wrapper="poetry run", command=["pytest", "-v"]
+    # (Note: poetry is also handled by built-in extractor)
+    # poetry = {
+    #   extract = fun tokens => extract_after tokens "run"
+    # },
+
+    # =========================================================================
+    # Handling `--` passthrough for runner commands
+    # =========================================================================
+    #
+    # Commands like `cargo run`, `npm run`, `go run` execute other programs.
+    # The `--` delimiter separates the runner's args from args passed to
+    # the executed program:
+    #
+    #   cargo run --release -- --help    # --help goes to your binary
+    #   npm run build -- --watch         # --watch goes to the build script
+    #
+    # For permission purposes, we often want to know what's being executed.
+    # This wrapper extracts everything after `--` as the "inner command".
+    #
+    # Note: This is optional - without this wrapper, `cargo run -- rm -rf /`
+    # would be evaluated as a `cargo` command, which may be sufficient for
+    # most policies. Define this wrapper if you need to inspect the inner
+    # command specifically.
+
+    # cargo = {
+    #   extract = fun tokens =>
+    #     let len = std.array.length tokens in
+    #     # Check for `cargo run` pattern
+    #     if len >= 2 && std.array.at 1 tokens == "run" then
+    #       # Find `--` delimiter
+    #       let dash_idx = find_index tokens "--" in
+    #       if dash_idx != null && dash_idx + 1 < len then
+    #         # Extract everything after `--` as the inner command
+    #         { remaining = std.array.slice (dash_idx + 1) len tokens,
+    #           wrapper_name = "cargo run" }
+    #       else
+    #         # No inner command after `--`, treat as regular cargo run
+    #         null
+    #     else
+    #       null
+    # },
+
+    # npm = {
+    #   extract = fun tokens =>
+    #     let len = std.array.length tokens in
+    #     if len >= 2 && std.array.at 1 tokens == "run" then
+    #       let dash_idx = find_index tokens "--" in
+    #       if dash_idx != null && dash_idx + 1 < len then
+    #         { remaining = std.array.slice (dash_idx + 1) len tokens,
+    #           wrapper_name = "npm run" }
+    #       else
+    #         null
+    #     else
+    #       null
+    # },
+
+    # =========================================================================
+    # Complex wrapper examples
+    # =========================================================================
+
+    # Flatpak: flatpak run <app-id> [command]
     flatpak = {
       extract = fun tokens =>
         let len = std.array.length tokens in
@@ -32,8 +114,7 @@
           null
     },
 
-    # Example: SSH wrapper (simplified - skips first arg as host)
-    # Usage: ssh user@host <command>
+    # SSH (simplified): ssh <host> <command...>
     ssh = {
       extract = fun tokens =>
         let len = std.array.length tokens in
@@ -44,8 +125,7 @@
           null
     },
 
-    # Example: Override built-in sudo with custom logic
-    # This shows how to intercept before the built-in
+    # Override built-in sudo with custom logic
     # sudo = {
     #   extract = fun tokens =>
     #     let len = std.array.length tokens in
@@ -54,38 +134,19 @@
     # },
   },
 
-  # Command definitions can also be customized here
-  # These are merged with built-in definitions (not replaced)
-  commands = {
-    # Example: Add subcommands to built-in git
-    # This extends the existing git definition, adding new subcommands
-    git = {
-      subcommands = {
-        # Add git stash support
-        stash = {
-          flags = {
-            push = { long = "--push", type = "boolean" },
-            pop = { long = "--pop", type = "boolean" },
-          },
-          positional = [],
-        },
-        # Add git rebase support
-        rebase = {
-          flags = {
-            interactive = { short = ["-i"], long = "--interactive", type = "boolean" },
-            abort = { long = "--abort", type = "boolean" },
-            continue = { long = "--continue", type = "boolean" },
-          },
-          positional = [],
-        },
-      },
-    },
+  # ===========================================================================
+  # Command definitions
+  # ===========================================================================
+  # These supplement the built-in definitions for command parsing.
+  # Define flags and positional args so policies can inspect parsed values.
 
+  commands = {
     # Example: Define flags for a custom tool
     my_custom_tool = {
       flags = {
         verbose = { short = ["-v"], long = "--verbose", type = "boolean" },
         output = { short = ["-o"], long = "--output", type = "with_arg" },
+        header = { short = ["-H"], type = "repeatable" },  # Can appear multiple times
       },
       positional = [
         { name = "input", type = "path", variadic = false },
@@ -93,23 +154,38 @@
       ],
     },
 
-    # Example: curl with repeatable headers
-    # The "repeatable" type collects multiple occurrences into an array
+    # Add subcommands to existing commands
+    git.subcommands = {
+      rev-parse = {
+        flags = {},
+        positional = [
+          { name = "revision", type = "string", variadic = false }
+        ]
+      },
+      show = {},
+      ls-tree = {},
+      fetch = {}
+    },
+
+    # Example: curl with repeatable -H flag for multiple headers
     curl = {
       flags = {
         silent = { short = ["-s"], type = "boolean" },
-        header = { short = ["-H"], long = "--header", type = "repeatable" },
-        data = { short = ["-d"], long = "--data", type = "with_arg" },
+        user = { short = ["-u"], type = "with_arg" },
+        header = { short = ["-H"], type = "repeatable" },
+        format = { short = "-w", type = "with_arg" }
       },
       positional = [
-        { name = "url", type = "string" },
-      ],
-    },
+        { name = "url", type = "string", variadic = false, last = true }
+      ]
+    }
   },
 
-  # Global parsing defaults (optional - these are the defaults)
+  # ===========================================================================
+  # Global parsing defaults
+  # ===========================================================================
   defaults = {
-    combine_short_flags = true,
-    double_dash_ends_flags = true,
+    combine_short_flags = true,      # -abc expands to -a -b -c
+    double_dash_ends_flags = true,   # -- stops flag parsing
   },
 }
