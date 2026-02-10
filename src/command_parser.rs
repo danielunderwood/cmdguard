@@ -1,3 +1,4 @@
+use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -426,6 +427,11 @@ fn parse_short_flag(
         }
     }
 
+    // Try claim patterns for unknown flags (e.g., -30 -> lines: "30")
+    if let Some((name, value)) = try_claim_pattern(arg, flags) {
+        return (0, Some(name), FlagValue::String(value), false);
+    }
+
     // Unknown flag, skip it
     (0, None, FlagValue::Bool(false), false)
 }
@@ -455,6 +461,30 @@ fn match_flag_by_short<'a>(
     for (name, def) in flags {
         if def.short.contains(&short_form.to_string()) {
             return Some((name.clone(), def));
+        }
+    }
+    None
+}
+
+/// Try to match an unknown flag against claim_patterns
+/// Returns (flag_name, captured_value) if a pattern matches
+fn try_claim_pattern(
+    flag: &str,
+    flags: &HashMap<String, FlagDef>,
+) -> Option<(String, String)> {
+    for (name, def) in flags {
+        if let Some(pattern) = &def.claim_pattern {
+            // Compile the regex (in production, we'd cache this)
+            if let Ok(re) = Regex::new(pattern) {
+                if let Some(caps) = re.captures(flag) {
+                    // Use first capture group if present, otherwise whole match
+                    let value = caps.get(1)
+                        .or_else(|| caps.get(0))
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default();
+                    return Some((name.clone(), value));
+                }
+            }
         }
     }
     None
@@ -752,6 +782,7 @@ mod tests {
             short: short.iter().map(|s| s.to_string()).collect(),
             long: long.map(|s| s.to_string()),
             flag_type,
+            claim_pattern: None,
         }
     }
 
@@ -1076,6 +1107,7 @@ mod tests {
             short: vec!["-H".to_string()],
             long: Some("--header".to_string()),
             flag_type: FlagType::Repeatable,
+            claim_pattern: None,
         });
         commands.insert("curl".to_string(), CommandDef {
             flags,
@@ -1120,6 +1152,7 @@ mod tests {
             short: vec!["-H".to_string()],
             long: None,
             flag_type: FlagType::Repeatable,
+            claim_pattern: None,
         });
         commands.insert("curl".to_string(), CommandDef {
             flags,
@@ -1167,5 +1200,40 @@ mod tests {
 
         assert_eq!(result.subcommand, Some("install".to_string()));
         assert_eq!(result.parsed_flags.get("save_dev"), Some(&FlagValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_claim_pattern_numeric_flag() {
+        use crate::command_defs::{CommandDef, FlagDef, ParsingOptions};
+
+        // Create a command with claim_pattern for -NUM syntax (like tail -30)
+        let mut commands = HashMap::new();
+        let mut flags = HashMap::new();
+        flags.insert("lines".to_string(), FlagDef {
+            short: vec!["-n".to_string()],
+            long: Some("--lines".to_string()),
+            flag_type: FlagType::WithArg,
+            claim_pattern: Some("^-(\\d+)$".to_string()),
+        });
+        commands.insert("tail".to_string(), CommandDef {
+            flags,
+            positional: vec![],
+            subcommands: HashMap::new(),
+            is_wrapper: false,
+            parsing: ParsingOptions {
+                combine_short_flags: false, // Important for -30 not to become -3 -0
+                double_dash_ends_flags: true,
+            },
+        });
+
+        let defs = CommandDefinitions::from_map(commands);
+
+        // Test -30 gets parsed as lines: "30"
+        let result = parse_command(&vec!["tail".to_string(), "-30".to_string()], &defs, None);
+        assert_eq!(result.parsed_flags.get("lines"), Some(&FlagValue::String("30".to_string())));
+
+        // Test -n 50 still works normally
+        let result2 = parse_command(&vec!["tail".to_string(), "-n".to_string(), "50".to_string()], &defs, None);
+        assert_eq!(result2.parsed_flags.get("lines"), Some(&FlagValue::String("50".to_string())));
     }
 }

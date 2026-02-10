@@ -583,10 +583,16 @@ impl NickelConfig {
             _ => FlagType::Boolean,
         };
 
+        // Parse claim_pattern for capturing unknown flags (e.g., -NUM syntax)
+        let claim_pattern = record
+            .value_by_name("claim_pattern")
+            .and_then(|e| e.to_serde::<String>().ok());
+
         Some(FlagDef {
             short,
             long,
             flag_type,
+            claim_pattern,
         })
     }
 

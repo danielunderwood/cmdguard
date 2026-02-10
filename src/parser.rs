@@ -97,8 +97,26 @@ fn extract_commands_recursive(
 ) {
     match node.kind() {
         // Redirected statement: command with redirects (e.g., echo foo >> file)
-        // We want to capture the full text including redirects
+        // Extract only the command part, excluding redirects like 2>&1
         "redirected_statement" => {
+            // Find the command child node and extract just that
+            for i in 0..node.child_count() as u32 {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "command" || child.kind() == "simple_command" {
+                        let text = node_text(&child, source);
+                        if !text.trim().is_empty() {
+                            commands.push(ParsedCommand {
+                                text: text.trim().to_string(),
+                                position: commands.len(),
+                                chain_length: 0, // Will be updated later
+                                next_operator: None,
+                            });
+                        }
+                        return; // Don't recurse further
+                    }
+                }
+            }
+            // Fallback: if no command child found, use full text
             let text = node_text(node, source);
             if !text.trim().is_empty() {
                 commands.push(ParsedCommand {
@@ -304,12 +322,25 @@ mod tests {
     }
 
     #[test]
-    fn test_redirect_preserved() {
+    fn test_redirect_excluded() {
         let result = parse_command("echo '.gitignore' >> .gitignore && git add .");
         assert!(!result.has_errors);
         assert_eq!(result.commands.len(), 2);
-        // Redirect should be part of first command
-        assert!(result.commands[0].text.contains(">>"));
+        // Redirect should NOT be part of command text (handled separately by shell)
+        assert!(!result.commands[0].text.contains(">>"));
+        assert_eq!(result.commands[0].text, "echo '.gitignore'");
+        assert_eq!(result.commands[1].text, "git add .");
+    }
+
+    #[test]
+    fn test_stderr_redirect_excluded() {
+        let result = parse_command("python -m pytest 2>&1 | tail -30");
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        // 2>&1 should not appear in command text
+        assert!(!result.commands[0].text.contains("2>&1"));
+        assert_eq!(result.commands[0].text, "python -m pytest");
+        assert_eq!(result.commands[1].text, "tail -30");
     }
 
     #[test]

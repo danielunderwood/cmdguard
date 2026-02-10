@@ -34,6 +34,10 @@ pub struct FlagDef {
     /// Flag type
     #[serde(rename = "type")]
     pub flag_type: FlagType,
+    /// Regex pattern to claim unknown flags (e.g., "^-(\\d+)$" for -NUM syntax)
+    /// First capture group becomes the flag value
+    #[serde(default)]
+    pub claim_pattern: Option<String>,
 }
 
 /// Definition for a positional argument
@@ -188,6 +192,7 @@ mod tests {
             short: short.iter().map(|s| s.to_string()).collect(),
             long: long.map(|s| s.to_string()),
             flag_type,
+            claim_pattern: None,
         }
     }
 

@@ -81,6 +81,20 @@ let stubs = fun names =>
 in
 
 # =============================================================================
+# Common Flags (reusable across commands)
+# =============================================================================
+
+let common = {
+  verbose = bool_flag "-v" "--verbose",
+  quiet = bool_flag "-q" "--quiet",
+  help = bool_flag "-h" "--help",
+  version = bool_flag "-V" "--version",
+  force = bool_flag "-f" "--force",
+  recursive = bool_flag ["-r", "-R"] "--recursive",
+}
+in
+
+# =============================================================================
 # Command Definitions
 # =============================================================================
 
@@ -166,6 +180,26 @@ in
         human_readable = bool_flag "-h" "--human-readable",
       },
       positional = [{ name = "paths", type = "path", variadic = true, optional = true }],
+    },
+
+    # head/tail support legacy -NUM syntax (e.g., tail -30)
+    # Disable short flag combining so -30 isn't expanded to -3 -0
+    head = {
+      parsing = { combine_short_flags = false },
+      flags = {
+        # lines supports legacy -NUM syntax (e.g., -30 means -n 30)
+        lines = arg_flag "-n" "--lines" & { claim_pattern = "^-(\\d+)$" },
+        bytes = arg_flag "-c" "--bytes",
+        quiet = common.quiet,
+        verbose = common.verbose,
+      },
+      positional = [{ name = "files", type = "path", variadic = true, optional = true }],
+    },
+
+    tail = head & {
+      flags = head.flags & {
+        follow = bool_flag "-f" "--follow",
+      },
     },
 
     # -------------------------------------------------------------------------
