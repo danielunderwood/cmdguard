@@ -52,6 +52,12 @@ pub enum Commands {
         policy_dir: Option<PathBuf>,
     },
 
+    /// Analyze Python code for dangerous patterns (for debugging)
+    AnalyzePython {
+        /// Python code to analyze
+        code: String,
+    },
+
     /// Print version information
     Version,
 }

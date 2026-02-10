@@ -11,6 +11,7 @@ mod output;
 mod parser;
 mod paths;
 mod policy;
+mod python_analyzer;
 mod resolver;
 mod test_runner;
 mod tokenizer;
@@ -56,6 +57,9 @@ fn main() {
         }
         Some(Commands::Validate { policy_dir }) => {
             run_validate(policy_dir);
+        }
+        Some(Commands::AnalyzePython { code }) => {
+            run_analyze_python(&code);
         }
         Some(Commands::Version) => {
             println!("claude-permissions {}", env!("CARGO_PKG_VERSION"));
@@ -107,6 +111,33 @@ fn run_validate(policy_dir: Option<PathBuf>) {
         println!();
         println!("Config has errors.");
         std::process::exit(1);
+    }
+}
+
+fn run_analyze_python(code: &str) {
+    match python_analyzer::analyze(code) {
+        Ok(result) => {
+            println!("=== Python Analysis ===");
+            println!("Code: {}", code);
+            println!();
+            println!("Imports found: {:?}", result.imports);
+            println!();
+
+            if result.dangerous_patterns.is_empty() {
+                println!("Dangerous patterns: none");
+            } else {
+                println!("Dangerous patterns:");
+                for pattern in &result.dangerous_patterns {
+                    println!("  - {} at line {}:{}", pattern.kind, pattern.line, pattern.column);
+                }
+            }
+            println!();
+            println!("Safe for inspection mode: {}", result.is_inspection_safe);
+        }
+        Err(e) => {
+            eprintln!("Error analyzing Python code: {}", e);
+            std::process::exit(1);
+        }
     }
 }
 
