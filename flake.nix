@@ -23,6 +23,8 @@
         devShells.default = pkgs.mkShell {
           buildInputs = [
             pkgs.cargo
+            pkgs.nickel
+            pkgs.nls
             pkgs.rustc
             pkgs.rust-analyzer
             pkgs.clippy

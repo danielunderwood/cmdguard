@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DetectedPath {
@@ -66,6 +66,7 @@ fn resolve_path(raw: &str, cwd: &Path) -> DetectedPath {
 mod tests {
     use super::*;
     use std::env;
+    use std::path::PathBuf;
 
     fn to_vec(s: &[&str]) -> Vec<String> {
         s.iter().map(|s| s.to_string()).collect()

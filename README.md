@@ -4,10 +4,14 @@ A PreToolUse hook for Claude Code that provides policy-driven permission control
 
 ## Features
 
-- **Wrapper extraction**: Recognizes commands through `nix develop`, `docker run`, `sudo`, etc.
-- **Policy-based decisions**: Allow, deny, or ask based on Rego rules
-- **Flag normalization**: `-rf` treated same as `-r -f`
-- **Path awareness**: Detect and resolve paths in commands
+- **Wrapper extraction**: Recognizes commands through `nix develop`, `docker run`, `sudo`, inline env vars, etc.
+- **Policy-based decisions**: Allow, deny, or ask based on Rego rules with priority
+- **Compound command parsing**: Handles `&&`, `||`, `;`, `|` chains safely
+- **Trust zones**: Classify binaries as system, user, project, or unknown
+- **Parsed flags**: Access flags by name (e.g., `input.parsed_flags.force`) instead of string matching
+- **Path-typed arguments**: Positional args with paths are resolved and classified
+- **Project-local rules**: Per-project policies in `.claude/permissions/`
+- **Configurable via Nickel**: Define custom wrappers and command schemas
 - **Fail-safe**: Defaults to `ask` on any error
 
 ## Installation
@@ -95,30 +99,58 @@ All `.rego` files in the directory are loaded and merged automatically.
 
 ## Writing Policies
 
+Policies use named rules with priority-based resolution:
+
 ```rego
 package claude.permissions
 
 import data.claude.permissions.stdlib
 
-default decision = "ask"
-
-# Allow git status
-decision = "allow" {
-    input.command[0] == "git"
-    stdlib.git_subcommand == "status"
+# Safe git read operations
+rules["safe_git_read"] := {
+    "decision": "allow",
+    "reason": "Safe git read operation",
+} if {
+    input.binary_name == "git"
+    input.subcommand in {"status", "log", "diff", "branch", "show"}
 }
 
-# Deny force push
-decision = "deny" {
-    input.command[0] == "git"
-    stdlib.git_subcommand == "push"
-    "--force" in input.command
+# Block force push
+rules["deny_force_push"] := {
+    "decision": "deny",
+    "reason": "Force push to protected branch blocked",
+    "priority": 100,  # Higher priority overrides allows
+} if {
+    input.binary_name == "git"
+    input.subcommand == "push"
+    input.parsed_flags.force
 }
 
-reason = "Force push blocked" {
-    decision == "deny"
+# Block rm outside project
+rules["deny_rm_outside_project"] := {
+    "decision": "deny",
+    "reason": "Cannot rm files outside project",
+} if {
+    input.binary_name == "rm"
+    some target in input.positional.targets
+    target.trust_zone != "project"
 }
 ```
+
+### Priority System
+
+When multiple rules match, highest priority wins. Default priorities:
+
+| Source  | Decision | Default Priority |
+|---------|----------|------------------|
+| Global  | deny     | 100              |
+| Project | deny     | 75               |
+| Global  | ask      | 50               |
+| Project | ask      | 40               |
+| Global  | allow    | 25               |
+| Project | allow    | 20               |
+
+Override with explicit `"priority": N` in a rule.
 
 ## Policy Input
 
@@ -127,16 +159,123 @@ Your policies receive this input:
 ```json
 {
   "tool": "Bash",
-  "raw_command": "nix develop --command git status",
-  "command": ["git", "status"],
-  "wrapper_chain": ["nix develop"],
-  "flags_expanded": [],
-  "paths": [],
+  "raw_command": "sudo -u postgres rm -rf ./temp",
+  "command": ["rm", "-rf", "./temp"],
+  "wrapper_chain": ["sudo"],
+  "flags_expanded": ["-r", "-f"],
+  "paths": [{"raw": "./temp", "resolved": "/project/temp", "exists": true, "is_dir": true}],
   "cwd": "/home/user/project",
   "project_root": "/home/user/project",
-  "session_id": "abc123"
+  "session_id": "abc123",
+
+  "binary_name": "rm",
+  "resolved_path": "/bin/rm",
+  "resolved_trust_zone": "system",
+  "is_symlink": false,
+
+  "parsed_flags": {
+    "recursive": true,
+    "force": true
+  },
+  "positional_args": [
+    {"name": "targets", "values": [{"raw": "./temp", "resolved": "/project/temp", "trust_zone": "project"}]}
+  ],
+  "positional": {
+    "targets": [{"raw": "./temp", "resolved": "/project/temp", "trust_zone": "project"}]
+  },
+  "subcommand": null,
+
+  "chain_position": 1,
+  "chain_length": 1,
+  "chain_operator": null
 }
 ```
+
+### Trust Zones
+
+Binaries are classified by location:
+
+- `system` - `/usr/bin`, `/bin`, `/usr/local/bin`, Nix store, Homebrew
+- `user` - `~/.local/bin`, `~/.cargo/bin`, `~/bin`
+- `project` - Under `$PROJECT_ROOT`
+- `unknown` - Resolution failed or not in any known zone
+
+### Parsed Flags
+
+Instead of string matching (`"-rf" in input.command`), use structured access:
+
+```rego
+# Old way (fragile)
+dangerous if "-rf" in input.command
+
+# New way (robust)
+dangerous if {
+    input.parsed_flags.recursive
+    input.parsed_flags.force
+}
+```
+
+Flag definitions come from built-in command schemas and can be extended via Nickel config.
+
+## Project-Local Rules
+
+Add project-specific policies in `.claude/permissions/`:
+
+```
+my-project/
+  .claude/
+    permissions/
+      project.rego    # Project-specific rules
+```
+
+Project rules merge with global rules via priority. To allow something globally denied:
+
+```rego
+rules["allow_npm_scripts"] := {
+    "decision": "allow",
+    "reason": "NPM scripts allowed in this project",
+    "priority": 101,  # Override global deny (100)
+} if {
+    input.binary_name == "npm"
+    input.subcommand == "run"
+}
+```
+
+## Nickel Configuration
+
+Custom wrappers and command definitions go in `~/.config/claude-permissions/commands.ncl`:
+
+```nickel
+{
+  wrappers = {
+    # Define custom wrapper extraction
+    my_runner = {
+      extract = fun tokens =>
+        if std.array.length tokens >= 3 && std.array.at 1 tokens == "run" then
+          { remaining = std.array.slice 2 (std.array.length tokens) tokens,
+            wrapper_name = "my_runner run" }
+        else
+          null
+    },
+  },
+
+  commands = {
+    # Define flags and positional args for parsing
+    my_tool = {
+      flags = {
+        verbose = { short = ["-v"], long = "--verbose", type = "boolean" },
+        output = { short = ["-o"], long = "--output", type = "with_arg" },
+      },
+      positional = [
+        { name = "input", type = "path" },
+        { name = "targets", type = "path", variadic = true },
+      ],
+    },
+  },
+}
+```
+
+See `config/commands.ncl.example` for more examples.
 
 ## Testing Policies
 
@@ -174,6 +313,19 @@ Evaluate a single command:
 ```bash
 claude-permissions eval "git status"
 claude-permissions eval "nix develop --command cargo build"
+claude-permissions eval "RUST_LOG=debug cargo run"
+```
+
+Show full policy input (useful for writing Rego rules):
+
+```bash
+claude-permissions eval "rm -rf ./temp" --show-input
+```
+
+Validate Nickel configuration:
+
+```bash
+claude-permissions validate
 ```
 
 Enable logging:

@@ -15,6 +15,9 @@ rules["safe_command"] := {
 	"priority": 25,
 } if {
 	input.command[0] in {
+		# Ad-hoc commands
+		"./scripts/run_postgres_tests.sh",
+		# Normal commands
 		"basename",
 		"cat",
 		# This could be debated
@@ -31,8 +34,12 @@ rules["safe_command"] := {
 		"jq",
 		"ls",
 		"mkdir",
+		"paste",
 		"printenv",
+		"pwd",
+		"read",
 		"rg",
+		"sed",
 		"sleep",
 		"sort",
 		"tail",
@@ -41,6 +48,7 @@ rules["safe_command"] := {
 		"uniq",
 		"wc",
 		"which",
+		"xxd",
 	}
 }
 
@@ -51,6 +59,7 @@ rules["unknown_binary_caution"] := {
 	"priority": 45,
 } if {
 	input.resolved_trust_zone == "unknown"
+
 	# Only apply to potentially dangerous commands
 	input.binary_name in {"rm", "chmod", "chown", "mv", "cp"}
 }
