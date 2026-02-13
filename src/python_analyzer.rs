@@ -3,8 +3,91 @@
 //! Uses tree-sitter queries to detect dangerous patterns in Python code.
 //! This enables inspection mode (safe readonly operations) vs execution mode
 //! (needs sandboxing).
+//!
+//! Patterns can be configured via config/python.ncl.
 
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+
+/// Configuration for Python analysis
+/// Can be loaded from python.ncl or use defaults
+#[derive(Debug, Clone)]
+pub struct PythonConfig {
+    pub dangerous_imports: Vec<String>,
+    pub dangerous_calls: Vec<String>,
+    pub file_operations: Vec<String>,
+}
+
+impl Default for PythonConfig {
+    fn default() -> Self {
+        Self {
+            dangerous_imports: vec![
+                "os".into(),
+                "subprocess".into(),
+                "socket".into(),
+                "shutil".into(),
+                "tempfile".into(),
+            ],
+            dangerous_calls: vec![
+                "eval".into(),
+                "exec".into(),
+                "compile".into(),
+                "__import__".into(),
+                "execfile".into(),
+            ],
+            file_operations: vec!["open".into(), "file".into()],
+        }
+    }
+}
+
+impl PythonConfig {
+    /// Build a tree-sitter query string from this config
+    pub fn build_dangerous_patterns_query(&self) -> String {
+        let imports_pattern = self.dangerous_imports.join("|");
+        let calls_pattern = self.dangerous_calls.join("|");
+        let file_ops_pattern = self.file_operations.join("|");
+
+        format!(
+            r#"
+; Dangerous imports
+(import_statement
+  name: (dotted_name) @dangerous_import
+  (#match? @dangerous_import "^({imports})$"))
+
+(import_from_statement
+  module_name: (dotted_name) @dangerous_import
+  (#match? @dangerous_import "^({imports})$"))
+
+; Dynamic execution functions
+(call
+  function: (identifier) @dynamic_exec
+  (#match? @dynamic_exec "^({calls})$"))
+
+; File operations
+(call
+  function: (identifier) @file_op
+  (#match? @file_op "^({file_ops})$"))
+
+; os.system, os.popen, etc.
+(call
+  function: (attribute
+    object: (identifier) @obj
+    attribute: (identifier) @method)
+  (#eq? @obj "os")
+  (#match? @method "^(system|popen|exec|execv|execve|spawn)"))
+
+; subprocess calls
+(call
+  function: (attribute
+    object: (identifier) @obj
+    attribute: (identifier) @method)
+  (#eq? @obj "subprocess"))
+"#,
+            imports = imports_pattern,
+            calls = calls_pattern,
+            file_ops = file_ops_pattern
+        )
+    }
+}
 
 /// Result of analyzing Python code
 #[derive(Debug)]
@@ -52,43 +135,6 @@ impl std::fmt::Display for DangerKind {
     }
 }
 
-/// Tree-sitter query for detecting dangerous patterns
-const DANGEROUS_PATTERNS_QUERY: &str = r#"
-; Dangerous imports
-(import_statement
-  name: (dotted_name) @dangerous_import
-  (#match? @dangerous_import "^(os|subprocess|socket|shutil|tempfile)$"))
-
-(import_from_statement
-  module_name: (dotted_name) @dangerous_import
-  (#match? @dangerous_import "^(os|subprocess|socket|shutil|tempfile)$"))
-
-; Dynamic execution functions
-(call
-  function: (identifier) @dynamic_exec
-  (#match? @dynamic_exec "^(eval|exec|compile|__import__|execfile)$"))
-
-; File operations
-(call
-  function: (identifier) @file_op
-  (#match? @file_op "^(open|file)$"))
-
-; os.system, os.popen, etc.
-(call
-  function: (attribute
-    object: (identifier) @obj
-    attribute: (identifier) @method)
-  (#eq? @obj "os")
-  (#match? @method "^(system|popen|exec|execv|execve|spawn)"))
-
-; subprocess calls
-(call
-  function: (attribute
-    object: (identifier) @obj
-    attribute: (identifier) @method)
-  (#eq? @obj "subprocess"))
-"#;
-
 /// Query for extracting all imports
 const IMPORTS_QUERY: &str = r#"
 ; Simple import: import foo
@@ -105,8 +151,13 @@ const IMPORTS_QUERY: &str = r#"
   module_name: (dotted_name) @import)
 "#;
 
-/// Analyze Python code for dangerous patterns
+/// Analyze Python code for dangerous patterns using default config
 pub fn analyze(code: &str) -> Result<PythonAnalysis, String> {
+    analyze_with_config(code, &PythonConfig::default())
+}
+
+/// Analyze Python code for dangerous patterns with custom config
+pub fn analyze_with_config(code: &str, config: &PythonConfig) -> Result<PythonAnalysis, String> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_python::LANGUAGE.into())
@@ -119,8 +170,11 @@ pub fn analyze(code: &str) -> Result<PythonAnalysis, String> {
     let root = tree.root_node();
     let source = code.as_bytes();
 
+    // Build query from config
+    let query_str = config.build_dangerous_patterns_query();
+
     // Find dangerous patterns
-    let dangerous_patterns = find_dangerous_patterns(&root, source)?;
+    let dangerous_patterns = find_dangerous_patterns(&root, source, &query_str)?;
 
     // Extract imports
     let imports = extract_imports(&root, source)?;
@@ -138,8 +192,9 @@ pub fn analyze(code: &str) -> Result<PythonAnalysis, String> {
 fn find_dangerous_patterns(
     root: &tree_sitter::Node,
     source: &[u8],
+    query_str: &str,
 ) -> Result<Vec<DangerousPattern>, String> {
-    let query = Query::new(&tree_sitter_python::LANGUAGE.into(), DANGEROUS_PATTERNS_QUERY)
+    let query = Query::new(&tree_sitter_python::LANGUAGE.into(), query_str)
         .map_err(|e| format!("Failed to compile query: {:?}", e))?;
 
     let mut cursor = QueryCursor::new();
@@ -318,6 +373,23 @@ open("file.txt")
     fn test_safe_type_check() {
         let code = r#"print(type(x).__name__)"#;
         let result = analyze(code).unwrap();
+        assert!(result.is_inspection_safe);
+    }
+
+    #[test]
+    fn test_custom_config() {
+        // With default config, 'os' is dangerous
+        let code = "import os";
+        let result = analyze(code).unwrap();
+        assert!(!result.is_inspection_safe);
+
+        // With custom config that doesn't include 'os', it's safe
+        let config = PythonConfig {
+            dangerous_imports: vec!["subprocess".into()],
+            dangerous_calls: vec!["eval".into()],
+            file_operations: vec!["open".into()],
+        };
+        let result = analyze_with_config(code, &config).unwrap();
         assert!(result.is_inspection_safe);
     }
 }
