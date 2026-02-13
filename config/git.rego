@@ -77,3 +77,29 @@ rules["clean_ignored"] := {
 	input.subcommand == "clean"
 	input.parsed_flags.ignored == true
 }
+
+rules["git_worktree"] := allowed("git worktree") if {
+	input.binary_name == "git"
+	input.subcommand == "worktree"
+	input.positional.subcommand[0].raw == "list"
+}
+
+is_git_branch if {
+	input.binary_name == "git"
+	input.subcommand == "branch"
+}
+
+git_branch_allowed_flag if "--show-current" in input.flags_expanded
+git_branch_allowed_flag if "-a" in input.flags_expanded
+
+# Just "git branch" or "git branch --list"
+git_branch_allowed_flag if {
+	is_git_branch
+	input.flags_expanded in {[], ["--list"]}
+	input.positional.args == []
+}
+
+rules["git_branch_readonly"] := allowed("git branch readonly") if {
+	is_git_branch
+	git_branch_allowed_flag
+}

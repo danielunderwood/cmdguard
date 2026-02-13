@@ -4,88 +4,59 @@
 //! This enables inspection mode (safe readonly operations) vs execution mode
 //! (needs sandboxing).
 //!
-//! Patterns can be configured via config/python.ncl.
+//! Queries are loaded from .scm files:
+//! - config/queries/python_dangerous.scm - dangerous pattern detection
+//! - config/queries/python_imports.scm - import extraction
+//!
+//! Users can override queries in ~/.config/claude-permissions/queries/
 
+use std::path::Path;
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
+/// Default dangerous patterns query (fallback if file not found)
+const DEFAULT_DANGEROUS_QUERY: &str = include_str!("../config/queries/python_dangerous.scm");
+
+/// Default imports query (fallback if file not found)
+const DEFAULT_IMPORTS_QUERY: &str = include_str!("../config/queries/python_imports.scm");
+
 /// Configuration for Python analysis
-/// Can be loaded from python.ncl or use defaults
 #[derive(Debug, Clone)]
 pub struct PythonConfig {
-    pub dangerous_imports: Vec<String>,
-    pub dangerous_calls: Vec<String>,
-    pub file_operations: Vec<String>,
+    /// Query for detecting dangerous patterns
+    pub dangerous_query: String,
+    /// Query for extracting imports
+    pub imports_query: String,
 }
 
 impl Default for PythonConfig {
     fn default() -> Self {
         Self {
-            dangerous_imports: vec![
-                "os".into(),
-                "subprocess".into(),
-                "socket".into(),
-                "shutil".into(),
-                "tempfile".into(),
-            ],
-            dangerous_calls: vec![
-                "eval".into(),
-                "exec".into(),
-                "compile".into(),
-                "__import__".into(),
-                "execfile".into(),
-            ],
-            file_operations: vec!["open".into(), "file".into()],
+            dangerous_query: DEFAULT_DANGEROUS_QUERY.to_string(),
+            imports_query: DEFAULT_IMPORTS_QUERY.to_string(),
         }
     }
 }
 
 impl PythonConfig {
-    /// Build a tree-sitter query string from this config
-    pub fn build_dangerous_patterns_query(&self) -> String {
-        let imports_pattern = self.dangerous_imports.join("|");
-        let calls_pattern = self.dangerous_calls.join("|");
-        let file_ops_pattern = self.file_operations.join("|");
+    /// Load config from a directory, with fallback to defaults
+    /// Looks for queries/*.scm files
+    #[allow(dead_code)] // Will be used when integrated with main policy flow
+    pub fn load(config_dir: &Path) -> Self {
+        let dangerous_query = Self::load_query(config_dir, "python_dangerous.scm")
+            .unwrap_or_else(|| DEFAULT_DANGEROUS_QUERY.to_string());
 
-        format!(
-            r#"
-; Dangerous imports
-(import_statement
-  name: (dotted_name) @dangerous_import
-  (#match? @dangerous_import "^({imports})$"))
+        let imports_query = Self::load_query(config_dir, "python_imports.scm")
+            .unwrap_or_else(|| DEFAULT_IMPORTS_QUERY.to_string());
 
-(import_from_statement
-  module_name: (dotted_name) @dangerous_import
-  (#match? @dangerous_import "^({imports})$"))
+        Self {
+            dangerous_query,
+            imports_query,
+        }
+    }
 
-; Dynamic execution functions
-(call
-  function: (identifier) @dynamic_exec
-  (#match? @dynamic_exec "^({calls})$"))
-
-; File operations
-(call
-  function: (identifier) @file_op
-  (#match? @file_op "^({file_ops})$"))
-
-; os.system, os.popen, etc.
-(call
-  function: (attribute
-    object: (identifier) @obj
-    attribute: (identifier) @method)
-  (#eq? @obj "os")
-  (#match? @method "^(system|popen|exec|execv|execve|spawn)"))
-
-; subprocess calls
-(call
-  function: (attribute
-    object: (identifier) @obj
-    attribute: (identifier) @method)
-  (#eq? @obj "subprocess"))
-"#,
-            imports = imports_pattern,
-            calls = calls_pattern,
-            file_ops = file_ops_pattern
-        )
+    fn load_query(config_dir: &Path, filename: &str) -> Option<String> {
+        let path = config_dir.join("queries").join(filename);
+        std::fs::read_to_string(&path).ok()
     }
 }
 
@@ -93,7 +64,7 @@ impl PythonConfig {
 #[derive(Debug)]
 pub struct PythonAnalysis {
     /// Detected dangerous patterns
-    pub dangerous_patterns: Vec<DangerousPattern>,
+    pub patterns: Vec<Pattern>,
     /// All imports found
     pub imports: Vec<String>,
     /// Whether the code appears safe for inspection mode
@@ -101,55 +72,19 @@ pub struct PythonAnalysis {
 }
 
 /// A dangerous pattern detected in the code
-#[derive(Debug)]
-pub struct DangerousPattern {
-    pub kind: DangerKind,
-    #[allow(dead_code)] // Used for reporting
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pattern {
+    /// The capture name from the tree-sitter query (e.g., "dangerous_import", "file_op")
+    /// This is passed through directly to allow flexible policy decisions
+    pub capture: String,
+    /// The matched text
     pub text: String,
+    /// Line number (1-indexed)
     pub line: usize,
-    #[allow(dead_code)] // Used for reporting
+    /// Column number (0-indexed)
     pub column: usize,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Variants will be used as detection expands
-pub enum DangerKind {
-    DangerousImport,
-    DangerousCall,
-    FileOperation,
-    NetworkOperation,
-    SubprocessOperation,
-    DynamicExecution,
-}
-
-impl std::fmt::Display for DangerKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DangerKind::DangerousImport => write!(f, "dangerous import"),
-            DangerKind::DangerousCall => write!(f, "dangerous call"),
-            DangerKind::FileOperation => write!(f, "file operation"),
-            DangerKind::NetworkOperation => write!(f, "network operation"),
-            DangerKind::SubprocessOperation => write!(f, "subprocess operation"),
-            DangerKind::DynamicExecution => write!(f, "dynamic execution"),
-        }
-    }
-}
-
-/// Query for extracting all imports
-const IMPORTS_QUERY: &str = r#"
-; Simple import: import foo
-(import_statement
-  name: (dotted_name) @import)
-
-; Aliased import: import foo as bar
-(import_statement
-  name: (aliased_import
-    name: (dotted_name) @import))
-
-; From import: from foo import bar
-(import_from_statement
-  module_name: (dotted_name) @import)
-"#;
 
 /// Analyze Python code for dangerous patterns using default config
 pub fn analyze(code: &str) -> Result<PythonAnalysis, String> {
@@ -170,30 +105,27 @@ pub fn analyze_with_config(code: &str, config: &PythonConfig) -> Result<PythonAn
     let root = tree.root_node();
     let source = code.as_bytes();
 
-    // Build query from config
-    let query_str = config.build_dangerous_patterns_query();
+    // Find dangerous patterns using query from config
+    let patterns = find_patterns(&root, source, &config.dangerous_query)?;
 
-    // Find dangerous patterns
-    let dangerous_patterns = find_dangerous_patterns(&root, source, &query_str)?;
-
-    // Extract imports
-    let imports = extract_imports(&root, source)?;
+    // Extract imports using query from config
+    let imports = extract_imports(&root, source, &config.imports_query)?;
 
     // Code is safe for inspection if no dangerous patterns found
-    let is_inspection_safe = dangerous_patterns.is_empty();
+    let is_inspection_safe = patterns.is_empty();
 
     Ok(PythonAnalysis {
-        dangerous_patterns,
+        patterns,
         imports,
         is_inspection_safe,
     })
 }
 
-fn find_dangerous_patterns(
+fn find_patterns(
     root: &tree_sitter::Node,
     source: &[u8],
     query_str: &str,
-) -> Result<Vec<DangerousPattern>, String> {
+) -> Result<Vec<Pattern>, String> {
     let query = Query::new(&tree_sitter_python::LANGUAGE.into(), query_str)
         .map_err(|e| format!("Failed to compile query: {:?}", e))?;
 
@@ -206,37 +138,19 @@ fn find_dangerous_patterns(
         for capture in m.captures {
             let node = capture.node;
             let capture_name = query.capture_names()[capture.index as usize];
+
+            // Skip anonymous captures (those starting with _)
+            if capture_name.starts_with('_') {
+                continue;
+            }
+
             let text = node.utf8_text(source).unwrap_or("").to_string();
             let start = node.start_position();
 
-            let kind = match capture_name {
-                "dangerous_import" => DangerKind::DangerousImport,
-                "dynamic_exec" => DangerKind::DynamicExecution,
-                "file_op" => DangerKind::FileOperation,
-                "obj" | "method" => {
-                    // For attribute access, we need to determine the kind
-                    // based on the object name
-                    let obj_text = if capture_name == "obj" {
-                        text.clone()
-                    } else {
-                        continue; // Skip method captures, we handle via obj
-                    };
-
-                    if obj_text == "os" {
-                        DangerKind::SubprocessOperation
-                    } else if obj_text == "subprocess" {
-                        DangerKind::SubprocessOperation
-                    } else {
-                        continue;
-                    }
-                }
-                _ => continue,
-            };
-
             // Avoid duplicates for the same location
-            if !patterns.iter().any(|p: &DangerousPattern| p.line == start.row + 1 && p.column == start.column) {
-                patterns.push(DangerousPattern {
-                    kind,
+            if !patterns.iter().any(|p: &Pattern| p.line == start.row + 1 && p.column == start.column) {
+                patterns.push(Pattern {
+                    capture: capture_name.to_string(),
                     text,
                     line: start.row + 1,
                     column: start.column,
@@ -251,8 +165,9 @@ fn find_dangerous_patterns(
 fn extract_imports(
     root: &tree_sitter::Node,
     source: &[u8],
+    query_str: &str,
 ) -> Result<Vec<String>, String> {
-    let query = Query::new(&tree_sitter_python::LANGUAGE.into(), IMPORTS_QUERY)
+    let query = Query::new(&tree_sitter_python::LANGUAGE.into(), query_str)
         .map_err(|e| format!("Failed to compile imports query: {:?}", e))?;
 
     let mut cursor = QueryCursor::new();
@@ -288,7 +203,7 @@ print(pd.DataFrame.__doc__)
 x = json.dumps({"a": 1})
 "#;
         let result = analyze(code).unwrap();
-        assert!(result.is_inspection_safe, "Expected safe, got: {:?}", result.dangerous_patterns);
+        assert!(result.is_inspection_safe, "Expected safe, got: {:?}", result.patterns);
         assert!(result.imports.contains(&"json".to_string()));
         assert!(result.imports.contains(&"pandas".to_string()));
     }
@@ -298,8 +213,8 @@ x = json.dumps({"a": 1})
         let code = "import os";
         let result = analyze(code).unwrap();
         assert!(!result.is_inspection_safe);
-        assert_eq!(result.dangerous_patterns.len(), 1);
-        assert_eq!(result.dangerous_patterns[0].kind, DangerKind::DangerousImport);
+        assert_eq!(result.patterns.len(), 1);
+        assert_eq!(result.patterns[0].capture, "dangerous_import");
     }
 
     #[test]
@@ -307,7 +222,7 @@ x = json.dumps({"a": 1})
         let code = "from subprocess import run";
         let result = analyze(code).unwrap();
         assert!(!result.is_inspection_safe);
-        assert_eq!(result.dangerous_patterns[0].kind, DangerKind::DangerousImport);
+        assert_eq!(result.patterns[0].capture, "dangerous_import");
     }
 
     #[test]
@@ -315,7 +230,7 @@ x = json.dumps({"a": 1})
         let code = r#"x = eval("1 + 1")"#;
         let result = analyze(code).unwrap();
         assert!(!result.is_inspection_safe);
-        assert_eq!(result.dangerous_patterns[0].kind, DangerKind::DynamicExecution);
+        assert_eq!(result.patterns[0].capture, "dynamic_exec");
     }
 
     #[test]
@@ -323,7 +238,7 @@ x = json.dumps({"a": 1})
         let code = r#"exec("print('hello')")"#;
         let result = analyze(code).unwrap();
         assert!(!result.is_inspection_safe);
-        assert_eq!(result.dangerous_patterns[0].kind, DangerKind::DynamicExecution);
+        assert_eq!(result.patterns[0].capture, "dynamic_exec");
     }
 
     #[test]
@@ -331,7 +246,7 @@ x = json.dumps({"a": 1})
         let code = r#"f = open("file.txt", "w")"#;
         let result = analyze(code).unwrap();
         assert!(!result.is_inspection_safe);
-        assert_eq!(result.dangerous_patterns[0].kind, DangerKind::FileOperation);
+        assert_eq!(result.patterns[0].capture, "file_op");
     }
 
     #[test]
@@ -339,7 +254,7 @@ x = json.dumps({"a": 1})
         let code = r#"os.system("rm -rf /")"#;
         let result = analyze(code).unwrap();
         assert!(!result.is_inspection_safe);
-        assert_eq!(result.dangerous_patterns[0].kind, DangerKind::SubprocessOperation);
+        assert_eq!(result.patterns[0].capture, "subprocess_op");
     }
 
     #[test]
@@ -347,7 +262,7 @@ x = json.dumps({"a": 1})
         let code = r#"subprocess.run(["ls", "-la"])"#;
         let result = analyze(code).unwrap();
         assert!(!result.is_inspection_safe);
-        assert_eq!(result.dangerous_patterns[0].kind, DangerKind::SubprocessOperation);
+        assert_eq!(result.patterns[0].capture, "subprocess_op");
     }
 
     #[test]
@@ -359,7 +274,7 @@ open("file.txt")
 "#;
         let result = analyze(code).unwrap();
         assert!(!result.is_inspection_safe);
-        assert!(result.dangerous_patterns.len() >= 3);
+        assert!(result.patterns.len() >= 3);
     }
 
     #[test]
@@ -384,10 +299,14 @@ open("file.txt")
         assert!(!result.is_inspection_safe);
 
         // With custom config that doesn't include 'os', it's safe
+        // Only detect 'subprocess' as dangerous import
         let config = PythonConfig {
-            dangerous_imports: vec!["subprocess".into()],
-            dangerous_calls: vec!["eval".into()],
-            file_operations: vec!["open".into()],
+            dangerous_query: r#"
+(import_statement
+  name: (dotted_name) @dangerous_import
+  (#match? @dangerous_import "^subprocess$"))
+"#.to_string(),
+            imports_query: DEFAULT_IMPORTS_QUERY.to_string(),
         };
         let result = analyze_with_config(code, &config).unwrap();
         assert!(result.is_inspection_safe);

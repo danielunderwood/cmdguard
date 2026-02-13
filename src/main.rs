@@ -12,6 +12,7 @@ mod parser;
 mod paths;
 mod policy;
 mod python_analyzer;
+mod query;
 mod resolver;
 mod test_runner;
 mod tokenizer;
@@ -60,6 +61,15 @@ fn main() {
         }
         Some(Commands::AnalyzePython { code }) => {
             run_analyze_python(&code);
+        }
+        Some(Commands::Query {
+            lang,
+            query,
+            query_file,
+            code,
+            file,
+        }) => {
+            run_query(&lang, query, query_file, code, file);
         }
         Some(Commands::Version) => {
             println!("claude-permissions {}", env!("CARGO_PKG_VERSION"));
@@ -123,12 +133,12 @@ fn run_analyze_python(code: &str) {
             println!("Imports found: {:?}", result.imports);
             println!();
 
-            if result.dangerous_patterns.is_empty() {
-                println!("Dangerous patterns: none");
+            if result.patterns.is_empty() {
+                println!("Matched patterns: none");
             } else {
-                println!("Dangerous patterns:");
-                for pattern in &result.dangerous_patterns {
-                    println!("  - {} at line {}:{}", pattern.kind, pattern.line, pattern.column);
+                println!("Matched patterns:");
+                for pattern in &result.patterns {
+                    println!("  - @{} \"{}\" at line {}:{}", pattern.capture, pattern.text, pattern.line, pattern.column);
                 }
             }
             println!();
@@ -136,6 +146,78 @@ fn run_analyze_python(code: &str) {
         }
         Err(e) => {
             eprintln!("Error analyzing Python code: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_query(
+    lang: &str,
+    query_arg: Option<String>,
+    query_file: Option<PathBuf>,
+    code_arg: Option<String>,
+    code_file: Option<PathBuf>,
+) {
+    // Parse language
+    let language = match query::QueryLanguage::from_str(lang) {
+        Some(l) => l,
+        None => {
+            eprintln!("Unsupported language: {}", lang);
+            eprintln!("Supported: python, bash");
+            std::process::exit(1);
+        }
+    };
+
+    // Get query string
+    let query_str = match (query_arg, query_file) {
+        (Some(q), _) => q,
+        (_, Some(path)) => match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to read query file {:?}: {}", path, e);
+                std::process::exit(1);
+            }
+        },
+        (None, None) => {
+            eprintln!("Must provide either --query or --query-file");
+            std::process::exit(1);
+        }
+    };
+
+    // Get code to analyze
+    let code = match (code_arg, code_file) {
+        (Some(c), _) => c,
+        (_, Some(path)) => match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to read code file {:?}: {}", path, e);
+                std::process::exit(1);
+            }
+        },
+        (None, None) => {
+            eprintln!("Must provide either code argument or --file");
+            std::process::exit(1);
+        }
+    };
+
+    // Run query
+    match query::run_query(language, &query_str, &code) {
+        Ok(matches) => {
+            println!("=== Query Results ===");
+            println!("Language: {:?}", language);
+            println!("Matches:  {}", matches.len());
+            println!();
+
+            if matches.is_empty() {
+                println!("No matches found.");
+            } else {
+                for m in &matches {
+                    println!("  @{} \"{}\" at line {}:{}", m.capture, m.text, m.line, m.column);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Query error: {}", e);
             std::process::exit(1);
         }
     }

@@ -8,65 +8,73 @@
 # =============================================================================
 
 # Create a boolean flag
-let bool_flag = fun short_form long_form => {
-  type = "boolean",
-  short = if std.is_array short_form then short_form else [short_form],
-  long = long_form,
-}
+let bool_flag = fun short_form long_form =>
+  {
+    type = "boolean",
+    short = if std.is_array short_form then short_form else [short_form],
+    long = long_form,
+  }
 in
 
 # Create a flag that takes an argument
-let arg_flag = fun short_form long_form => {
-  type = "with_arg",
-  short = if std.is_array short_form then short_form else [short_form],
-  long = long_form,
-}
+let arg_flag = fun short_form long_form =>
+  {
+    type = "with_arg",
+    short = if std.is_array short_form then short_form else [short_form],
+    long = long_form,
+  }
 in
 
 # Create a repeatable flag (can appear multiple times)
-let repeat_flag = fun short_form long_form => {
-  type = "repeatable",
-  short = if std.is_array short_form then short_form else [short_form],
-  long = long_form,
-}
+let repeat_flag = fun short_form long_form =>
+  {
+    type = "repeatable",
+    short = if std.is_array short_form then short_form else [short_form],
+    long = long_form,
+  }
 in
 
 # Create a path positional argument
-let path_arg = fun arg_name => {
-  name = arg_name,
-  type = "path",
-}
+let path_arg = fun arg_name =>
+  {
+    name = arg_name,
+    type = "path",
+  }
 in
 
 # Create a variadic path argument (multiple values)
-let paths_arg = fun arg_name => {
-  name = arg_name,
-  type = "path",
-  variadic = true,
-}
+let paths_arg = fun arg_name =>
+  {
+    name = arg_name,
+    type = "path",
+    variadic = true,
+  }
 in
 
 # Create a string positional argument
-let string_arg = fun arg_name => {
-  name = arg_name,
-  type = "string",
-}
+let string_arg = fun arg_name =>
+  {
+    name = arg_name,
+    type = "string",
+  }
 in
 
 # Create a variadic string argument
-let strings_arg = fun arg_name => {
-  name = arg_name,
-  type = "string",
-  variadic = true,
-}
+let strings_arg = fun arg_name =>
+  {
+    name = arg_name,
+    type = "string",
+    variadic = true,
+  }
 in
 
 # Create a "last" positional argument (like cp destination)
-let last_arg = fun arg_name arg_type => {
-  name = arg_name,
-  type = arg_type,
-  last = true,
-}
+let last_arg = fun arg_name arg_type =>
+  {
+    name = arg_name,
+    type = arg_type,
+    last = true,
+  }
 in
 
 # Create an empty subcommand stub
@@ -83,7 +91,6 @@ in
 # =============================================================================
 # Common Flags (reusable across commands)
 # =============================================================================
-
 let common = {
   verbose = bool_flag "-v" "--verbose",
   quiet = bool_flag "-q" "--quiet",
@@ -97,7 +104,6 @@ in
 # =============================================================================
 # Command Definitions
 # =============================================================================
-
 {
   commands = {
     # -------------------------------------------------------------------------
@@ -177,7 +183,7 @@ in
       flags = {
         long = bool_flag "-l" null,
         all = bool_flag "-a" "--all",
-        human_readable = bool_flag "-h" "--human-readable",
+        human_readable = bool_flag "-h" "--hutman-readable",
       },
       positional = [{ name = "paths", type = "path", variadic = true, optional = true }],
     },
@@ -196,11 +202,15 @@ in
       positional = [{ name = "files", type = "path", variadic = true, optional = true }],
     },
 
-    tail = head & {
-      flags = head.flags & {
-        follow = bool_flag "-f" "--follow",
+    tail =
+      head
+      & {
+        flags =
+          head.flags
+          & {
+            follow = bool_flag "-f" "--follow",
+          },
       },
-    },
 
     # -------------------------------------------------------------------------
     # Wrappers

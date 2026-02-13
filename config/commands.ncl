@@ -114,7 +114,12 @@ in
       },
       show = {},
       ls-tree = {},
-      fetch = {}
+      fetch = {},
+      worktree = {
+        positional = [
+          { name = "subcommand", type = "string", variadic = "false" }
+        ]
+      }
     },
     curl = {
       flags = {

@@ -42,6 +42,7 @@ rules["safe_command"] := {
 		"sed",
 		"sleep",
 		"sort",
+		"sqq",
 		"tail",
 		"touch",
 		"tr",
