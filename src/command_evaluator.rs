@@ -11,10 +11,12 @@ use crate::nickel_config::NickelConfig;
 use crate::output::{Decision, HookOutput};
 use crate::parser::ParsedCommand;
 use crate::paths::detect_paths;
-use crate::policy::{PolicyEngine, PolicyInput, PolicyResult};
+use crate::policy::{PatternInput, PolicyEngine, PolicyInput, PolicyResult, PythonAnalysisInput};
+use crate::python_analyzer;
 use crate::resolver::resolve_command;
 use crate::tokenizer;
 use std::path::Path;
+use tracing::debug;
 
 /// Context for evaluating commands - encapsulates shared dependencies
 pub struct CommandEvaluator<'a> {
@@ -97,6 +99,9 @@ impl<'a> CommandEvaluator<'a> {
         let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
         let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
 
+        // Check for python -c and analyze inline code
+        let python_analysis = self.analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
+
         // Build policy input
         let policy_input = PolicyInput {
             tool: "Bash".to_string(),
@@ -123,12 +128,65 @@ impl<'a> CommandEvaluator<'a> {
             positional_args: positional_args_json,
             positional: positional_map_json,
             subcommand: parsed_cmd.subcommand,
+            python_analysis,
         };
 
         // Evaluate
         self.engine.evaluate(&policy_input)
     }
 
+    /// Check if this is a python -c command and analyze the code if so
+    fn analyze_python_if_applicable(
+        &self,
+        binary_name: &str,
+        command: &[String],
+    ) -> Option<PythonAnalysisInput> {
+        // Check if this is a python command
+        if !binary_name.starts_with("python") {
+            return None;
+        }
+
+        // Look for -c flag directly in command tokens (Python has no long form)
+        let code = extract_python_c_code(command)?;
+
+        debug!(code = %code, "Analyzing python -c code");
+
+        // Run Python analyzer
+        match python_analyzer::analyze(&code) {
+            Ok(analysis) => {
+                let patterns: Vec<PatternInput> = analysis
+                    .patterns
+                    .iter()
+                    .map(PatternInput::from)
+                    .collect();
+
+                Some(PythonAnalysisInput {
+                    patterns,
+                    imports: analysis.imports,
+                    is_inspection_safe: analysis.is_inspection_safe,
+                })
+            }
+            Err(e) => {
+                debug!(error = %e, "Failed to analyze Python code");
+                None
+            }
+        }
+    }
+}
+
+/// Extract code from python -c command
+/// Python only supports -c (no long form like --code)
+fn extract_python_c_code(command: &[String]) -> Option<String> {
+    let mut iter = command.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-c" {
+            return iter.next().cloned();
+        }
+    }
+    None
+}
+
+impl<'a> CommandEvaluator<'a> {
     /// Evaluate a compound command with short-circuit logic
     pub fn evaluate_compound(
         &mut self,

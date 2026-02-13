@@ -1,9 +1,45 @@
 use crate::output::Decision;
 use crate::paths::DetectedPath;
+use crate::python_analyzer;
 use regorus::Engine;
 use serde::Serialize;
 use std::path::Path;
 use tracing::{debug, warn};
+
+/// Python code analysis results for PolicyInput
+#[derive(Debug, Serialize, Clone)]
+pub struct PythonAnalysisInput {
+    /// Matched patterns from tree-sitter query
+    pub patterns: Vec<PatternInput>,
+    /// Imported modules
+    pub imports: Vec<String>,
+    /// Whether code appears safe for inspection mode
+    pub is_inspection_safe: bool,
+}
+
+/// A matched pattern for serialization to Rego
+#[derive(Debug, Serialize, Clone)]
+pub struct PatternInput {
+    /// Capture name from query (e.g., "dangerous_import", "file_op")
+    pub capture: String,
+    /// Matched text
+    pub text: String,
+    /// Line number (1-indexed)
+    pub line: usize,
+    /// Column number (0-indexed)
+    pub column: usize,
+}
+
+impl From<&python_analyzer::Pattern> for PatternInput {
+    fn from(p: &python_analyzer::Pattern) -> Self {
+        Self {
+            capture: p.capture.clone(),
+            text: p.text.clone(),
+            line: p.line,
+            column: p.column,
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct PolicyInput {
@@ -50,6 +86,9 @@ pub struct PolicyInput {
     /// Subcommand if present (e.g., "push" for "git push")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subcommand: Option<String>,
+    /// Python code analysis (for python -c commands)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python_analysis: Option<PythonAnalysisInput>,
 }
 
 pub struct PolicyResult {
@@ -220,6 +259,7 @@ mod tests {
             positional_args: None,
             positional: None,
             subcommand: None,
+            python_analysis: None,
         }
     }
 

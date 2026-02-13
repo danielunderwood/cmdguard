@@ -134,7 +134,8 @@ in
     },
     python = {
       flags = {
-        module = { short = ["-m"], type = "with_arg" }
+        module = { short = ["-m"], type = "with_arg" },
+        code = { short = ["-c"], type = "with_arg" },
       },
       positional = [
         { name = "file", type = "string", variadic = false }

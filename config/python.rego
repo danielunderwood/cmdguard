@@ -55,3 +55,42 @@ rules["safe_python_tools"] := {
 } if {
 	input.command[0] in {"alembic", "mypy", "pylint", "black", "isort"}
 }
+
+# ============================================================================
+# Python inline code analysis (python -c)
+# ============================================================================
+
+# Helper to check if any pattern matches a capture name
+has_pattern(capture_name) if {
+	input.python_analysis.patterns[_].capture == capture_name
+}
+
+# Allow safe inspection code (no dangerous patterns)
+rules["python_safe_inspection"] := {
+	"decision": "allow",
+	"reason": "Python code is safe for inspection",
+	"priority": 30,
+} if {
+	is_python
+	input.python_analysis.is_inspection_safe
+}
+
+# Deny dynamic execution (eval, exec, compile)
+rules["python_deny_dynamic_exec"] := {
+	"decision": "deny",
+	"reason": "Python code contains dynamic execution (eval/exec)",
+	"priority": 40,
+} if {
+	is_python
+	has_pattern("dynamic_exec")
+}
+
+# Deny subprocess operations
+rules["python_deny_subprocess"] := {
+	"decision": "deny",
+	"reason": "Python code contains subprocess operations",
+	"priority": 40,
+} if {
+	is_python
+	has_pattern("subprocess_op")
+}

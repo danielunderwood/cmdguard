@@ -29,7 +29,7 @@ use input::parse_input;
 use logging::init_logging;
 use output::HookOutput;
 use paths::detect_paths;
-use policy::{PolicyEngine, PolicyInput};
+use policy::{PatternInput, PolicyEngine, PolicyInput, PythonAnalysisInput};
 use resolver::{detect_project_root, resolve_command};
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -221,6 +221,54 @@ fn run_query(
             std::process::exit(1);
         }
     }
+}
+
+/// Check if this is a python -c command and analyze the code if so
+fn analyze_python_if_applicable(
+    binary_name: &str,
+    command: &[String],
+) -> Option<PythonAnalysisInput> {
+    // Check if this is a python command
+    if !binary_name.starts_with("python") {
+        return None;
+    }
+
+    // Look for -c flag directly in command tokens (Python has no long form)
+    let code = extract_python_c_code(command)?;
+
+    debug!(code = %code, "Analyzing python -c code");
+
+    // Run Python analyzer
+    match python_analyzer::analyze(&code) {
+        Ok(analysis) => {
+            let patterns: Vec<PatternInput> = analysis
+                .patterns
+                .iter()
+                .map(PatternInput::from)
+                .collect();
+
+            Some(PythonAnalysisInput {
+                patterns,
+                imports: analysis.imports,
+                is_inspection_safe: analysis.is_inspection_safe,
+            })
+        }
+        Err(e) => {
+            debug!(error = %e, "Failed to analyze Python code");
+            None
+        }
+    }
+}
+
+/// Extract code from python -c command
+fn extract_python_c_code(command: &[String]) -> Option<String> {
+    let mut iter = command.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-c" {
+            return iter.next().cloned();
+        }
+    }
+    None
 }
 
 fn get_policy_dir(override_dir: Option<PathBuf>) -> PathBuf {
@@ -453,6 +501,9 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
         let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
 
+        // Check for python -c and analyze inline code
+        let python_analysis = analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
+
         let policy_input = PolicyInput {
             tool: "Bash".to_string(),
             raw_command: cmd.text.clone(),
@@ -476,6 +527,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             positional_args: positional_args_json,
             positional: positional_map_json,
             subcommand: parsed_cmd.subcommand,
+            python_analysis,
         };
 
         // Show Rego input if requested
