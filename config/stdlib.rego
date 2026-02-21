@@ -40,6 +40,20 @@ allow_at(reason, priority) := {"decision": "allow", "reason": reason, "priority"
 deny_at(reason, priority) := {"decision": "deny", "reason": reason, "priority": priority}
 ask_at(reason, priority) := {"decision": "ask", "reason": reason, "priority": priority}
 
+# Declarative subcommand allowlist
+# Policy files contribute entries via partial object rules:
+#   allowed_subcommands["git"] := {"status", "log", "diff"}
+#   allowed_subcommands["cargo"] := {"build", "test", "check"}
+default allowed_subcommands := {}
+
+rules[rule_name] := allow(reason) if {
+	some binary, subcmds in allowed_subcommands
+	input.binary_name == binary
+	input.subcommand in subcmds
+	rule_name := sprintf("allowed_%s_%s", [binary, input.subcommand])
+	reason := sprintf("Allowed %s subcommand", [binary])
+}
+
 # Priority-based rule aggregation
 # Each policy file adds rules to the `rules` map
 # This picks the highest priority matching rule
