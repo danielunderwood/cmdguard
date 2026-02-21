@@ -30,6 +30,16 @@ no_paths if {
 	count(input.paths) == 0
 }
 
+# Decision helpers - reduces per-rule boilerplate
+allow(reason) := {"decision": "allow", "reason": reason, "priority": 25}
+deny(reason) := {"decision": "deny", "reason": reason, "priority": 100}
+ask(reason) := {"decision": "ask", "reason": reason, "priority": 50}
+
+# Custom-priority variants
+allow_at(reason, priority) := {"decision": "allow", "reason": reason, "priority": priority}
+deny_at(reason, priority) := {"decision": "deny", "reason": reason, "priority": priority}
+ask_at(reason, priority) := {"decision": "ask", "reason": reason, "priority": priority}
+
 # Priority-based rule aggregation
 # Each policy file adds rules to the `rules` map
 # This picks the highest priority matching rule
