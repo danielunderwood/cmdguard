@@ -4,6 +4,7 @@ mod command_evaluator;
 mod command_parser;
 mod extractor;
 mod flags;
+mod hook;
 mod input;
 mod logging;
 mod nickel_config;
@@ -73,6 +74,9 @@ fn main() {
         }
         Some(Commands::Version) => {
             println!("claude-permissions {}", env!("CARGO_PKG_VERSION"));
+        }
+        Some(Commands::Hook { action }) => {
+            hook::run(action);
         }
         None => {
             // Default: run as hook (read from stdin)

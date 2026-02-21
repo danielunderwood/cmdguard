@@ -83,4 +83,20 @@ pub enum Commands {
 
     /// Print version information
     Version,
+
+    /// Manage Claude Code hook registration
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HookAction {
+    /// Register claude-permissions as a PreToolUse hook
+    Install,
+    /// Remove claude-permissions from hooks
+    Uninstall,
+    /// Check if the hook is registered
+    Status,
 }
