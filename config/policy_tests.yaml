@@ -189,3 +189,43 @@ tests:
   - name: "pipeline with redirect"
     command: "git log | grep TODO > /tmp/todos.txt"
     expect: allow
+
+  # ==========================================================================
+  # Stdlib Helpers (verified via migrated rules)
+  # ==========================================================================
+
+  - name: "allow() helper - cargo clippy via allowed_subcommands"
+    command: "cargo clippy"
+    expect: allow
+
+  - name: "deny() helper - git reset --hard"
+    command: "git reset --hard HEAD"
+    expect: deny
+
+  - name: "ask() helper - find with -exec"
+    command: "find . -name '*.tmp' -exec rm {} \\;"
+    expect: ask
+
+  # ==========================================================================
+  # Declarative Subcommand Table
+  # ==========================================================================
+
+  - name: "allowed_subcommands - git fetch"
+    command: "git fetch"
+    expect: allow
+
+  - name: "allowed_subcommands - git rev-parse"
+    command: "git rev-parse HEAD"
+    expect: allow
+
+  - name: "allowed_subcommands - cargo doc"
+    command: "cargo doc"
+    expect: allow
+
+  - name: "allowed_subcommands - cargo clean"
+    command: "cargo clean"
+    expect: allow
+
+  - name: "unlisted subcommand falls through to ask"
+    command: "cargo install some-crate"
+    expect: ask
