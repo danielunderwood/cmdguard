@@ -54,6 +54,20 @@ rules[rule_name] := allow(reason) if {
 	reason := sprintf("Allowed %s subcommand", [binary])
 }
 
+# Declarative first-argument allowlist
+# For commands without formal subcommands (e.g., npx, runners):
+#   allowed_with_args["npx"] := {"tsc", "next"}
+# Matches command[0] and command[1] directly, no builtins.ncl entry needed.
+default allowed_with_args := {}
+
+rules[rule_name] := allow(reason) if {
+	some binary, args in allowed_with_args
+	input.command[0] == binary
+	input.command[1] in args
+	rule_name := sprintf("allowed_%s_%s", [binary, input.command[1]])
+	reason := sprintf("Allowed %s command", [binary])
+}
+
 # Priority-based rule aggregation
 # Each policy file adds rules to the `rules` map
 # This picks the highest priority matching rule
