@@ -33,3 +33,11 @@ is_gh_api_action_run if {
 
 rules["gh_cli_new"] := allow("Allowed gh command") if is_gh_api_pr_files
 rules["gh_cli_actions_runs"] := allow("Allowed gh command") if is_gh_api_action_run
+
+rules["gh_issue_readonly"] := allow("Allowed gh issue command") if {
+	is_gh_cli
+	input.positional.args[0].raw == "issue"
+	input.positional.args[1].raw == "view"
+}
+
+allowed_with_args["gh"] := {"search"}
