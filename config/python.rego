@@ -24,36 +24,20 @@ is_tests_main if {
 
 is_json_tool if is_python_module("json.tool")
 
-rules["pytest"] := {
-	"decision": "allow",
-	"reason": "Pytest allowed",
-	"priority": 25,
-} if {
+rules["pytest"] := allow("Pytest allowed") if {
 	is_pytest
 }
 
-rules["tests_main"] := {
-	"decision": "allow",
-	"reason": "tests/main.py allowed",
-	"priority": 25,
-} if {
+rules["tests_main"] := allow("tests/main.py allowed") if {
 	is_tests_main
 }
 
-rules["json_tool"] := {
-	"decision": "allow",
-	"reason": "json.tool allowed",
-	"priority": 25,
-} if {
+rules["json_tool"] := allow("json.tool allowed") if {
 	is_json_tool
 }
 
-rules["safe_python_tools"] := {
-	"decision": "allow",
-	"reason": "Safe Python tool allowed",
-	"priority": 25,
-} if {
-	input.command[0] in {"alembic", "mypy", "pylint", "black", "isort"}
+rules["safe_python_tools"] := allow("Safe Python tool allowed") if {
+	input.command[0] in {"alembic", "mypy", "pylint", "black", "isort", "ruff"}
 }
 
 # ============================================================================
@@ -66,31 +50,19 @@ has_pattern(capture_name) if {
 }
 
 # Allow safe inspection code (no dangerous patterns)
-rules["python_safe_inspection"] := {
-	"decision": "allow",
-	"reason": "Python code is safe for inspection",
-	"priority": 30,
-} if {
+rules["python_safe_inspection"] := allow_at("Python code is safe for inspection", 30) if {
 	is_python
 	input.python_analysis.is_inspection_safe
 }
 
 # Deny dynamic execution (eval, exec, compile)
-rules["python_deny_dynamic_exec"] := {
-	"decision": "deny",
-	"reason": "Python code contains dynamic execution (eval/exec)",
-	"priority": 40,
-} if {
+rules["python_deny_dynamic_exec"] := deny_at("Python code contains dynamic execution (eval/exec)", 40) if {
 	is_python
 	has_pattern("dynamic_exec")
 }
 
 # Deny subprocess operations
-rules["python_deny_subprocess"] := {
-	"decision": "deny",
-	"reason": "Python code contains subprocess operations",
-	"priority": 40,
-} if {
+rules["python_deny_subprocess"] := deny_at("Python code contains subprocess operations", 40) if {
 	is_python
 	has_pattern("subprocess_op")
 }
