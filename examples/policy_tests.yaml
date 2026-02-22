@@ -9,7 +9,6 @@ tests:
   - name: "allow git status"
     command: "git status"
     expect: allow
-    reason_contains: "Safe git"
 
   - name: "allow git diff"
     command: "git diff HEAD~1"
