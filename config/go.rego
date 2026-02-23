@@ -2,7 +2,7 @@ package claude.permissions
 
 import rego.v1
 
-allowed_with_args["go"] := {"test", "vet"}
+allowed_with_args["go"] := {"build", "fmt", "test", "vet"}
 
 rules["go_mod"] := allow("Allowed go mod") if {
 	input.binary_name == "go"
