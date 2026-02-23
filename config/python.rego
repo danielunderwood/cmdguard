@@ -2,7 +2,7 @@ package claude.permissions
 
 import rego.v1
 
-is_python if input.binary_name == "python"
+is_python if startswith(input.binary_name, "python")
 
 python_module := module if {
 	is_python
