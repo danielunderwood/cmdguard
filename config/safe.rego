@@ -38,6 +38,7 @@ rules["safe_command"] := allow("Safe command") if {
 		"tail",
 		"touch",
 		"tr",
+		"tree",
 		"uniq",
 		"wc",
 		"which",
