@@ -40,4 +40,9 @@ rules["gh_issue_readonly"] := allow("Allowed gh issue command") if {
 	input.positional.args[1].raw == "view"
 }
 
-allowed_with_args["gh"] := {"search"}
+rules["gh_help"] := allow("Allowed gh help") if {
+	is_gh_cli
+	input.parsed_flags.help
+}
+
+allowed_with_args["gh"] := {"help", "search"}
