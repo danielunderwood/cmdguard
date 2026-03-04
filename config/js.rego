@@ -8,7 +8,7 @@ allowed_with_args["npm"] := {
 	"ls",
 }
 
-allowed_with_args["npx"] := {
-	"next",
-	"tsc",
-}
+allowed_npm_binaries := {"next", "prettier", "tsc"}
+
+allowed_with_args["npx"] := allowed_npm_binaries
+allowed_with_args["pnpx"] := allowed_npm_binaries

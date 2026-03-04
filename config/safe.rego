@@ -19,6 +19,7 @@ rules["safe_command"] := allow("Safe command") if {
 		"file",
 		"getent",
 		"grep",
+		"gunzip",
 		"head",
 		"host",
 		"jq",

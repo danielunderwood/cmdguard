@@ -7,6 +7,7 @@ allowed_subcommands["git"] := {
 	"diff",
 	"fetch",
 	"log",
+	"ls-files",
 	"ls-tree",
 	"rev-parse",
 	"show",
