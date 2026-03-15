@@ -8,6 +8,12 @@ rules["gh_cli"] := allow("Allowed gh command") if {
 	input.command[2] in {"checks", "diff", "list", "view"}
 }
 
+rules["gh_cli"] := allow("Allowed gh command") if {
+	input.command[0] == "gh"
+	input.command[1] == "repo"
+	input.command[2] in {"checks", "diff", "list", "view"}
+}
+
 rules["gh_cli_run"] := allow("Allowed gh command") if {
 	input.command[0] == "gh"
 	input.command[1] == "run"
@@ -43,6 +49,11 @@ rules["gh_issue_readonly"] := allow("Allowed gh issue command") if {
 rules["gh_help"] := allow("Allowed gh help") if {
 	is_gh_cli
 	input.parsed_flags.help
+}
+
+rules["gh_cli_repo"] := allow("Allowed gh api repos") if {
+	is_gh_api
+	regex.match("^repos/.+/(contents|trees)($|/.+$)", input.positional.args[1].raw)
 }
 
 allowed_with_args["gh"] := {"help", "search"}

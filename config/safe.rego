@@ -12,6 +12,7 @@ rules["safe_command"] := allow("Safe command") if {
 		"cut",
 		"date",
 		"df",
+		"diff",
 		"dig",
 		"du",
 		"echo",
@@ -23,6 +24,7 @@ rules["safe_command"] := allow("Safe command") if {
 		"host",
 		"jq",
 		"ls",
+		"lsof",
 		# YOLO
 		"make",
 		"mkdir",
@@ -44,6 +46,8 @@ rules["safe_command"] := allow("Safe command") if {
 		"uniq",
 		"wc",
 		"which",
+		"xcodebuild",
+		"xcodegen",
 		"xxd",
 	}
 }
