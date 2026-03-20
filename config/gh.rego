@@ -2,7 +2,7 @@ package claude.permissions
 
 import rego.v1
 
-rules["gh_cli"] := allow("Allowed gh command") if {
+rules["gh_cli_pr"] := allow("Allowed gh command") if {
 	input.command[0] == "gh"
 	input.command[1] == "pr"
 	input.command[2] in {"checks", "diff", "list", "view"}

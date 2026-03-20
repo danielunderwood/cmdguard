@@ -15,6 +15,12 @@ rules["jira_project"] := allow("Jira project") if {
 	input.positional.args[1].raw == "list"
 }
 
+rules["jira_issue"] := allow("Jira issue") if {
+	input.binary_name == "jira"
+	input.positional.args[0].raw == "issue"
+	input.positional.args[1].raw == "view"
+}
+
 rules["jira_epic"] := allow("Jira epic read") if {
 	input.binary_name == "jira"
 	input.positional.args[0].raw == "epic"
