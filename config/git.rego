@@ -27,12 +27,6 @@ rules["force_push_structured"] := deny("Force push blocked (detected via parsed_
 	input.parsed_flags.force == true
 }
 
-# Deny git reset --hard using parsed_flags
-rules["hard_reset"] := deny("Hard reset blocked - use --soft or --mixed instead") if {
-	input.subcommand == "reset"
-	input.parsed_flags.hard == true
-}
-
 # Deny git clean -x (removes ignored files)
 rules["clean_ignored"] := ask("git clean -x removes ignored files - please confirm") if {
 	input.subcommand == "clean"
