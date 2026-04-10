@@ -1,7 +1,7 @@
-# Example Nickel configuration for claude-permissions
+# Example Nickel configuration for cmdguard
 #
 # This file shows how to define custom wrapper extractors.
-# To use: copy to ~/.config/claude-permissions/commands.ncl
+# To use: copy to ~/.config/cmdguard/commands.ncl
 #
 # Wrapper extract functions take an array of tokens and return either:
 #   - { remaining = [...], wrapper_name = "..." } to extract a wrapper

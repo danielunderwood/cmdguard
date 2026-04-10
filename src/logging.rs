@@ -11,8 +11,8 @@ pub fn init_logging() -> Option<WorkerGuard> {
 
     // Create log directory - always use ~/.local/state for consistency
     let log_dir = dirs::home_dir()
-        .map(|d| d.join(".local/state/claude-permissions"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/claude-permissions"));
+        .map(|d| d.join(".local/state/cmdguard"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/cmdguard"));
 
     if std::fs::create_dir_all(&log_dir).is_err() {
         return None;

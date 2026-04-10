@@ -103,7 +103,7 @@ Replace `eval_decision` and `eval_reason` with a single `eval_result` method:
 
 ```rust
 fn eval_result(&mut self) -> PolicyResult {
-    match self.engine.eval_rule("data.claude.permissions.result".to_string()) {
+    match self.engine.eval_rule("data.cmdguard.result".to_string()) {
         Ok(value) => {
             // Try to parse as object with decision, reason, rule, explicit
             let decision = value
@@ -183,7 +183,7 @@ git commit -m "refactor: update PolicyResult to include rule name and explicit f
 Replace the contents of `policies/test_policy.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import future.keywords.in
 import future.keywords.if
@@ -337,7 +337,7 @@ git commit -m "feat: add priority-based rule aggregation to stdlib.rego"
 Replace contents of `config/git.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -375,7 +375,7 @@ git commit -m "refactor: update git.rego to rules collection pattern"
 Replace contents of `config/safe.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -412,7 +412,7 @@ git commit -m "refactor: update safe.rego to rules collection pattern"
 Replace contents of `config/rust.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -450,7 +450,7 @@ git commit -m "refactor: update rust.rego to rules collection pattern"
 Replace contents of `config/python.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -527,7 +527,7 @@ git commit -m "refactor: update python.rego to rules collection pattern"
 Replace contents of `config/nix.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -581,7 +581,7 @@ git commit -m "refactor: update nix.rego to rules collection pattern"
 Replace contents of `config/opa.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -619,7 +619,7 @@ git commit -m "refactor: update opa.rego to rules collection pattern"
 Replace contents of `config/rego.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -656,7 +656,7 @@ git commit -m "refactor: update rego.rego to rules collection pattern"
 Replace contents of `config/find.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -710,7 +710,7 @@ git commit -m "refactor: update find.rego to rules collection pattern"
 Replace contents of `config/tools.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -719,17 +719,17 @@ in_bin_path(name) if {
     input.command[0] == sprintf("%s%s", [path, name])
 }
 
-rules["local_claude_permissions"] := {
+rules["local_cmdguard"] := {
     "decision": "allow",
     "reason": "Allowed local tool",
     "priority": 25,
-} if in_bin_path("claude-permissions")
+} if in_bin_path("cmdguard")
 ```
 
 **Step 2: Test with eval command**
 
-Run: `cargo run -- eval "./target/debug/claude-permissions eval 'ls'" --policy-dir ./config`
-Expected: Decision: Allow, Rule: local_claude_permissions
+Run: `cargo run -- eval "./target/debug/cmdguard eval 'ls'" --policy-dir ./config`
+Expected: Decision: Allow, Rule: local_cmdguard
 
 **Step 3: Commit**
 
@@ -750,7 +750,7 @@ git commit -m "refactor: update tools.rego to rules collection pattern"
 Replace contents of `config/javascript.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 

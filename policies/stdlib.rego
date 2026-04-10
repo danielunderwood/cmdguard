@@ -1,4 +1,4 @@
-package claude.permissions.stdlib
+package cmdguard.stdlib
 
 import future.keywords.in
 import future.keywords.every

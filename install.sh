@@ -1,13 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-# claude-permissions installation script
-# This script builds and installs the claude-permissions PreToolUse hook
+# cmdguard installation script
+# This script builds and installs the cmdguard PreToolUse hook
 
-HOOK_COMMAND="$HOME/.local/bin/claude-permissions"
+HOOK_COMMAND="$HOME/.local/bin/cmdguard"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 
-echo "=== claude-permissions Installation ==="
+echo "=== cmdguard Installation ==="
 echo ""
 
 # Step 1: Build release binary
@@ -19,13 +19,13 @@ echo ""
 # Step 2: Create ~/.local/bin and copy binary
 echo "[2/4] Installing binary to ~/.local/bin..."
 mkdir -p "$HOME/.local/bin"
-cp target/release/claude-permissions "$HOME/.local/bin/"
+cp target/release/cmdguard "$HOME/.local/bin/"
 echo "Binary installed: $HOOK_COMMAND"
 echo ""
 
 # Step 3: Set up config directory
 echo "[3/4] Setting up configuration..."
-CONFIG_DIR="$HOME/.config/claude-permissions"
+CONFIG_DIR="$HOME/.config/cmdguard"
 
 if [ -e "$CONFIG_DIR" ] || [ -L "$CONFIG_DIR" ]; then
     echo "Config directory exists (may be symlink) - skipping policy installation"
@@ -50,4 +50,4 @@ echo ""
 echo "Make sure ~/.local/bin is in your PATH. Add this to your shell profile if needed:"
 echo '  export PATH="$HOME/.local/bin:$PATH"'
 echo ""
-echo "Edit your policy at: $HOME/.config/claude-permissions/policy.rego"
+echo "Edit your policy at: $HOME/.config/cmdguard/policy.rego"

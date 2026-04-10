@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Rust binary (`claude-permissions`) that acts as a PreToolUse hook for Claude Code, providing flexible, policy-driven permission control using embedded Rego (via regorus).
+A Rust binary (`cmdguard`) that acts as a PreToolUse hook for Claude Code, providing flexible, policy-driven permission control using embedded Rego (via regorus).
 
 **Goals:**
 - More granular trust than Claude's built-in `Bash(git:*)` syntax
@@ -19,7 +19,7 @@ A Rust binary (`claude-permissions`) that acts as a PreToolUse hook for Claude C
 │                    PreToolUse hook                               │
 │                         ▼                                        │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │                 claude-permissions                        │   │
+│  │                 cmdguard                        │   │
 │  │                                                           │   │
 │  │  1. Parse JSON input (tool_name, tool_input)             │   │
 │  │  2. If Bash: extract real command from wrappers          │   │
@@ -31,7 +31,7 @@ A Rust binary (`claude-permissions`) that acts as a PreToolUse hook for Claude C
 │  └──────────────────────────────────────────────────────────┘   │
 │                         ▲                                        │
 │                         │ (loaded fresh each invocation)         │
-│                 ~/.config/claude-permissions/                    │
+│                 ~/.config/cmdguard/                    │
 │                     ├── stdlib.rego                              │
 │                     └── policy.rego                              │
 └─────────────────────────────────────────────────────────────────┘
@@ -94,7 +94,7 @@ Rust provides this input to Rego:
 **stdlib.rego** - Ships with common helpers:
 
 ```rego
-package claude.permissions.stdlib
+package cmdguard.stdlib
 
 # Get value following a flag (e.g., --output foo)
 flag_value(flag) := input.command[i+1] {
@@ -127,9 +127,9 @@ all_paths_in_project {
 **policy.rego** - User-defined rules:
 
 ```rego
-package claude.permissions
+package cmdguard
 
-import data.claude.permissions.stdlib
+import data.cmdguard.stdlib
 
 default decision = "ask"
 
@@ -210,7 +210,7 @@ Response to Claude:
 ## Logging
 
 - Controlled via `RUST_LOG` environment variable
-- Log file: `~/.local/state/claude-permissions/debug.log`
+- Log file: `~/.local/state/cmdguard/debug.log`
 - Includes compilation timing, evaluation timing, decisions
 
 ```
@@ -220,7 +220,7 @@ Response to Claude:
 ## Project Structure
 
 ```
-claude-permissions/
+cmdguard/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs              # Entry point, stdin/stdout handling
@@ -249,12 +249,12 @@ claude-permissions/
 ```bash
 # Build and install
 cargo build --release
-cp target/release/claude-permissions ~/.local/bin/
+cp target/release/cmdguard ~/.local/bin/
 
 # Create config directory and copy policies
-mkdir -p ~/.config/claude-permissions
-cp policies/stdlib.rego ~/.config/claude-permissions/
-cp examples/policy.rego ~/.config/claude-permissions/
+mkdir -p ~/.config/cmdguard
+cp policies/stdlib.rego ~/.config/cmdguard/
+cp examples/policy.rego ~/.config/cmdguard/
 ```
 
 **Hook registration** (add to `~/.claude/settings.json`):
@@ -268,7 +268,7 @@ cp examples/policy.rego ~/.config/claude-permissions/
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/bin/claude-permissions"
+            "command": "~/.local/bin/cmdguard"
           }
         ]
       }
@@ -283,7 +283,7 @@ cp examples/policy.rego ~/.config/claude-permissions/
 
 ```bash
 echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | \
-  RUST_LOG=debug ~/.local/bin/claude-permissions
+  RUST_LOG=debug ~/.local/bin/cmdguard
 ```
 
 **Unit tests:**
@@ -296,5 +296,5 @@ echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | \
 
 - **Learning mode:** Log decisions, CLI to review and generate rules
 - **Config file layer:** TOML/JSON config that compiles to Rego
-- **Project-local policies:** `.claude-permissions/policy.rego` overrides
+- **Project-local policies:** `.cmdguard/policy.rego` overrides
 - **Caching:** If compilation proves slow, add timestamp-based caching

@@ -18,7 +18,7 @@
 
 **Step 1: Initialize Cargo project**
 
-Run: `cargo init --name claude-permissions`
+Run: `cargo init --name cmdguard`
 
 **Step 2: Configure Cargo.toml with dependencies**
 
@@ -26,7 +26,7 @@ Replace `Cargo.toml` with:
 
 ```toml
 [package]
-name = "claude-permissions"
+name = "cmdguard"
 version = "0.1.0"
 edition = "2021"
 description = "PreToolUse hook for policy-driven permission control"
@@ -52,7 +52,7 @@ Replace `src/main.rs` with:
 
 ```rust
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -137,7 +137,7 @@ Replace `src/main.rs`:
 mod input;
 
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -216,7 +216,7 @@ mod input;
 mod tokenizer;
 
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -332,7 +332,7 @@ mod input;
 mod tokenizer;
 
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -623,7 +623,7 @@ mod input;
 mod tokenizer;
 
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -788,7 +788,7 @@ mod paths;
 mod tokenizer;
 
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -926,7 +926,7 @@ mod paths;
 mod tokenizer;
 
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -957,7 +957,7 @@ git commit -m "feat: add output formatting for hook responses"
 Create `policies/stdlib.rego`:
 
 ```rego
-package claude.permissions.stdlib
+package cmdguard.stdlib
 
 # Get value following a flag (e.g., --output foo)
 flag_value(flag) := input.command[i+1] {
@@ -998,9 +998,9 @@ no_paths {
 Create `policies/test_policy.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
-import data.claude.permissions.stdlib
+import data.cmdguard.stdlib
 
 default decision = "ask"
 
@@ -1134,7 +1134,7 @@ impl PolicyEngine {
     }
 
     fn eval_decision(&mut self) -> Decision {
-        match self.engine.eval_rule("data.claude.permissions.decision".to_string()) {
+        match self.engine.eval_rule("data.cmdguard.decision".to_string()) {
             Ok(results) => {
                 if let Some(value) = results.result.as_str() {
                     match value {
@@ -1154,7 +1154,7 @@ impl PolicyEngine {
     }
 
     fn eval_reason(&mut self) -> Option<String> {
-        match self.engine.eval_rule("data.claude.permissions.reason".to_string()) {
+        match self.engine.eval_rule("data.cmdguard.reason".to_string()) {
             Ok(results) => results.result.as_str().map(|s| s.to_string()),
             Err(_) => None,
         }
@@ -1234,7 +1234,7 @@ mod policy;
 mod tokenizer;
 
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -1281,7 +1281,7 @@ pub fn init_logging() -> Option<WorkerGuard> {
     // Create log directory
     let log_dir = dirs::state_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("claude-permissions");
+        .join("cmdguard");
 
     if std::fs::create_dir_all(&log_dir).is_err() {
         return None;
@@ -1330,7 +1330,7 @@ mod policy;
 mod tokenizer;
 
 fn main() {
-    println!("claude-permissions stub");
+    println!("cmdguard stub");
 }
 ```
 
@@ -1472,8 +1472,8 @@ fn run() -> Result<HookOutput, String> {
 
     // Load policies from config directory
     let config_dir = dirs::config_dir()
-        .map(|d| d.join("claude-permissions"))
-        .unwrap_or_else(|| PathBuf::from("/etc/claude-permissions"));
+        .map(|d| d.join("cmdguard"))
+        .unwrap_or_else(|| PathBuf::from("/etc/cmdguard"));
 
     if config_dir.exists() {
         engine.load_policies_from_dir(&config_dir)?;
@@ -1517,9 +1517,9 @@ Expected: Builds successfully
 
 Run:
 ```bash
-mkdir -p ~/.config/claude-permissions
-cp policies/*.rego ~/.config/claude-permissions/
-echo '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/tmp"}' | ./target/release/claude-permissions
+mkdir -p ~/.config/cmdguard
+cp policies/*.rego ~/.config/cmdguard/
+echo '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/tmp"}' | ./target/release/cmdguard
 ```
 
 Expected: Output contains `"permissionDecision":"allow"`
@@ -1543,9 +1543,9 @@ git commit -m "feat: integrate all components in main entry point"
 Create `examples/policy.rego`:
 
 ```rego
-package claude.permissions
+package cmdguard
 
-import data.claude.permissions.stdlib
+import data.cmdguard.stdlib
 
 default decision = "ask"
 
@@ -1682,21 +1682,21 @@ Create `install.sh`:
 #!/bin/bash
 set -euo pipefail
 
-echo "Building claude-permissions..."
+echo "Building cmdguard..."
 cargo build --release
 
 echo "Installing binary..."
 mkdir -p ~/.local/bin
-cp target/release/claude-permissions ~/.local/bin/
-chmod +x ~/.local/bin/claude-permissions
+cp target/release/cmdguard ~/.local/bin/
+chmod +x ~/.local/bin/cmdguard
 
 echo "Installing policies..."
-mkdir -p ~/.config/claude-permissions
-cp policies/stdlib.rego ~/.config/claude-permissions/
+mkdir -p ~/.config/cmdguard
+cp policies/stdlib.rego ~/.config/cmdguard/
 
 # Only copy example policy if no policy.rego exists
-if [ ! -f ~/.config/claude-permissions/policy.rego ]; then
-    cp examples/policy.rego ~/.config/claude-permissions/
+if [ ! -f ~/.config/cmdguard/policy.rego ]; then
+    cp examples/policy.rego ~/.config/cmdguard/
     echo "Installed example policy.rego"
 else
     echo "Existing policy.rego preserved"
@@ -1716,7 +1716,7 @@ cat << 'EOF'
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/bin/claude-permissions"
+            "command": "~/.local/bin/cmdguard"
           }
         ]
       }
@@ -1725,7 +1725,7 @@ cat << 'EOF'
 }
 EOF
 echo ""
-echo "Policy files are in ~/.config/claude-permissions/"
+echo "Policy files are in ~/.config/cmdguard/"
 echo "Edit policy.rego to customize your rules."
 ```
 
@@ -1752,7 +1752,7 @@ git commit -m "feat: add installation script"
 Create `README.md`:
 
 ```markdown
-# claude-permissions
+# cmdguard
 
 A PreToolUse hook for Claude Code that provides policy-driven permission control using Rego.
 
@@ -1781,7 +1781,7 @@ Then add the hook to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/bin/claude-permissions"
+            "command": "~/.local/bin/cmdguard"
           }
         ]
       }
@@ -1792,7 +1792,7 @@ Then add the hook to `~/.claude/settings.json`:
 
 ## Configuration
 
-Policies live in `~/.config/claude-permissions/`:
+Policies live in `~/.config/cmdguard/`:
 
 - `stdlib.rego` - Standard helpers (git_subcommand, path checks, etc.)
 - `policy.rego` - Your custom rules
@@ -1800,9 +1800,9 @@ Policies live in `~/.config/claude-permissions/`:
 ## Writing Policies
 
 ```rego
-package claude.permissions
+package cmdguard
 
-import data.claude.permissions.stdlib
+import data.cmdguard.stdlib
 
 default decision = "ask"
 
@@ -1848,13 +1848,13 @@ Run policy tests:
 
 ```bash
 # Run all tests from policy_tests.yaml
-claude-permissions test
+cmdguard test
 
 # Run with verbose output
-claude-permissions test --verbose
+cmdguard test --verbose
 
 # Run specific test file
-claude-permissions test my_tests.yaml
+cmdguard test my_tests.yaml
 ```
 
 Test file format (`policy_tests.yaml`):
@@ -1876,8 +1876,8 @@ tests:
 Evaluate a single command:
 
 ```bash
-claude-permissions eval "git status"
-claude-permissions eval "nix develop --command cargo build"
+cmdguard eval "git status"
+cmdguard eval "nix develop --command cargo build"
 ```
 
 Enable logging:
@@ -1886,7 +1886,7 @@ Enable logging:
 export RUST_LOG=debug
 ```
 
-Logs written to `~/.local/state/claude-permissions/debug.log`
+Logs written to `~/.local/state/cmdguard/debug.log`
 
 ## License
 
@@ -1928,7 +1928,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "claude-permissions")]
+#[command(name = "cmdguard")]
 #[command(about = "Policy-driven permission control for Claude Code")]
 pub struct Cli {
     #[command(subcommand)]
@@ -1947,7 +1947,7 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
 
-        /// Policy directory (default: ~/.config/claude-permissions)
+        /// Policy directory (default: ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
     },
@@ -2267,8 +2267,8 @@ fn main() {
 fn get_policy_dir(override_dir: Option<PathBuf>) -> PathBuf {
     override_dir.unwrap_or_else(|| {
         dirs::config_dir()
-            .map(|d| d.join("claude-permissions"))
-            .unwrap_or_else(|| PathBuf::from("/etc/claude-permissions"))
+            .map(|d| d.join("cmdguard"))
+            .unwrap_or_else(|| PathBuf::from("/etc/cmdguard"))
     })
 }
 
@@ -2280,7 +2280,7 @@ fn run_tests(file: Option<PathBuf>, verbose: bool, policy_dir: Option<PathBuf>) 
 
     if !test_file_path.exists() {
         eprintln!("Test file not found: {:?}", test_file_path);
-        eprintln!("Create a test file or specify one with: claude-permissions test <file>");
+        eprintln!("Create a test file or specify one with: cmdguard test <file>");
         std::process::exit(1);
     }
 
@@ -2503,9 +2503,9 @@ Run: `cargo build --release`
 
 Test help:
 ```bash
-./target/release/claude-permissions --help
-./target/release/claude-permissions test --help
-./target/release/claude-permissions eval --help
+./target/release/cmdguard --help
+./target/release/cmdguard test --help
+./target/release/cmdguard eval --help
 ```
 
 **Step 7: Commit**
@@ -2527,8 +2527,8 @@ git commit -m "feat: add CLI with test and eval subcommands"
 Create `examples/policy_tests.yaml`:
 
 ```yaml
-# Policy tests for claude-permissions
-# Run with: claude-permissions test examples/policy_tests.yaml
+# Policy tests for cmdguard
+# Run with: cmdguard test examples/policy_tests.yaml
 
 tests:
   # ==========================================================================
@@ -2675,8 +2675,8 @@ Add to `install.sh` before the final echo:
 
 ```bash
 # Copy example test file
-if [ ! -f ~/.config/claude-permissions/policy_tests.yaml ]; then
-    cp examples/policy_tests.yaml ~/.config/claude-permissions/
+if [ ! -f ~/.config/cmdguard/policy_tests.yaml ]; then
+    cp examples/policy_tests.yaml ~/.config/cmdguard/
     echo "Installed example policy_tests.yaml"
 fi
 ```
@@ -2686,7 +2686,7 @@ fi
 Run:
 ```bash
 ./install.sh
-claude-permissions test --verbose
+cmdguard test --verbose
 ```
 
 Expected: All tests pass with verbose output
@@ -2709,7 +2709,7 @@ Run: `./install.sh`
 **Step 2: Run policy tests**
 
 ```bash
-claude-permissions test --verbose
+cmdguard test --verbose
 ```
 
 Expected: All tests pass
@@ -2717,9 +2717,9 @@ Expected: All tests pass
 **Step 3: Test CLI eval command**
 
 ```bash
-claude-permissions eval "git status"
-claude-permissions eval "git push --force origin main"
-claude-permissions eval "nix develop --command git status"
+cmdguard eval "git status"
+cmdguard eval "git push --force origin main"
+cmdguard eval "nix develop --command git status"
 ```
 
 **Step 4: Test as hook (stdin mode)**
@@ -2727,17 +2727,17 @@ claude-permissions eval "nix develop --command git status"
 ```bash
 # Test allowed command
 echo '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/tmp"}' | \
-  ~/.local/bin/claude-permissions
+  ~/.local/bin/cmdguard
 
 # Test denied command
 echo '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"},"cwd":"/tmp"}' | \
-  ~/.local/bin/claude-permissions
+  ~/.local/bin/cmdguard
 ```
 
 **Step 5: Verify outputs**
 
-- `claude-permissions test` → all pass
-- `claude-permissions eval "git status"` → Decision: Allow
+- `cmdguard test` → all pass
+- `cmdguard eval "git status"` → Decision: Allow
 - Hook mode git status → `"permissionDecision":"allow"`
 - Hook mode force push → `"permissionDecision":"deny"`
 

@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "claude-permissions")]
+#[command(name = "cmdguard")]
 #[command(about = "Policy-driven permission control for Claude Code")]
 #[command(version)]
 pub struct Cli {
@@ -22,7 +22,7 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
 
-        /// Policy directory (default: ~/.config/claude-permissions)
+        /// Policy directory (default: ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
     },
@@ -47,7 +47,7 @@ pub enum Commands {
 
     /// Validate Nickel configuration file
     Validate {
-        /// Policy directory (default: ~/.config/claude-permissions)
+        /// Policy directory (default: ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
     },
@@ -93,9 +93,9 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum HookAction {
-    /// Register claude-permissions as a PreToolUse hook
+    /// Register cmdguard as a PreToolUse hook
     Install,
-    /// Remove claude-permissions from hooks
+    /// Remove cmdguard from hooks
     Uninstall,
     /// Check if the hook is registered
     Status,

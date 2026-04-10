@@ -8,7 +8,7 @@
 //! - config/queries/python_dangerous.scm - dangerous pattern detection
 //! - config/queries/python_imports.scm - import extraction
 //!
-//! Users can override queries in ~/.config/claude-permissions/queries/
+//! Users can override queries in ~/.config/cmdguard/queries/
 
 use std::path::Path;
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};

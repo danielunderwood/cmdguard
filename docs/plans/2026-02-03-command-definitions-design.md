@@ -12,7 +12,7 @@
 
 ## Config File Location
 
-`~/.config/claude-permissions/commands.ncl`
+`~/.config/cmdguard/commands.ncl`
 
 Falls back to built-in defaults if file doesn't exist.
 

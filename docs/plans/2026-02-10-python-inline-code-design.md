@@ -222,7 +222,7 @@ Run code that does actual work, but restrict dangerous capabilities:
 
 **Architecture:**
 ```
-claude-permissions daemon
+cmdguard daemon
         │
         ▼
 ┌─────────────────────────────┐
@@ -321,7 +321,7 @@ Execution mode code
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                   claude-permissions                         │
+│                   cmdguard                         │
 │                                                             │
 │  ┌─────────────────┐  ┌─────────────────────────────────┐  │
 │  │ Python Analyzer │  │ Execution Sandbox               │  │

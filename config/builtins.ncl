@@ -1,4 +1,4 @@
-# Built-in command definitions for claude-permissions
+# Built-in command definitions for cmdguard
 #
 # This file is loaded automatically before user's commands.ncl.
 # Users can override any definition by redefining it in their config.

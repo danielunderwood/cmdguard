@@ -74,7 +74,7 @@ fn is_our_entry(entry: &Value) -> bool {
         hooks.iter().any(|hook| {
             hook.get("command")
                 .and_then(|c| c.as_str())
-                .map(|c| c.ends_with("claude-permissions"))
+                .map(|c| c.ends_with("cmdguard"))
                 .unwrap_or(false)
         })
     } else {
@@ -267,7 +267,7 @@ mod tests {
     fn test_install_creates_new_settings() {
         let tmp = TempDir::new().unwrap();
         let path = setup_env(&tmp);
-        let bin = "/usr/local/bin/claude-permissions";
+        let bin = "/usr/local/bin/cmdguard";
 
         assert!(!path.exists());
         install_to(&path, bin);
@@ -286,7 +286,7 @@ mod tests {
     fn test_install_idempotent() {
         let tmp = TempDir::new().unwrap();
         let path = setup_env(&tmp);
-        let bin = "/usr/local/bin/claude-permissions";
+        let bin = "/usr/local/bin/cmdguard";
 
         install_to(&path, bin);
         install_to(&path, bin);
@@ -301,7 +301,7 @@ mod tests {
     fn test_install_preserves_existing_settings() {
         let tmp = TempDir::new().unwrap();
         let path = setup_env(&tmp);
-        let bin = "/usr/local/bin/claude-permissions";
+        let bin = "/usr/local/bin/cmdguard";
 
         // Create settings with existing content
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -333,7 +333,7 @@ mod tests {
     fn test_uninstall_removes_entry() {
         let tmp = TempDir::new().unwrap();
         let path = setup_env(&tmp);
-        let bin = "/usr/local/bin/claude-permissions";
+        let bin = "/usr/local/bin/cmdguard";
 
         install_to(&path, bin);
         assert!(is_registered(&path));
@@ -358,7 +358,7 @@ mod tests {
                     },
                     {
                         "matcher": "Bash",
-                        "hooks": [{"type": "command", "command": "/usr/local/bin/claude-permissions"}]
+                        "hooks": [{"type": "command", "command": "/usr/local/bin/cmdguard"}]
                     }
                 ]
             }
@@ -393,7 +393,7 @@ mod tests {
     fn test_status_registered() {
         let tmp = TempDir::new().unwrap();
         let path = setup_env(&tmp);
-        let bin = "/usr/local/bin/claude-permissions";
+        let bin = "/usr/local/bin/cmdguard";
 
         install_to(&path, bin);
         assert!(is_registered(&path));

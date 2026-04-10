@@ -1,5 +1,5 @@
 [package]
-name = "claude-permissions"
+name = "cmdguard"
 version = "0.9.2"
 edition = "2021"
 description = "PreToolUse hook for policy-driven permission control"

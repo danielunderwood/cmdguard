@@ -297,7 +297,7 @@ Update `src/test_runner.rs` to include resolved command info in test evaluation.
 ## Example Policy Usage
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 

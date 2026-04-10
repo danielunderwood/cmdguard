@@ -12,7 +12,7 @@
 
 ## Config File Location
 
-`~/.config/claude-permissions/commands.ncl`
+`~/.config/cmdguard/commands.ncl`
 
 Falls back to built-in Rust definitions if file doesn't exist.
 
@@ -263,7 +263,7 @@ Expected overhead:
 - Define NickelConfig struct and WrapperExtractResult
 
 ### Task 2: Implement config loading
-- Load from `~/.config/claude-permissions/commands.ncl`
+- Load from `~/.config/cmdguard/commands.ncl`
 - Handle missing file (return empty config)
 - Handle parse errors (log warning, return empty config)
 

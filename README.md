@@ -1,4 +1,4 @@
-# claude-permissions
+# cmdguard
 
 A PreToolUse hook for Claude Code that provides policy-driven permission control using Rego.
 
@@ -10,7 +10,7 @@ A PreToolUse hook for Claude Code that provides policy-driven permission control
 - **Trust zones**: Classify binaries as system, user, project, or unknown
 - **Parsed flags**: Access flags by name (e.g., `input.parsed_flags.force`) instead of string matching
 - **Path-typed arguments**: Positional args with paths are resolved and classified
-- **Project-local rules**: Per-project policies in `.claude/permissions/`
+- **Project-local rules**: Per-project policies in `.cmdguard/`
 - **Configurable via Nickel**: Define custom wrappers and command schemas
 - **Fail-safe**: Defaults to `ask` on any error
 
@@ -31,7 +31,7 @@ Then add the hook to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/bin/claude-permissions"
+            "command": "~/.local/bin/cmdguard"
           }
         ]
       }
@@ -63,7 +63,7 @@ config/                      # User's working directory (symlink target)
 
 ## Configuration
 
-Policies live in `~/.config/claude-permissions/`:
+Policies live in `~/.config/cmdguard/`:
 
 - `stdlib.rego` - Standard helpers (git_subcommand, path checks, etc.)
 - `policy.rego` - Your custom rules
@@ -74,10 +74,10 @@ For active development, symlink your config directory to this repo:
 
 ```bash
 # Remove installed config (if exists)
-rm -rf ~/.config/claude-permissions
+rm -rf ~/.config/cmdguard
 
 # Symlink to repo's config directory
-ln -s /path/to/claude-hooks/config ~/.config/claude-permissions
+ln -s /path/to/cmdguard/config ~/.config/cmdguard
 ```
 
 This lets you edit policies in the repo and test immediately. The install script detects symlinks and won't overwrite them.
@@ -88,11 +88,11 @@ The `examples/split/` directory shows how to organize rules by domain. Copy the 
 
 ```bash
 # Start with stdlib
-cp examples/split/../../../config/stdlib.rego ~/.config/claude-permissions/
+cp examples/split/../../../config/stdlib.rego ~/.config/cmdguard/
 
 # Add only the rules you want
-cp examples/split/git.rego ~/.config/claude-permissions/
-cp examples/split/cargo.rego ~/.config/claude-permissions/
+cp examples/split/git.rego ~/.config/cmdguard/
+cp examples/split/cargo.rego ~/.config/cmdguard/
 ```
 
 All `.rego` files in the directory are loaded and merged automatically.
@@ -102,9 +102,9 @@ All `.rego` files in the directory are loaded and merged automatically.
 Policies use named rules with priority-based resolution:
 
 ```rego
-package claude.permissions
+package cmdguard
 
-import data.claude.permissions.stdlib
+import data.cmdguard.stdlib
 
 # Safe git read operations
 rules["safe_git_read"] := {
@@ -219,7 +219,7 @@ Flag definitions come from built-in command schemas and can be extended via Nick
 
 ## Project-Local Rules
 
-Add project-specific policies in `.claude/permissions/`:
+Add project-specific policies in `.cmdguard/`:
 
 ```
 my-project/
@@ -243,7 +243,7 @@ rules["allow_npm_scripts"] := {
 
 ## Nickel Configuration
 
-Custom wrappers and command definitions go in `~/.config/claude-permissions/commands.ncl`:
+Custom wrappers and command definitions go in `~/.config/cmdguard/commands.ncl`:
 
 ```nickel
 {
@@ -283,13 +283,13 @@ Run policy tests:
 
 ```bash
 # Run all tests from policy_tests.yaml
-claude-permissions test
+cmdguard test
 
 # Run with verbose output
-claude-permissions test --verbose
+cmdguard test --verbose
 
 # Run specific test file
-claude-permissions test my_tests.yaml
+cmdguard test my_tests.yaml
 ```
 
 Test file format (`policy_tests.yaml`):
@@ -311,21 +311,21 @@ tests:
 Evaluate a single command:
 
 ```bash
-claude-permissions eval "git status"
-claude-permissions eval "nix develop --command cargo build"
-claude-permissions eval "RUST_LOG=debug cargo run"
+cmdguard eval "git status"
+cmdguard eval "nix develop --command cargo build"
+cmdguard eval "RUST_LOG=debug cargo run"
 ```
 
 Show full policy input (useful for writing Rego rules):
 
 ```bash
-claude-permissions eval "rm -rf ./temp" --show-input
+cmdguard eval "rm -rf ./temp" --show-input
 ```
 
 Validate Nickel configuration:
 
 ```bash
-claude-permissions validate
+cmdguard validate
 ```
 
 Enable logging:
@@ -334,7 +334,7 @@ Enable logging:
 export RUST_LOG=debug
 ```
 
-Logs written to `~/.local/state/claude-permissions/debug.log`
+Logs written to `~/.local/state/cmdguard/debug.log`
 
 ## License
 

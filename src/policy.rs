@@ -169,7 +169,7 @@ impl PolicyEngine {
     }
 
     fn eval_result(&mut self) -> PolicyResult {
-        match self.engine.eval_rule("data.claude.permissions.result".to_string()) {
+        match self.engine.eval_rule("data.cmdguard.result".to_string()) {
             Ok(value) => {
                 // Try to parse as object with decision, reason, rule, explicit
                 let obj = match value.as_object() {

@@ -1,5 +1,5 @@
-# Policy tests for claude-permissions
-# Run with: claude-permissions test examples/policy_tests.yaml
+# Policy tests for cmdguard
+# Run with: cmdguard test examples/policy_tests.yaml
 
 tests:
   # ==========================================================================

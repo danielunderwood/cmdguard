@@ -1,4 +1,4 @@
-package claude.permissions
+package cmdguard
 
 import rego.v1
 

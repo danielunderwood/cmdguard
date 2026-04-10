@@ -1,4 +1,4 @@
-package claude.permissions
+package cmdguard
 
 import future.keywords.in
 import future.keywords.if

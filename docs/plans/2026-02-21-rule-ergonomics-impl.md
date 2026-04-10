@@ -94,7 +94,7 @@ git commit -m "feat: add declarative allowed_subcommands table to stdlib.rego"
 Replace the entire file with:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -159,7 +159,7 @@ git commit -m "refactor: migrate rust.rego to stdlib helpers and allowed_subcomm
 Replace the entire file with:
 
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -268,7 +268,7 @@ For each file, replace inline `{ "decision": ..., "reason": ..., "priority": ...
 
 `config/safe.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -323,7 +323,7 @@ rules["unknown_binary_caution"] := ask("Binary from unknown location - please ve
 
 `config/python.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -395,7 +395,7 @@ rules["python_deny_subprocess"] := deny_at("Python code contains subprocess oper
 
 `config/gh.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -434,7 +434,7 @@ rules["gh_cli_actions_runs"] := allow("Allowed gh command") if is_gh_api_action_
 
 `config/javascript.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -455,7 +455,7 @@ rules["safe_yarn"] := allow("Safe yarn command") if {
 
 `config/nix.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -484,7 +484,7 @@ rules["allowed_nh"] := allow("Allowed nh command") if {
 
 `config/mise.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -512,7 +512,7 @@ rules["allowed_mise_env"] := allow("Allowed mise command with env") if {
 
 `config/opa.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -532,7 +532,7 @@ rules["safe_opa"] := allow("Allowed opa command") if {
 
 `config/find.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -553,7 +553,7 @@ rules["find_with_exec"] := ask("Find command with -exec requires approval") if f
 
 `config/inproject.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -565,7 +565,7 @@ rules["project_associated_binary"] := allow("Binary in project") if {
 
 `config/nickel.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -577,7 +577,7 @@ rules["nickel"] := allow("Allowed nickel command") if {
 
 `config/kubectl.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -600,7 +600,7 @@ rules["flux"] := allow("flux") if {
 
 `config/rego.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -611,7 +611,7 @@ rules["regal"] := allow("Regal commands allowed") if {
 
 `config/psql.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -653,7 +653,7 @@ Note: The examples use the older flat `decision`/`reason` pattern (not the `rule
 ```rego
 # METADATA
 # entrypoint: true
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -712,7 +712,7 @@ rules["deny_rm_outside_project"] := deny("Recursive delete outside project root 
 
 `examples/split/git.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -737,7 +737,7 @@ rules["deny_force_push"] := deny("Force push is blocked - use regular push inste
 
 `examples/split/cargo.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -748,7 +748,7 @@ allowed_subcommands["cargo"] := {
 
 `examples/split/npm.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 
@@ -760,7 +760,7 @@ rules["safe_package_manager"] := allow("Safe package manager operation") if {
 
 `examples/split/safety.rego`:
 ```rego
-package claude.permissions
+package cmdguard
 
 import rego.v1
 

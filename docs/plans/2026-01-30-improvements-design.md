@@ -4,7 +4,7 @@ Date: 2026-01-30
 
 ## Overview
 
-Six improvements to the claude-permissions hook system:
+Six improvements to the cmdguard hook system:
 
 1. Compound command parsing
 2. Dual policy engine (Rego + Nickel)
@@ -183,9 +183,9 @@ Add PATH resolution and trust zone classification to policy input.
 
 ```json
 {
-  "command_as_typed": "./target/debug/claude-permissions",
-  "binary_name": "claude-permissions",
-  "resolved_path": "/Users/user/project/target/debug/claude-permissions",
+  "command_as_typed": "./target/debug/cmdguard",
+  "binary_name": "cmdguard",
+  "resolved_path": "/Users/user/project/target/debug/cmdguard",
   "resolved_trust_zone": "project",
   "is_symlink": false,
   "symlink_target": null
@@ -222,7 +222,7 @@ deny_untrusted_binary if {
 }
 
 allowed_local_tool if {
-    input.binary_name == "claude-permissions"
+    input.binary_name == "cmdguard"
     input.resolved_trust_zone == "project"
 }
 ```
@@ -235,11 +235,11 @@ All rules are global. Projects may need custom policies.
 
 ### Solution
 
-Support project-local rules in `.claude/permissions/` with priority-based merging.
+Support project-local rules in `.cmdguard/` with priority-based merging.
 
 ### Location
 
-`.claude/permissions/*.rego` and/or `.claude/permissions/*.ncl`
+`.cmdguard/*.rego` and/or `.cmdguard/*.ncl`
 
 ### Priority-Based Merge
 
@@ -274,8 +274,8 @@ rules["allow_rm_in_temp"] := {
 
 ### Loading Order
 
-1. Load global rules from `~/.config/claude-permissions/`
-2. Load project rules from `$PROJECT_ROOT/.claude/permissions/`
+1. Load global rules from `~/.config/cmdguard/`
+2. Load project rules from `$PROJECT_ROOT/.cmdguard/`
 3. Merge by priority at evaluation time
 
 ## 6. Configurable Wrappers & Command Definitions

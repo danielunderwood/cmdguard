@@ -17,7 +17,7 @@ Things that popped into my head, but aren't yet implemented.
     - Some tools have subcommands with their own flags (`git commit --help`)
     - Detecting flag types (boolean vs with_arg) from description
     - Identifying positional args and their semantics (path vs string)
-  - Could be a separate CLI command: `claude-permissions generate <cmd>`
+  - Could be a separate CLI command: `cmdguard generate <cmd>`
   - Or interactive: run command, observe actual usage patterns
 
 - Nickel post-parse transforms (more flexible than claim_pattern)

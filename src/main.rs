@@ -73,7 +73,7 @@ fn main() {
             run_query(&lang, query, query_file, code, file);
         }
         Some(Commands::Version) => {
-            println!("claude-permissions {}", env!("CARGO_PKG_VERSION"));
+            println!("cmdguard {}", env!("CARGO_PKG_VERSION"));
         }
         Some(Commands::Hook { action }) => {
             hook::run(action);
@@ -277,16 +277,16 @@ fn extract_python_c_code(command: &[String]) -> Option<String> {
 
 fn get_policy_dir(override_dir: Option<PathBuf>) -> PathBuf {
     override_dir.unwrap_or_else(|| {
-        // Always use ~/.config/claude-permissions for consistency across platforms
+        // Always use ~/.config/cmdguard for consistency across platforms
         dirs::home_dir()
-            .map(|d| d.join(".config/claude-permissions"))
-            .unwrap_or_else(|| PathBuf::from("/etc/claude-permissions"))
+            .map(|d| d.join(".config/cmdguard"))
+            .unwrap_or_else(|| PathBuf::from("/etc/cmdguard"))
     })
 }
 
 /// Get the project-local policy directory if it exists
 fn get_project_policy_dir(project_root: Option<&PathBuf>) -> Option<PathBuf> {
-    project_root.map(|root| root.join(".claude/permissions")).filter(|p| p.exists())
+    project_root.map(|root| root.join(".cmdguard")).filter(|p| p.exists())
 }
 
 /// Load policies from global directory and optionally from project-local directory
@@ -315,7 +315,7 @@ fn run_tests(file: Option<PathBuf>, verbose: bool, policy_dir: Option<PathBuf>) 
 
     if !test_file_path.exists() {
         eprintln!("Test file not found: {:?}", test_file_path);
-        eprintln!("Create a test file or specify one with: claude-permissions test <file>");
+        eprintln!("Create a test file or specify one with: cmdguard test <file>");
         std::process::exit(1);
     }
 
