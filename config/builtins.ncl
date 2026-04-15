@@ -188,6 +188,65 @@ in
       positional = [{ name = "paths", type = "path", variadic = true, optional = true }],
     },
 
+    find = {
+      flags = {
+        type = arg_flag [] "-type",
+        name = arg_flag [] "-name",
+        path = arg_flag [] "-path",
+        maxdepth = arg_flag [] "-maxdepth",
+        exec = bool_flag [] "-exec",
+        delete = bool_flag [] "-delete",
+      },
+      positional = [{ name = "paths", type = "path", variadic = true, optional = true }],
+    },
+
+    sed = {
+      flags = {
+        in_place = { type = "with_arg", short = ["-i"], long = null, optional_arg = true },
+        expression = arg_flag "-e" null,
+        quiet = bool_flag "-n" null,
+      },
+      positional = [
+        string_arg "script",
+        { name = "files", type = "path", variadic = true, optional = true },
+      ],
+    },
+
+    grep = {
+      flags = {
+        recursive = bool_flag ["-r", "-R"] "--recursive",
+        ignore_case = bool_flag "-i" "--ignore-case",
+        files_with_matches = bool_flag "-l" "--files-with-matches",
+        invert_match = bool_flag "-v" "--invert-match",
+        line_number = bool_flag "-n" "--line-number",
+        count = bool_flag "-c" "--count",
+        word_regexp = bool_flag "-w" "--word-regexp",
+        context = arg_flag "-C" "--context",
+      },
+      positional = [
+        string_arg "pattern",
+        { name = "files", type = "path", variadic = true, optional = true },
+      ],
+    },
+
+    rg = {
+      flags = {
+        ignore_case = bool_flag "-i" "--ignore-case",
+        files_with_matches = bool_flag "-l" "--files-with-matches",
+        invert_match = bool_flag "-v" "--invert-match",
+        line_number = bool_flag "-n" "--line-number",
+        count = bool_flag "-c" "--count",
+        word_regexp = bool_flag "-w" "--word-regexp",
+        type_filter = arg_flag "-t" "--type",
+        glob = arg_flag "-g" "--glob",
+        context = arg_flag "-C" "--context",
+      },
+      positional = [
+        string_arg "pattern",
+        { name = "paths", type = "path", variadic = true, optional = true },
+      ],
+    },
+
     # head/tail support legacy -NUM syntax (e.g., tail -30)
     # Disable short flag combining so -30 isn't expanded to -3 -0
     head = {
@@ -213,6 +272,42 @@ in
       },
 
     # -------------------------------------------------------------------------
+    # Network / File Transfer
+    # -------------------------------------------------------------------------
+    wget = {
+      flags = {
+        output_document = arg_flag "-O" "--output-document",
+        quiet = bool_flag "-q" "--quiet",
+        recursive = bool_flag "-r" "--recursive",
+        level = arg_flag "-l" "--level",
+        no_clobber = bool_flag "-nc" "--no-clobber",
+      },
+      positional = [strings_arg "urls"],
+    },
+
+    rsync = {
+      flags = {
+        archive = bool_flag "-a" "--archive",
+        verbose = bool_flag "-v" "--verbose",
+        delete = bool_flag [] "--delete",
+        dry_run = bool_flag "-n" "--dry-run",
+        compress = bool_flag "-z" "--compress",
+        exclude = repeat_flag [] "--exclude",
+      },
+      positional = [
+        paths_arg "sources",
+        last_arg "destination" "path",
+      ],
+    },
+
+    tee = {
+      flags = {
+        append = bool_flag "-a" "--append",
+      },
+      positional = [paths_arg "files"],
+    },
+
+    # -------------------------------------------------------------------------
     # Wrappers
     # -------------------------------------------------------------------------
     sudo = {
@@ -224,6 +319,19 @@ in
         login = bool_flag "-i" "--login",
         preserve_env = bool_flag "-E" "--preserve-env",
       },
+    },
+
+    xargs = {
+      is_wrapper = true,
+      flags = {
+        null_terminated = bool_flag "-0" null,
+        max_args = arg_flag "-n" null,
+        max_procs = arg_flag "-P" null,
+      },
+    },
+
+    timeout = {
+      is_wrapper = true,
     },
 
     # -------------------------------------------------------------------------
@@ -334,6 +442,51 @@ in
         ci = stub,
         start = stub,
         build = stub,
+      },
+    },
+
+    yarn = {
+      subcommands = {
+        add = {
+          flags = {
+            dev = bool_flag "-D" "--dev",
+          },
+          positional = [{ name = "packages", type = "string", variadic = true, optional = true }],
+        },
+        remove = {
+          positional = [strings_arg "packages"],
+        },
+        run = {
+          positional = [string_arg "script"],
+        },
+        test = stub,
+        build = stub,
+        install = stub,
+        dev = stub,
+        start = stub,
+      },
+    },
+
+    pnpm = {
+      subcommands = {
+        add = {
+          flags = {
+            save_dev = bool_flag "-D" "--save-dev",
+            global = bool_flag "-g" "--global",
+          },
+          positional = [{ name = "packages", type = "string", variadic = true, optional = true }],
+        },
+        remove = {
+          positional = [strings_arg "packages"],
+        },
+        run = {
+          positional = [string_arg "script"],
+        },
+        test = stub,
+        build = stub,
+        install = stub,
+        dev = stub,
+        start = stub,
       },
     },
 
@@ -454,6 +607,37 @@ in
         stop = stub,
         rm = stub,
         rmi = stub,
+      },
+    },
+
+    # -------------------------------------------------------------------------
+    # GitHub CLI
+    # -------------------------------------------------------------------------
+    gh = {
+      subcommands = {
+        pr = {
+          subcommands =
+            stubs ["checks", "close", "comment", "create", "diff", "edit", "list", "merge", "ready", "review", "view"],
+        },
+        issue = {
+          subcommands =
+            stubs ["close", "comment", "create", "delete", "edit", "list", "pin", "reopen", "status", "transfer", "unpin", "view"],
+        },
+        run = {
+          subcommands = stubs ["cancel", "delete", "download", "list", "rerun", "view", "watch"],
+        },
+        repo = {
+          subcommands = stubs ["archive", "clone", "create", "delete", "edit", "fork", "list", "rename", "view"],
+        },
+        api = {
+          positional = [strings_arg "args"],
+        },
+        search = {
+          subcommands = stubs ["code", "commits", "issues", "prs", "repos"],
+        },
+        auth = {
+          subcommands = stubs ["login", "logout", "refresh", "status", "token"],
+        },
       },
     },
   },
