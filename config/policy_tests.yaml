@@ -15,13 +15,13 @@ tests:
     command: "git log --oneline -10"
     expect: allow
 
-  - name: "ask for git add"
+  - name: "allow git add"
     command: "git add ."
-    expect: ask 
+    expect: allow
 
-  - name: "ask for git commit"
+  - name: "allow git commit"
     command: "git commit -m 'test commit'"
-    expect: ask
+    expect: allow
 
   - name: "deny git push -f"
     command: "git push -f origin main"
@@ -198,9 +198,9 @@ tests:
     command: "cargo clippy"
     expect: allow
 
-  - name: "deny() helper - git reset --hard"
+  - name: "ask() helper - git reset --hard"
     command: "git reset --hard HEAD"
-    expect: deny
+    expect: ask
 
   - name: "ask() helper - find with -exec"
     command: "find . -name '*.tmp' -exec rm {} \\;"

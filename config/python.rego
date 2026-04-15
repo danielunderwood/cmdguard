@@ -17,19 +17,10 @@ is_pytest if {
 	is_python_module("pytest")
 }
 
-is_tests_main if {
-	is_python
-	input.positional.file[0].raw == "tests/main.py"
-}
-
 is_json_tool if is_python_module("json.tool")
 
 rules["pytest"] := allow("Pytest allowed") if {
 	is_pytest
-}
-
-rules["tests_main"] := allow("tests/main.py allowed") if {
-	is_tests_main
 }
 
 rules["json_tool"] := allow("json.tool allowed") if {
