@@ -237,6 +237,77 @@ impl PolicyEngine {
         }
     }
 
+    /// Evaluate all matching rules for debugging purposes
+    /// Returns all rules that matched, not just the highest priority winner
+    pub fn evaluate_all_rules(&mut self, input: &PolicyInput) -> Vec<PolicyResult> {
+        // Set input data
+        let input_json = match serde_json::to_value(input) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to serialize policy input: {}", e);
+                return vec![];
+            }
+        };
+
+        // Convert serde_json::Value to regorus::Value
+        let input_value: regorus::Value = input_json.into();
+        self.engine.set_input(input_value);
+
+        // Query all rules - try both all_rules (helper) and rules (direct)
+        let query_result = self.engine.eval_rule("data.cmdguard.all_rules".to_string())
+            .or_else(|_| self.engine.eval_rule("data.cmdguard.rules".to_string()));
+
+        match query_result {
+            Ok(value) => {
+                let obj = match value.as_object() {
+                    Ok(o) => o,
+                    Err(_) => return vec![],
+                };
+
+                let mut results = vec![];
+                for (rule_name_val, rule_obj_val) in obj.iter() {
+                    let rule_name = match rule_name_val.as_string() {
+                        Ok(s) => s.to_string(),
+                        Err(_) => continue,
+                    };
+
+                    let rule_obj = match rule_obj_val.as_object() {
+                        Ok(o) => o,
+                        Err(_) => continue,
+                    };
+
+                    let decision = rule_obj
+                        .get(&"decision".into())
+                        .and_then(|v| v.as_string().ok())
+                        .map(|s| match s.as_ref() {
+                            "allow" => Decision::Allow,
+                            "deny" => Decision::Deny,
+                            _ => Decision::Ask,
+                        })
+                        .unwrap_or(Decision::Ask);
+
+                    let reason = rule_obj
+                        .get(&"reason".into())
+                        .and_then(|v| v.as_string().ok())
+                        .map(|s| s.to_string());
+
+                    results.push(PolicyResult {
+                        decision,
+                        reason,
+                        rule: Some(rule_name),
+                        explicit: true,
+                    });
+                }
+
+                results
+            }
+            Err(_) => {
+                // It's okay if all_rules/rules doesn't exist or can't be queried
+                vec![]
+            }
+        }
+    }
+
     /// Query allowed_subcommands table from policy
     pub fn query_allowed_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
         match self.engine.eval_rule("data.cmdguard.allowed_subcommands".to_string()) {

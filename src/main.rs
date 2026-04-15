@@ -797,13 +797,30 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
 
         let result = engine.evaluate(&policy_input);
         println!("Decision:   {:?}", result.decision);
-        if let Some(reason) = result.reason {
+        if let Some(reason) = &result.reason {
             println!("Reason:     {}", reason);
         }
-        if let Some(rule) = result.rule {
+        if let Some(rule) = &result.rule {
             println!("Rule:       {}", rule);
         }
         println!("Explicit:   {}", result.explicit);
+
+        // Show all matching rules for debugging
+        let all_rules = engine.evaluate_all_rules(&policy_input);
+        if all_rules.len() > 1 {
+            println!();
+            println!("Also matched:");
+            for other_rule in &all_rules {
+                // Skip the winning rule (already displayed)
+                if other_rule.rule == result.rule {
+                    continue;
+                }
+
+                if let (Some(rule_name), Some(reason)) = (&other_rule.rule, &other_rule.reason) {
+                    println!("  {} ({:?}) — {}", rule_name, other_rule.decision, reason);
+                }
+            }
+        }
     }
 
     // Show final result

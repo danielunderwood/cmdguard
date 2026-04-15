@@ -90,6 +90,9 @@ rules[rule_name] := allow(reason) if {
 # Each policy file adds rules to the `rules` map
 # This picks the highest priority matching rule
 
+# Helper to expose all matching rules for debugging (used by eval command)
+all_rules := rules
+
 default result := {
 	"decision": "ask",
 	"reason": "No rule matched",
