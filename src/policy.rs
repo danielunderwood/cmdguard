@@ -98,6 +98,14 @@ pub struct PolicyResult {
     pub explicit: bool,
 }
 
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct RuleInfo {
+    pub name: String,
+    pub decision: String,
+    pub priority: i64,
+}
+
 pub struct PolicyEngine {
     engine: Engine,
 }
@@ -226,6 +234,80 @@ impl PolicyEngine {
                     explicit: false,
                 }
             }
+        }
+    }
+
+    /// Query allowed_subcommands table from policy
+    pub fn query_allowed_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
+        match self.engine.eval_rule("data.cmdguard.allowed_subcommands".to_string()) {
+            Ok(value) => {
+                let obj = match value.as_object() {
+                    Ok(o) => o,
+                    Err(_) => return vec![],
+                };
+
+                let mut result = vec![];
+                for (binary_val, subcmds_val) in obj.iter() {
+                    if let Ok(binary) = binary_val.as_string() {
+                        let mut subcmds = vec![];
+
+                        // Try to parse as set
+                        if let Ok(set) = subcmds_val.as_set() {
+                            for item in set.iter() {
+                                if let Ok(s) = item.as_string() {
+                                    subcmds.push(s.to_string());
+                                }
+                            }
+                        }
+
+                        if !subcmds.is_empty() {
+                            subcmds.sort();
+                            result.push((binary.to_string(), subcmds));
+                        }
+                    }
+                }
+
+                result.sort_by(|a, b| a.0.cmp(&b.0));
+                result
+            }
+            Err(_) => vec![],
+        }
+    }
+
+    /// Query denied_subcommands table from policy
+    pub fn query_denied_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
+        match self.engine.eval_rule("data.cmdguard.denied_subcommands".to_string()) {
+            Ok(value) => {
+                let obj = match value.as_object() {
+                    Ok(o) => o,
+                    Err(_) => return vec![],
+                };
+
+                let mut result = vec![];
+                for (binary_val, subcmds_val) in obj.iter() {
+                    if let Ok(binary) = binary_val.as_string() {
+                        let mut subcmds = vec![];
+
+                        // Try to parse as set
+                        if let Ok(set) = subcmds_val.as_set() {
+                            for item in set.iter() {
+                                if let Ok(s) = item.as_string() {
+                                    subcmds.push(s.to_string());
+                                }
+                            }
+                        }
+
+                        if !subcmds.is_empty() {
+                            subcmds.sort();
+                            result.push((binary.to_string(), subcmds));
+                        }
+                    }
+                }
+
+                result.sort_by(|a, b| a.0.cmp(&b.0));
+                result
+            }
+            Err(_) => vec![],
         }
     }
 }

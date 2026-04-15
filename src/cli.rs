@@ -95,6 +95,13 @@ pub enum Commands {
         #[command(subcommand)]
         action: BaseAction,
     },
+
+    /// Show loaded policies, rules, and tables
+    Status {
+        /// Policy directory (default: ~/.config/cmdguard)
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]

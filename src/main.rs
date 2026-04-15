@@ -121,6 +121,9 @@ fn main() {
         Some(Commands::Base { action }) => match action {
             cli::BaseAction::Sync => run_base_sync(),
         },
+        Some(Commands::Status { policy_dir }) => {
+            run_status(policy_dir);
+        }
         None => {
             // Default: run as hook (read from stdin)
             run_hook();
@@ -240,6 +243,86 @@ import rego.v1
 
     println!();
     println!("Base policies synced to {}", base_dir.display());
+}
+
+fn run_status(policy_dir: Option<PathBuf>) {
+    let policy_dir = get_policy_dir(policy_dir);
+    let base_dir = policy_dir.join("base");
+    let policies_dir = policy_dir.join("policies");
+
+    println!("Policy directory: {}", policy_dir.display());
+    println!();
+
+    // List loaded files
+    println!("Loaded policy files:");
+    let mut file_count = 0;
+
+    for dir_info in [("base", &base_dir), ("policies", &policies_dir)] {
+        let (label, dir) = dir_info;
+        if dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("rego") {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        println!("  {}/{}", label, name);
+                        file_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: flat directory
+    if file_count == 0 && policy_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&policy_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("rego") {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    println!("  {}", name);
+                    file_count += 1;
+                }
+            }
+        }
+    }
+
+    if file_count == 0 {
+        println!("  (none)");
+    }
+    println!();
+
+    // Load engine and query tables
+    let mut engine = PolicyEngine::new();
+    if let Err(e) = load_all_policies(&mut engine, &policy_dir, None) {
+        eprintln!("Error loading policies: {}", e);
+        return;
+    }
+
+    // Show tables
+    println!("Tables:");
+    let allowed = engine.query_allowed_subcommands();
+    if !allowed.is_empty() {
+        print!("  allowed_subcommands: ");
+        let entries: Vec<String> = allowed.iter()
+            .map(|(binary, subcmds)| format!("{}({})", binary, subcmds.len()))
+            .collect();
+        println!("{}", entries.join(", "));
+    }
+
+    let denied = engine.query_denied_subcommands();
+    if !denied.is_empty() {
+        print!("  denied_subcommands: ");
+        let entries: Vec<String> = denied.iter()
+            .map(|(binary, subcmds)| format!("{}({})", binary, subcmds.len()))
+            .collect();
+        println!("{}", entries.join(", "));
+    }
+
+    if allowed.is_empty() && denied.is_empty() {
+        println!("  (none)");
+    }
+    println!();
 }
 
 fn run_validate(policy_dir: Option<PathBuf>) {
