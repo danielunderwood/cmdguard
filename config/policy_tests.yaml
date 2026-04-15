@@ -244,3 +244,71 @@ tests:
   - name: "allowed_with_args still works with empty denied_with_args"
     command: "cargo build"
     expect: allow
+
+  # ==========================================================================
+  # Docker
+  # ==========================================================================
+
+  - name: "allow docker ps"
+    command: "docker ps"
+    expect: allow
+
+  - name: "allow docker build"
+    command: "docker build -t myapp ."
+    expect: allow
+
+  - name: "ask docker run"
+    command: "docker run --rm ubuntu ls"
+    expect: ask
+
+  - name: "ask docker exec"
+    command: "docker exec -it mycontainer bash"
+    expect: ask
+
+  - name: "deny docker push"
+    command: "docker push myimage"
+    expect: deny
+
+  # ==========================================================================
+  # File Operations
+  # ==========================================================================
+
+  - name: "ask for rm -rf (no project root in test)"
+    command: "rm -rf ./temp"
+    expect: ask
+
+  # ==========================================================================
+  # Network
+  # ==========================================================================
+
+  - name: "deny wget recursive"
+    command: "wget -r https://example.com"
+    expect: deny
+
+  - name: "deny rsync --delete"
+    command: "rsync --delete src/ dest/"
+    expect: deny
+
+  # ==========================================================================
+  # Sed
+  # ==========================================================================
+
+  - name: "allow sed without -i"
+    command: "sed 's/foo/bar/' file.txt"
+    expect: allow
+
+  - name: "ask sed -i"
+    command: "sed -i 's/foo/bar/' file.txt"
+    expect: ask
+
+  # ==========================================================================
+  # Find
+  # ==========================================================================
+
+  - name: "allow find without exec or delete"
+    command: "find . -name '*.tmp'"
+    expect: allow
+
+  - name: "deny find with -delete"
+    command: "find . -name '*.tmp' -delete"
+    expect: deny
