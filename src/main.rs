@@ -18,6 +18,46 @@ mod resolver;
 mod test_runner;
 mod tokenizer;
 
+// Embedded base policy files
+mod embedded {
+    pub const STDLIB_REGO: &str = include_str!("../config/stdlib.rego");
+    pub const SAFE_REGO: &str = include_str!("../config/safe.rego");
+    pub const GIT_REGO: &str = include_str!("../config/git.rego");
+    pub const RUST_REGO: &str = include_str!("../config/rust.rego");
+    pub const GO_REGO: &str = include_str!("../config/go.rego");
+    pub const PYTHON_REGO: &str = include_str!("../config/python.rego");
+    pub const JAVASCRIPT_REGO: &str = include_str!("../config/javascript.rego");
+    pub const GH_REGO: &str = include_str!("../config/gh.rego");
+    pub const KUBECTL_REGO: &str = include_str!("../config/kubectl.rego");
+    pub const FIND_REGO: &str = include_str!("../config/find.rego");
+    pub const DOCKER_REGO: &str = include_str!("../config/docker.rego");
+    pub const FILE_OPS_REGO: &str = include_str!("../config/file-ops.rego");
+    pub const NETWORK_REGO: &str = include_str!("../config/network.rego");
+    pub const SED_REGO: &str = include_str!("../config/sed.rego");
+    pub const INPROJECT_REGO: &str = include_str!("../config/inproject.rego");
+    pub const TOOLS_REGO: &str = include_str!("../config/tools.rego");
+    pub const BUILTINS_NCL: &str = include_str!("../config/builtins.ncl");
+
+    pub const BASE_FILES: &[(&str, &str)] = &[
+        ("stdlib.rego", STDLIB_REGO),
+        ("safe.rego", SAFE_REGO),
+        ("git.rego", GIT_REGO),
+        ("rust.rego", RUST_REGO),
+        ("go.rego", GO_REGO),
+        ("python.rego", PYTHON_REGO),
+        ("javascript.rego", JAVASCRIPT_REGO),
+        ("gh.rego", GH_REGO),
+        ("kubectl.rego", KUBECTL_REGO),
+        ("find.rego", FIND_REGO),
+        ("docker.rego", DOCKER_REGO),
+        ("file-ops.rego", FILE_OPS_REGO),
+        ("network.rego", NETWORK_REGO),
+        ("sed.rego", SED_REGO),
+        ("inproject.rego", INPROJECT_REGO),
+        ("tools.rego", TOOLS_REGO),
+    ];
+}
+
 use clap::Parser;
 use cli::{Cli, Commands};
 use command_defs::CommandDefinitions;
@@ -78,11 +118,128 @@ fn main() {
         Some(Commands::Hook { action }) => {
             hook::run(action);
         }
+        Some(Commands::Base { action }) => match action {
+            cli::BaseAction::Sync => run_base_sync(),
+        },
         None => {
             // Default: run as hook (read from stdin)
             run_hook();
         }
     }
+}
+
+fn run_base_sync() {
+    let config_dir = get_policy_dir(None);
+    let base_dir = config_dir.join("base");
+
+    // Create base directory with restricted permissions
+    std::fs::create_dir_all(&base_dir).unwrap_or_else(|e| {
+        eprintln!("Failed to create base directory: {}", e);
+        std::process::exit(1);
+    });
+
+    // Make base directory writable for re-sync
+    #[cfg(unix)]
+    if base_dir.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&base_dir, std::fs::Permissions::from_mode(0o755));
+    }
+
+    println!("Syncing base policies to {}", base_dir.display());
+    println!();
+
+    // Write each base file
+    for (filename, contents) in embedded::BASE_FILES {
+        let path = base_dir.join(filename);
+
+        // Make file writable if it exists (for re-sync)
+        #[cfg(unix)]
+        if path.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+        }
+
+        std::fs::write(&path, contents).unwrap_or_else(|e| {
+            eprintln!("Failed to write {}: {}", filename, e);
+            std::process::exit(1);
+        });
+
+        // Set read-only permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444));
+        }
+        println!("  {}", filename);
+    }
+
+    // Write builtins.ncl
+    let builtins_path = base_dir.join("builtins.ncl");
+
+    // Make file writable if it exists (for re-sync)
+    #[cfg(unix)]
+    if builtins_path.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&builtins_path, std::fs::Permissions::from_mode(0o644));
+    }
+
+    std::fs::write(&builtins_path, embedded::BUILTINS_NCL).unwrap_or_else(|e| {
+        eprintln!("Failed to write builtins.ncl: {}", e);
+        std::process::exit(1);
+    });
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&builtins_path, std::fs::Permissions::from_mode(0o444));
+    }
+    println!("  builtins.ncl");
+
+    // Set base directory permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&base_dir, std::fs::Permissions::from_mode(0o555));
+    }
+
+    // Create policies directory if it doesn't exist
+    let policies_dir = config_dir.join("policies");
+    if !policies_dir.exists() {
+        std::fs::create_dir_all(&policies_dir).unwrap_or_else(|e| {
+            eprintln!("Failed to create policies directory: {}", e);
+            std::process::exit(1);
+        });
+
+        // Create starter custom.rego
+        let custom_path = policies_dir.join("custom.rego");
+        let custom_content = r#"package cmdguard
+
+import rego.v1
+
+# Add your custom rules here. These override base rules via priority.
+#
+# Examples:
+#
+# Deny a subcommand that base allows:
+#   denied_subcommands["git"] := {"push"}
+#
+# Add an allow rule for a tool not in base:
+#   allowed_with_args["make"] := {"build", "test", "clean"}
+#
+# Add a conditional rule:
+#   rules["my_rule"] := ask("Please confirm") if {
+#       input.binary_name == "dangerous-tool"
+#   }
+"#;
+        std::fs::write(&custom_path, custom_content).unwrap_or_else(|e| {
+            eprintln!("Failed to write custom.rego: {}", e);
+            std::process::exit(1);
+        });
+        println!("  policies/custom.rego (starter template)");
+    }
+
+    println!();
+    println!("Base policies synced to {}", base_dir.display());
 }
 
 fn run_validate(policy_dir: Option<PathBuf>) {
@@ -295,8 +452,21 @@ fn load_all_policies(
     global_dir: &PathBuf,
     project_root: Option<&PathBuf>,
 ) -> Result<(), String> {
-    // Load global policies first
-    engine.load_policies_from_dir(global_dir)?;
+    let base_dir = global_dir.join("base");
+    let policies_dir = global_dir.join("policies");
+
+    if base_dir.exists() {
+        // New structure: base/ + policies/
+        debug!("Using new base/policies structure");
+        engine.load_policies_from_dir(&base_dir)?;
+        if policies_dir.exists() {
+            engine.load_policies_from_dir(&policies_dir)?;
+        }
+    } else {
+        // Legacy flat structure: all .rego in config dir
+        debug!("Using legacy flat structure");
+        engine.load_policies_from_dir(global_dir)?;
+    }
 
     // Load project-local policies if they exist (they merge with global via shared 'rules' map)
     if let Some(project_policy_dir) = get_project_policy_dir(project_root) {

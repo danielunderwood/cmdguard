@@ -36,7 +36,14 @@ pub struct NickelConfig {
 impl NickelConfig {
     /// Create new config, loading builtins and user config separately
     pub fn load(config_dir: &Path) -> Self {
-        let builtins_path = config_dir.join("builtins.ncl");
+        // Check for new base/ structure first
+        let base_dir = config_dir.join("base");
+        let builtins_path = if base_dir.exists() {
+            base_dir.join("builtins.ncl")
+        } else {
+            config_dir.join("builtins.ncl")
+        };
+
         let user_path = config_dir.join("commands.ncl");
 
         // Load and validate builtins
