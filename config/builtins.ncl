@@ -370,6 +370,16 @@ in
             ignored = bool_flag "-x" null,
           },
         },
+        rev-parse = {
+          positional = [string_arg "revision"],
+        },
+        show = stub,
+        ls-tree = stub,
+        ls-files = stub,
+        check-ignore = stub,
+        worktree = {
+          positional = [string_arg "subcommand"],
+        },
         log = stub,
         diff = stub,
         branch = stub,
@@ -379,7 +389,10 @@ in
         fetch = stub,
         merge = stub,
         rebase = stub,
+        restore = stub,
         stash = stub,
+        switch = stub,
+        version = stub,
         add = stub,
         rm = stub,
         mv = stub,
@@ -488,6 +501,25 @@ in
         dev = stub,
         start = stub,
       },
+    },
+
+    # -------------------------------------------------------------------------
+    # Python
+    # -------------------------------------------------------------------------
+    python = {
+      flags = {
+        module = arg_flag "-m" null,
+        code = arg_flag "-c" null,
+      },
+      positional = [path_arg "file"],
+    },
+
+    python3 = {
+      flags = {
+        module = arg_flag "-m" null,
+        code = arg_flag "-c" null,
+      },
+      positional = [path_arg "file"],
     },
 
     # -------------------------------------------------------------------------
