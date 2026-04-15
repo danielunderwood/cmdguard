@@ -50,6 +50,7 @@ rules[rule_name] := allow(reason) if {
 	some binary, subcmds in allowed_subcommands
 	input.binary_name == binary
 	input.subcommand in subcmds
+	not _subcommand_denied(binary, input.subcommand)
 	rule_name := sprintf("allowed_%s_%s", [binary, input.subcommand])
 	reason := sprintf("Allowed %s subcommand", [binary])
 }
@@ -60,10 +61,27 @@ rules[rule_name] := allow(reason) if {
 # Matches command[0] and command[1] directly, no builtins.ncl entry needed.
 default allowed_with_args := {}
 
+# Exclusion tables — users add entries to narrow base allow-lists
+default denied_subcommands := {}
+default denied_with_args := {}
+
+_subcommand_denied(binary, subcmd) if {
+	some denied_binary, denied_set in denied_subcommands
+	binary == denied_binary
+	subcmd in denied_set
+}
+
+_with_args_denied(binary, arg) if {
+	some denied_binary, denied_set in denied_with_args
+	binary == denied_binary
+	arg in denied_set
+}
+
 rules[rule_name] := allow(reason) if {
 	some binary, args in allowed_with_args
 	input.command[0] == binary
 	input.command[1] in args
+	not _with_args_denied(binary, input.command[1])
 	rule_name := sprintf("allowed_%s_%s", [binary, input.command[1]])
 	reason := sprintf("Allowed %s command", [binary])
 }

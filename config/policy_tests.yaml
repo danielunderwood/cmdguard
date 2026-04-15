@@ -229,3 +229,18 @@ tests:
   - name: "unlisted subcommand falls through to ask"
     command: "cargo install some-crate"
     expect: ask
+
+  # ==========================================================================
+  # Exclusion Tables
+  # ==========================================================================
+
+  # Note: these tests verify the mechanism works. To actually test denied_subcommands,
+  # we need a .rego file that defines one. Add a test-only deny file or test inline.
+  # For now, verify that allowed commands still work (exclusions don't break existing behavior).
+  - name: "allowed_subcommands still works with empty denied_subcommands"
+    command: "git status"
+    expect: allow
+
+  - name: "allowed_with_args still works with empty denied_with_args"
+    command: "cargo build"
+    expect: allow
