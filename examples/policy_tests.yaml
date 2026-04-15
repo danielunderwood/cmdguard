@@ -1,9 +1,10 @@
 # Policy tests for cmdguard
-# Run with: cmdguard test examples/policy_tests.yaml
+# Run with: cmdguard test examples/policy_tests.yaml --policy-dir examples/basic
+#   or:     cmdguard test examples/policy_tests.yaml --policy-dir examples/split
 
 tests:
   # ==========================================================================
-  # Git Commands
+  # Git Read Commands (allowed via allowed_subcommands table)
   # ==========================================================================
 
   - name: "allow git status"
@@ -18,6 +19,10 @@ tests:
     command: "git log --oneline -10"
     expect: allow
 
+  # ==========================================================================
+  # Git Write Commands (allowed via explicit rules)
+  # ==========================================================================
+
   - name: "allow git add"
     command: "git add ."
     expect: allow
@@ -25,6 +30,14 @@ tests:
   - name: "allow git commit"
     command: "git commit -m 'test commit'"
     expect: allow
+
+  - name: "allow git push (no force)"
+    command: "git push origin main"
+    expect: allow
+
+  # ==========================================================================
+  # Git Dangerous Operations (deny / ask via parsed_flags)
+  # ==========================================================================
 
   - name: "deny git push --force"
     command: "git push --force origin main"
@@ -34,6 +47,11 @@ tests:
   - name: "deny git push -f"
     command: "git push -f origin main"
     expect: deny
+
+  - name: "ask git reset --hard"
+    command: "git reset --hard"
+    expect: ask
+    reason_contains: "uncommitted"
 
   # ==========================================================================
   # Wrapper Extraction
