@@ -79,28 +79,38 @@ default result := {
 	"explicit": false,
 }
 
-# Find the rule with highest priority
-highest_priority_rule := rule if {
-	some name
-	rule := rules[name]
-	not _higher_priority_exists(rule.priority)
-}
+# Find the maximum priority among matching rules
+_max_priority := max({rule.priority | some name; rule := rules[name]})
 
-_higher_priority_exists(p) if {
-	some name
-	rules[name].priority > p
-}
+# Decision weight for tie-breaking: deny > ask > allow
+_decision_weight("deny") := 3
+_decision_weight("ask") := 2
+_decision_weight("allow") := 1
 
-# Get the name of the winning rule
+# Among rules at max priority, find the heaviest decision weight
+_max_decision_weight := max({_decision_weight(rule.decision) |
+	some name; rule := rules[name]; rule.priority == _max_priority
+})
+
+# Among rules at max priority with heaviest decision, pick alphabetically first name
 _winning_rule_name := name if {
 	some name
-	rules[name] == highest_priority_rule
+	rules[name].priority == _max_priority
+	_decision_weight(rules[name].decision) == _max_decision_weight
+	not _earlier_name_wins(name)
+}
+
+_earlier_name_wins(name) if {
+	some other
+	other < name
+	rules[other].priority == _max_priority
+	_decision_weight(rules[other].decision) == _max_decision_weight
 }
 
 # Result from highest priority matching rule
 result := {
-	"decision": highest_priority_rule.decision,
-	"reason": highest_priority_rule.reason,
+	"decision": rules[_winning_rule_name].decision,
+	"reason": rules[_winning_rule_name].reason,
 	"rule": _winning_rule_name,
 	"explicit": true,
 } if {
