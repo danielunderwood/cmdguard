@@ -277,9 +277,9 @@ tests:
     command: "docker exec -it mycontainer bash"
     expect: ask
 
-  - name: "deny docker push"
+  - name: "ask docker push"
     command: "docker push myimage"
-    expect: deny
+    expect: ask
 
   # ==========================================================================
   # File Operations

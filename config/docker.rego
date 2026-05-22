@@ -14,7 +14,7 @@ rules["docker_exec"] := ask("Docker exec - confirm container access") if {
 	"docker exec" in input.wrapper_chain
 }
 
-rules["deny_docker_push"] := deny("Docker push blocked by default") if {
+rules["ask_docker_push"] := ask("Docker push - confirm registry target") if {
 	input.binary_name == "docker"
 	input.subcommand == "push"
 }

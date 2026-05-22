@@ -42,6 +42,21 @@ Things that popped into my head, but aren't yet implemented.
   - More powerful but adds complexity and potential performance cost
   - Consider if claim_pattern proves insufficient for real-world use cases
 
+- Transient/scratch trust zone for paths
+  - Currently TrustZone is one of project/user/system/unknown. Anything
+    outside ~/.local/bin etc. and the project root falls into "unknown",
+    which is too coarse: `/tmp/foo`, `/var/tmp/foo`, `$TMPDIR/foo`, and
+    `~/.cache/foo` get the same treatment as `/etc/passwd`.
+  - A `TrustZone::Transient` (or similar) variant would let rules say "rm
+    -rf in /tmp is fine, but ask for arbitrary 'unknown' paths." Today
+    deny_rm_outside_project / ask_rm_outside_project can't tell those
+    apart, so the rule had to be downgraded to ask everywhere.
+  - Default transient roots: `/tmp`, `/var/tmp`, `$TMPDIR`, `~/.cache`,
+    plus a way for users to extend in policy or config.
+  - Path classifier lives in src/resolver.rs (TrustZonePaths) and the
+    positional path classifier in src/command_parser.rs around the
+    `trust_zone` block — both would need updating.
+
 - Command aliases (python/python3, pip/pip3, vi/vim, node/nodejs, ...)
   - Currently builtins.ncl duplicates the full definition for each spelling,
     which drifts and bloats the file.
