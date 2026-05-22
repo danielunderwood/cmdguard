@@ -37,6 +37,7 @@ mod embedded {
     pub const INPROJECT_REGO: &str = include_str!("../config/inproject.rego");
     pub const TOOLS_REGO: &str = include_str!("../config/tools.rego");
     pub const BUILTINS_NCL: &str = include_str!("../config/builtins.ncl");
+    pub const CUSTOM_REGO_TEMPLATE: &str = include_str!("../config/policies/custom.rego");
 
     pub const BASE_FILES: &[(&str, &str)] = &[
         ("stdlib.rego", STDLIB_REGO),
@@ -263,28 +264,9 @@ fn run_base_sync() {
             std::process::exit(1);
         });
 
-        // Create starter custom.rego
+        // Create starter custom.rego from the embedded template.
         let custom_path = policies_dir.join("custom.rego");
-        let custom_content = r#"package cmdguard
-
-import rego.v1
-
-# Add your custom rules here. These override base rules via priority.
-#
-# Examples:
-#
-# Deny a subcommand that base allows:
-#   denied_subcommands["git"] := {"push"}
-#
-# Add an allow rule for a tool not in base:
-#   allowed_with_args["make"] := {"build", "test", "clean"}
-#
-# Add a conditional rule:
-#   rules["my_rule"] := ask("Please confirm") if {
-#       input.binary_name == "dangerous-tool"
-#   }
-"#;
-        std::fs::write(&custom_path, custom_content).unwrap_or_else(|e| {
+        std::fs::write(&custom_path, embedded::CUSTOM_REGO_TEMPLATE).unwrap_or_else(|e| {
             eprintln!("Failed to write custom.rego: {}", e);
             std::process::exit(1);
         });
