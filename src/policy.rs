@@ -59,6 +59,12 @@ pub struct PolicyInput {
     pub chain_length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_operator: Option<String>,
+    /// Operator that connected the *previous* command in the chain to this one.
+    /// "|" means this command's stdin is the previous command's stdout.
+    /// Useful for distinguishing `cat foo | sed 's/x/y/'` (no file mutation)
+    /// from `sed 's/x/y/' foo` (rule must look at positional files).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_operator: Option<String>,
     // Trust zone fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command_as_typed: Option<String>,
@@ -424,6 +430,7 @@ mod tests {
             chain_position: None,
             chain_length: None,
             chain_operator: None,
+            prev_operator: None,
             command_as_typed: None,
             binary_name: None,
             resolved_path: None,

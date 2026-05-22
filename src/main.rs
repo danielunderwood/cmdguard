@@ -676,8 +676,11 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
 
     // Evaluate each command in chain
     println!("=== Per-Command Evaluation ===");
+    let mut prev_operator: Option<String> = None;
     for cmd in &parse_result.commands {
         println!("\n--- Command {}/{}: {} ---", cmd.position + 1, cmd.chain_length, cmd.text);
+        let this_prev_operator = prev_operator.clone();
+        prev_operator = cmd.next_operator.clone();
 
         let tokens = match tokenizer::tokenize(&cmd.text) {
             Ok(t) => t,
@@ -802,6 +805,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             chain_position: Some(cmd.position),
             chain_length: Some(cmd.chain_length),
             chain_operator: cmd.next_operator.clone(),
+            prev_operator: this_prev_operator,
             command_as_typed: Some(resolved.command_as_typed),
             binary_name: Some(resolved.binary_name),
             resolved_path: resolved.resolved_path,

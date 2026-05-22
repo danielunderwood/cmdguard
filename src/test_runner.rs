@@ -128,8 +128,10 @@ impl TestRunner {
         );
 
         // Evaluate each command, short-circuit on non-allow
+        let mut prev_operator: Option<String> = None;
         for cmd in &parse_result.commands {
-            let result = evaluator.evaluate_single(cmd, &context);
+            let result = evaluator.evaluate_single(cmd, &context, prev_operator.clone());
+            prev_operator = cmd.next_operator.clone();
 
             // Short-circuit on non-allow
             if result.decision != Decision::Allow {
