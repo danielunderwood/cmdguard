@@ -98,14 +98,6 @@ pub struct PolicyResult {
     pub explicit: bool,
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct RuleInfo {
-    pub name: String,
-    pub decision: String,
-    pub priority: i64,
-}
-
 pub struct PolicyEngine {
     engine: Engine,
 }
@@ -151,6 +143,32 @@ impl PolicyEngine {
         }
 
         Ok(())
+    }
+
+    /// Load policies honoring the new base/+policies/ layout when populated,
+    /// falling back to a flat directory of `.rego` files otherwise. Mirrors the
+    /// production loader in `main::load_all_policies` (without project-local
+    /// merging) so test/eval/hook see the same rule set.
+    pub fn load_policies_with_layout(&mut self, config_dir: &Path) -> Result<(), String> {
+        let base_dir = config_dir.join("base");
+        let has_populated_base = std::fs::read_dir(&base_dir)
+            .map(|entries| {
+                entries.flatten().any(|e| {
+                    e.path().extension().and_then(|s| s.to_str()) == Some("rego")
+                })
+            })
+            .unwrap_or(false);
+
+        if has_populated_base {
+            self.load_policies_from_dir(&base_dir)?;
+            let policies_dir = config_dir.join("policies");
+            if policies_dir.exists() {
+                self.load_policies_from_dir(&policies_dir)?;
+            }
+            Ok(())
+        } else {
+            self.load_policies_from_dir(config_dir)
+        }
     }
 
     pub fn evaluate(&mut self, input: &PolicyInput) -> PolicyResult {
@@ -299,6 +317,10 @@ impl PolicyEngine {
                     });
                 }
 
+                // Stable order so `cmdguard eval` output is reproducible.
+                results.sort_by(|a, b| {
+                    a.rule.as_deref().unwrap_or("").cmp(b.rule.as_deref().unwrap_or(""))
+                });
                 results
             }
             Err(_) => {
@@ -482,5 +504,94 @@ mod tests {
 
         assert_eq!(result.decision, Decision::Ask);
         assert!(!result.explicit);
+    }
+
+    /// Verify the stdlib exclusion-table mechanism: a user override that adds
+    /// `denied_subcommands["bin"] := {"sub"}` must suppress an entry in
+    /// `allowed_subcommands["bin"]`. Without this, the public-facing claim
+    /// that users can "narrow base allowlists" silently breaks.
+    #[test]
+    fn test_denied_subcommands_overrides_allow() {
+        use std::collections::HashMap;
+
+        // Compose a minimal in-memory policy that exercises the stdlib
+        // helpers. We need the real stdlib so the rules-with-priority
+        // aggregation runs.
+        let stdlib = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/stdlib.rego"),
+        )
+        .expect("read stdlib.rego");
+
+        let user_policy = r#"
+package cmdguard
+import rego.v1
+
+allowed_subcommands["mybin"] := {"safe", "blocked"}
+denied_subcommands["mybin"] := {"blocked"}
+"#;
+
+        let mut input = make_input(vec!["mybin", "safe"]);
+        input.binary_name = Some("mybin".to_string());
+        input.subcommand = Some("safe".to_string());
+
+        let mut engine = PolicyEngine::new();
+        engine.engine.add_policy("stdlib.rego".into(), stdlib.clone()).unwrap();
+        engine.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+
+        // "safe" is allowed (in allow set, not in deny set)
+        let result = engine.evaluate(&input);
+        assert_eq!(result.decision, Decision::Allow, "safe subcommand should be allowed");
+
+        // Now check "blocked" -- present in allow AND deny -> must NOT allow
+        let mut input2 = make_input(vec!["mybin", "blocked"]);
+        input2.binary_name = Some("mybin".to_string());
+        input2.subcommand = Some("blocked".to_string());
+
+        let mut engine2 = PolicyEngine::new();
+        engine2.engine.add_policy("stdlib.rego".into(), stdlib).unwrap();
+        engine2.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        let result2 = engine2.evaluate(&input2);
+        assert_ne!(
+            result2.decision,
+            Decision::Allow,
+            "denied_subcommands must suppress the allow from allowed_subcommands"
+        );
+
+        // Silence unused warning in case future changes drop HashMap usage.
+        let _ = HashMap::<(), ()>::new();
+    }
+
+    /// Same idea but for `denied_with_args` -- exercises the `allowed_with_args`
+    /// rule path.
+    #[test]
+    fn test_denied_with_args_overrides_allow() {
+        let stdlib = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/stdlib.rego"),
+        )
+        .expect("read stdlib.rego");
+
+        let user_policy = r#"
+package cmdguard
+import rego.v1
+
+allowed_with_args["mytool"] := {"foo", "bar"}
+denied_with_args["mytool"] := {"bar"}
+"#;
+
+        let mut engine = PolicyEngine::new();
+        engine.engine.add_policy("stdlib.rego".into(), stdlib.clone()).unwrap();
+        engine.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        let result = engine.evaluate(&make_input(vec!["mytool", "foo"]));
+        assert_eq!(result.decision, Decision::Allow, "non-denied arg should allow");
+
+        let mut engine2 = PolicyEngine::new();
+        engine2.engine.add_policy("stdlib.rego".into(), stdlib).unwrap();
+        engine2.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        let result2 = engine2.evaluate(&make_input(vec!["mytool", "bar"]));
+        assert_ne!(
+            result2.decision,
+            Decision::Allow,
+            "denied_with_args must suppress the allow from allowed_with_args"
+        );
     }
 }

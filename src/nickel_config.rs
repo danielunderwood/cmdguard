@@ -36,10 +36,12 @@ pub struct NickelConfig {
 impl NickelConfig {
     /// Create new config, loading builtins and user config separately
     pub fn load(config_dir: &Path) -> Self {
-        // Check for new base/ structure first
-        let base_dir = config_dir.join("base");
-        let builtins_path = if base_dir.exists() {
-            base_dir.join("builtins.ncl")
+        // Prefer base/builtins.ncl when present, else fall back to legacy
+        // flat layout. Keying off the file (not just the directory) means a
+        // partial/empty base/ doesn't shadow a valid legacy config.
+        let base_builtins = config_dir.join("base").join("builtins.ncl");
+        let builtins_path = if base_builtins.exists() {
+            base_builtins
         } else {
             config_dir.join("builtins.ncl")
         };

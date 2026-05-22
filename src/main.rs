@@ -73,7 +73,7 @@ use paths::detect_paths;
 use policy::{PatternInput, PolicyEngine, PolicyInput, PythonAnalysisInput};
 use resolver::{detect_project_root, resolve_command};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use test_runner::{load_test_file, print_results, TestRunner};
 use tracing::{debug, error};
@@ -131,6 +131,33 @@ fn main() {
     }
 }
 
+#[cfg(unix)]
+fn chmod(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// List `.rego` filenames in `dir`, sorted, returning Err if `dir` exists but
+/// can't be read. A non-existent directory returns an empty list.
+fn read_rego_filenames(dir: &Path) -> std::io::Result<Vec<String>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut names: Vec<String> = std::fs::read_dir(dir)?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("rego") {
+                path.file_name().map(|n| n.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 fn run_base_sync() {
     let config_dir = get_policy_dir(None);
     let base_dir = config_dir.join("base");
@@ -141,11 +168,17 @@ fn run_base_sync() {
         std::process::exit(1);
     });
 
-    // Make base directory writable for re-sync
+    // Track non-fatal lockdown failures so we don't claim success when files
+    // remain writable on Unix.
+    let mut lockdown_failures: Vec<String> = Vec::new();
+
+    // Make base directory writable for re-sync. If this fails, the writes below
+    // will fail too, so don't pre-empt with a hard error here.
     #[cfg(unix)]
     if base_dir.exists() {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&base_dir, std::fs::Permissions::from_mode(0o755));
+        if let Err(e) = chmod(&base_dir, 0o755) {
+            eprintln!("Warning: could not relax base/ permissions for re-sync: {}", e);
+        }
     }
 
     println!("Syncing base policies to {}", base_dir.display());
@@ -158,8 +191,9 @@ fn run_base_sync() {
         // Make file writable if it exists (for re-sync)
         #[cfg(unix)]
         if path.exists() {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+            if let Err(e) = chmod(&path, 0o644) {
+                eprintln!("Warning: could not relax {} permissions for re-sync: {}", filename, e);
+            }
         }
 
         std::fs::write(&path, contents).unwrap_or_else(|e| {
@@ -169,9 +203,8 @@ fn run_base_sync() {
 
         // Set read-only permissions
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444));
+        if let Err(e) = chmod(&path, 0o444) {
+            lockdown_failures.push(format!("{}: {}", filename, e));
         }
         println!("  {}", filename);
     }
@@ -182,8 +215,9 @@ fn run_base_sync() {
     // Make file writable if it exists (for re-sync)
     #[cfg(unix)]
     if builtins_path.exists() {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&builtins_path, std::fs::Permissions::from_mode(0o644));
+        if let Err(e) = chmod(&builtins_path, 0o644) {
+            eprintln!("Warning: could not relax builtins.ncl permissions for re-sync: {}", e);
+        }
     }
 
     std::fs::write(&builtins_path, embedded::BUILTINS_NCL).unwrap_or_else(|e| {
@@ -192,17 +226,15 @@ fn run_base_sync() {
     });
 
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&builtins_path, std::fs::Permissions::from_mode(0o444));
+    if let Err(e) = chmod(&builtins_path, 0o444) {
+        lockdown_failures.push(format!("builtins.ncl: {}", e));
     }
     println!("  builtins.ncl");
 
     // Set base directory permissions
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&base_dir, std::fs::Permissions::from_mode(0o555));
+    if let Err(e) = chmod(&base_dir, 0o555) {
+        lockdown_failures.push(format!("base/: {}", e));
     }
 
     // Create policies directory if it doesn't exist
@@ -243,6 +275,17 @@ import rego.v1
 
     println!();
     println!("Base policies synced to {}", base_dir.display());
+
+    if !lockdown_failures.is_empty() {
+        eprintln!();
+        eprintln!("Warning: failed to lock down base file permissions to read-only:");
+        for failure in &lockdown_failures {
+            eprintln!("  - {}", failure);
+        }
+        eprintln!("Base files may be writable. The sandbox layer (filesystem ACLs/sandbox) is the");
+        eprintln!("only thing protecting them from modification — review your environment.");
+        std::process::exit(2);
+    }
 }
 
 fn run_status(policy_dir: Option<PathBuf>) {
@@ -253,36 +296,35 @@ fn run_status(policy_dir: Option<PathBuf>) {
     println!("Policy directory: {}", policy_dir.display());
     println!();
 
-    // List loaded files
+    // List loaded files (sorted for deterministic output)
     println!("Loaded policy files:");
     let mut file_count = 0;
 
-    for dir_info in [("base", &base_dir), ("policies", &policies_dir)] {
-        let (label, dir) = dir_info;
-        if dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("rego") {
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        println!("  {}/{}", label, name);
-                        file_count += 1;
-                    }
-                }
+    for (label, dir) in [("base", &base_dir), ("policies", &policies_dir)] {
+        let names = match read_rego_filenames(dir) {
+            Ok(names) => names,
+            Err(e) => {
+                eprintln!("Warning: failed to list {}: {}", dir.display(), e);
+                continue;
             }
+        };
+        for name in names {
+            println!("  {}/{}", label, name);
+            file_count += 1;
         }
     }
 
-    // Fallback: flat directory
+    // Fallback: flat directory (legacy layout)
     if file_count == 0 && policy_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&policy_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("rego") {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+        match read_rego_filenames(&policy_dir) {
+            Ok(names) => {
+                for name in names {
                     println!("  {}", name);
                     file_count += 1;
                 }
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to list {}: {}", policy_dir.display(), e);
             }
         }
     }
@@ -535,21 +577,7 @@ fn load_all_policies(
     global_dir: &PathBuf,
     project_root: Option<&PathBuf>,
 ) -> Result<(), String> {
-    let base_dir = global_dir.join("base");
-    let policies_dir = global_dir.join("policies");
-
-    if base_dir.exists() {
-        // New structure: base/ + policies/
-        debug!("Using new base/policies structure");
-        engine.load_policies_from_dir(&base_dir)?;
-        if policies_dir.exists() {
-            engine.load_policies_from_dir(&policies_dir)?;
-        }
-    } else {
-        // Legacy flat structure: all .rego in config dir
-        debug!("Using legacy flat structure");
-        engine.load_policies_from_dir(global_dir)?;
-    }
+    engine.load_policies_with_layout(global_dir)?;
 
     // Load project-local policies if they exist (they merge with global via shared 'rules' map)
     if let Some(project_policy_dir) = get_project_policy_dir(project_root) {

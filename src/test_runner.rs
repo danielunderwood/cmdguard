@@ -64,7 +64,7 @@ pub struct TestRunner {
 impl TestRunner {
     pub fn new(policy_dir: &Path) -> Result<Self, String> {
         let mut engine = PolicyEngine::new();
-        engine.load_policies_from_dir(policy_dir)?;
+        engine.load_policies_with_layout(policy_dir)?;
 
         // Load Nickel config for custom wrappers and command definitions
         let nickel_config = NickelConfig::load(policy_dir);
