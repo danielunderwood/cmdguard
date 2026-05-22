@@ -4,7 +4,6 @@ import rego.v1
 
 rules["safe_command"] := allow("Safe command") if {
 	input.command[0] in {
-		"./scripts/run_postgres_tests.sh",
 		"base64",
 		"basename",
 		"cat",
@@ -17,8 +16,6 @@ rules["safe_command"] := allow("Safe command") if {
 		"du",
 		"echo",
 		"env",
-		"ffmpeg",
-		"ffprobe",
 		"file",
 		"getent",
 		"grep",
@@ -27,8 +24,6 @@ rules["safe_command"] := allow("Safe command") if {
 		"jq",
 		"ls",
 		"lsof",
-		# YOLO
-		"make",
 		"mkdir",
 		"nslookup",
 		"paste",
@@ -37,27 +32,17 @@ rules["safe_command"] := allow("Safe command") if {
 		"pwd",
 		"read",
 		"rg",
-		"sed",
 		"sleep",
 		"sort",
-		"sqq",
 		"tail",
 		"touch",
 		"tr",
 		"tree",
 		"uniq",
-		"vhs",
 		"wc",
 		"which",
-		"xcodebuild",
-		"xcodegen",
 		"xxd",
 	}
-}
-
-rules["curl_allowed_domains"] := allow("Allow curl") if {
-	input.binary_name == "curl"
-	regex.match(`^https://(api\.github\.com|raw\.githubusercontent\.com)`, input.positional.url[0].raw)
 }
 
 rules["unknown_binary_caution"] := ask_at("Binary from unknown location - please verify", 45) if {

@@ -48,11 +48,15 @@ impl<'a> CommandEvaluator<'a> {
         }
     }
 
-    /// Evaluate a single parsed command and return the policy result
+    /// Evaluate a single parsed command and return the policy result.
+    /// `prev_operator` is the operator (e.g. "|", "&&") that connected the
+    /// previous command in the chain to this one — used by rules that care
+    /// whether stdin is a pipe.
     pub fn evaluate_single(
         &mut self,
         cmd: &ParsedCommand,
         context: &EvaluationContext,
+        prev_operator: Option<String>,
     ) -> PolicyResult {
         // Tokenize
         let tokens = match tokenizer::tokenize(&cmd.text) {
@@ -116,6 +120,7 @@ impl<'a> CommandEvaluator<'a> {
             chain_position: Some(cmd.position),
             chain_length: Some(cmd.chain_length),
             chain_operator: cmd.next_operator.clone(),
+            prev_operator,
             command_as_typed: Some(resolved.command_as_typed),
             binary_name: Some(resolved.binary_name),
             resolved_path: resolved.resolved_path,
@@ -200,8 +205,10 @@ impl<'a> CommandEvaluator<'a> {
         }
 
         // Evaluate each command, short-circuit on non-allow
+        let mut prev_operator: Option<String> = None;
         for cmd in parsed {
-            let result = self.evaluate_single(cmd, context);
+            let result = self.evaluate_single(cmd, context, prev_operator.clone());
+            prev_operator = cmd.next_operator.clone();
 
             match result.decision {
                 Decision::Allow => continue,
@@ -278,7 +285,7 @@ mod tests {
             next_operator: None,
         };
 
-        let result = evaluator.evaluate_single(&cmd, &context);
+        let result = evaluator.evaluate_single(&cmd, &context, None);
         // Empty tokenization should result in Ask
         assert_eq!(result.decision, Decision::Ask);
         drop(dir);

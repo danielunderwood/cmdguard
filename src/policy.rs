@@ -59,6 +59,12 @@ pub struct PolicyInput {
     pub chain_length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_operator: Option<String>,
+    /// Operator that connected the *previous* command in the chain to this one.
+    /// "|" means this command's stdin is the previous command's stdout.
+    /// Useful for distinguishing `cat foo | sed 's/x/y/'` (no file mutation)
+    /// from `sed 's/x/y/' foo` (rule must look at positional files).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_operator: Option<String>,
     // Trust zone fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command_as_typed: Option<String>,
@@ -145,6 +151,32 @@ impl PolicyEngine {
         Ok(())
     }
 
+    /// Load policies honoring the new base/+policies/ layout when populated,
+    /// falling back to a flat directory of `.rego` files otherwise. Mirrors the
+    /// production loader in `main::load_all_policies` (without project-local
+    /// merging) so test/eval/hook see the same rule set.
+    pub fn load_policies_with_layout(&mut self, config_dir: &Path) -> Result<(), String> {
+        let base_dir = config_dir.join("base");
+        let has_populated_base = std::fs::read_dir(&base_dir)
+            .map(|entries| {
+                entries.flatten().any(|e| {
+                    e.path().extension().and_then(|s| s.to_str()) == Some("rego")
+                })
+            })
+            .unwrap_or(false);
+
+        if has_populated_base {
+            self.load_policies_from_dir(&base_dir)?;
+            let policies_dir = config_dir.join("policies");
+            if policies_dir.exists() {
+                self.load_policies_from_dir(&policies_dir)?;
+            }
+            Ok(())
+        } else {
+            self.load_policies_from_dir(config_dir)
+        }
+    }
+
     pub fn evaluate(&mut self, input: &PolicyInput) -> PolicyResult {
         // Set input data
         let input_json = match serde_json::to_value(input) {
@@ -228,6 +260,155 @@ impl PolicyEngine {
             }
         }
     }
+
+    /// Evaluate all matching rules for debugging purposes
+    /// Returns all rules that matched, not just the highest priority winner
+    pub fn evaluate_all_rules(&mut self, input: &PolicyInput) -> Vec<PolicyResult> {
+        // Set input data
+        let input_json = match serde_json::to_value(input) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to serialize policy input: {}", e);
+                return vec![];
+            }
+        };
+
+        // Convert serde_json::Value to regorus::Value
+        let input_value: regorus::Value = input_json.into();
+        self.engine.set_input(input_value);
+
+        // Query all rules - try both all_rules (helper) and rules (direct)
+        let query_result = self.engine.eval_rule("data.cmdguard.all_rules".to_string())
+            .or_else(|_| self.engine.eval_rule("data.cmdguard.rules".to_string()));
+
+        match query_result {
+            Ok(value) => {
+                let obj = match value.as_object() {
+                    Ok(o) => o,
+                    Err(_) => return vec![],
+                };
+
+                let mut results = vec![];
+                for (rule_name_val, rule_obj_val) in obj.iter() {
+                    let rule_name = match rule_name_val.as_string() {
+                        Ok(s) => s.to_string(),
+                        Err(_) => continue,
+                    };
+
+                    let rule_obj = match rule_obj_val.as_object() {
+                        Ok(o) => o,
+                        Err(_) => continue,
+                    };
+
+                    let decision = rule_obj
+                        .get(&"decision".into())
+                        .and_then(|v| v.as_string().ok())
+                        .map(|s| match s.as_ref() {
+                            "allow" => Decision::Allow,
+                            "deny" => Decision::Deny,
+                            _ => Decision::Ask,
+                        })
+                        .unwrap_or(Decision::Ask);
+
+                    let reason = rule_obj
+                        .get(&"reason".into())
+                        .and_then(|v| v.as_string().ok())
+                        .map(|s| s.to_string());
+
+                    results.push(PolicyResult {
+                        decision,
+                        reason,
+                        rule: Some(rule_name),
+                        explicit: true,
+                    });
+                }
+
+                // Stable order so `cmdguard eval` output is reproducible.
+                results.sort_by(|a, b| {
+                    a.rule.as_deref().unwrap_or("").cmp(b.rule.as_deref().unwrap_or(""))
+                });
+                results
+            }
+            Err(_) => {
+                // It's okay if all_rules/rules doesn't exist or can't be queried
+                vec![]
+            }
+        }
+    }
+
+    /// Query allowed_subcommands table from policy
+    pub fn query_allowed_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
+        match self.engine.eval_rule("data.cmdguard.allowed_subcommands".to_string()) {
+            Ok(value) => {
+                let obj = match value.as_object() {
+                    Ok(o) => o,
+                    Err(_) => return vec![],
+                };
+
+                let mut result = vec![];
+                for (binary_val, subcmds_val) in obj.iter() {
+                    if let Ok(binary) = binary_val.as_string() {
+                        let mut subcmds = vec![];
+
+                        // Try to parse as set
+                        if let Ok(set) = subcmds_val.as_set() {
+                            for item in set.iter() {
+                                if let Ok(s) = item.as_string() {
+                                    subcmds.push(s.to_string());
+                                }
+                            }
+                        }
+
+                        if !subcmds.is_empty() {
+                            subcmds.sort();
+                            result.push((binary.to_string(), subcmds));
+                        }
+                    }
+                }
+
+                result.sort_by(|a, b| a.0.cmp(&b.0));
+                result
+            }
+            Err(_) => vec![],
+        }
+    }
+
+    /// Query denied_subcommands table from policy
+    pub fn query_denied_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
+        match self.engine.eval_rule("data.cmdguard.denied_subcommands".to_string()) {
+            Ok(value) => {
+                let obj = match value.as_object() {
+                    Ok(o) => o,
+                    Err(_) => return vec![],
+                };
+
+                let mut result = vec![];
+                for (binary_val, subcmds_val) in obj.iter() {
+                    if let Ok(binary) = binary_val.as_string() {
+                        let mut subcmds = vec![];
+
+                        // Try to parse as set
+                        if let Ok(set) = subcmds_val.as_set() {
+                            for item in set.iter() {
+                                if let Ok(s) = item.as_string() {
+                                    subcmds.push(s.to_string());
+                                }
+                            }
+                        }
+
+                        if !subcmds.is_empty() {
+                            subcmds.sort();
+                            result.push((binary.to_string(), subcmds));
+                        }
+                    }
+                }
+
+                result.sort_by(|a, b| a.0.cmp(&b.0));
+                result
+            }
+            Err(_) => vec![],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +430,7 @@ mod tests {
             chain_position: None,
             chain_length: None,
             chain_operator: None,
+            prev_operator: None,
             command_as_typed: None,
             binary_name: None,
             resolved_path: None,
@@ -329,5 +511,94 @@ mod tests {
 
         assert_eq!(result.decision, Decision::Ask);
         assert!(!result.explicit);
+    }
+
+    /// Verify the stdlib exclusion-table mechanism: a user override that adds
+    /// `denied_subcommands["bin"] := {"sub"}` must suppress an entry in
+    /// `allowed_subcommands["bin"]`. Without this, the public-facing claim
+    /// that users can "narrow base allowlists" silently breaks.
+    #[test]
+    fn test_denied_subcommands_overrides_allow() {
+        use std::collections::HashMap;
+
+        // Compose a minimal in-memory policy that exercises the stdlib
+        // helpers. We need the real stdlib so the rules-with-priority
+        // aggregation runs.
+        let stdlib = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/stdlib.rego"),
+        )
+        .expect("read stdlib.rego");
+
+        let user_policy = r#"
+package cmdguard
+import rego.v1
+
+allowed_subcommands["mybin"] := {"safe", "blocked"}
+denied_subcommands["mybin"] := {"blocked"}
+"#;
+
+        let mut input = make_input(vec!["mybin", "safe"]);
+        input.binary_name = Some("mybin".to_string());
+        input.subcommand = Some("safe".to_string());
+
+        let mut engine = PolicyEngine::new();
+        engine.engine.add_policy("stdlib.rego".into(), stdlib.clone()).unwrap();
+        engine.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+
+        // "safe" is allowed (in allow set, not in deny set)
+        let result = engine.evaluate(&input);
+        assert_eq!(result.decision, Decision::Allow, "safe subcommand should be allowed");
+
+        // Now check "blocked" -- present in allow AND deny -> must NOT allow
+        let mut input2 = make_input(vec!["mybin", "blocked"]);
+        input2.binary_name = Some("mybin".to_string());
+        input2.subcommand = Some("blocked".to_string());
+
+        let mut engine2 = PolicyEngine::new();
+        engine2.engine.add_policy("stdlib.rego".into(), stdlib).unwrap();
+        engine2.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        let result2 = engine2.evaluate(&input2);
+        assert_ne!(
+            result2.decision,
+            Decision::Allow,
+            "denied_subcommands must suppress the allow from allowed_subcommands"
+        );
+
+        // Silence unused warning in case future changes drop HashMap usage.
+        let _ = HashMap::<(), ()>::new();
+    }
+
+    /// Same idea but for `denied_with_args` -- exercises the `allowed_with_args`
+    /// rule path.
+    #[test]
+    fn test_denied_with_args_overrides_allow() {
+        let stdlib = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/stdlib.rego"),
+        )
+        .expect("read stdlib.rego");
+
+        let user_policy = r#"
+package cmdguard
+import rego.v1
+
+allowed_with_args["mytool"] := {"foo", "bar"}
+denied_with_args["mytool"] := {"bar"}
+"#;
+
+        let mut engine = PolicyEngine::new();
+        engine.engine.add_policy("stdlib.rego".into(), stdlib.clone()).unwrap();
+        engine.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        let result = engine.evaluate(&make_input(vec!["mytool", "foo"]));
+        assert_eq!(result.decision, Decision::Allow, "non-denied arg should allow");
+
+        let mut engine2 = PolicyEngine::new();
+        engine2.engine.add_policy("stdlib.rego".into(), stdlib).unwrap();
+        engine2.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        let result2 = engine2.evaluate(&make_input(vec!["mytool", "bar"]));
+        assert_ne!(
+            result2.decision,
+            Decision::Allow,
+            "denied_with_args must suppress the allow from allowed_with_args"
+        );
     }
 }

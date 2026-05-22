@@ -15,17 +15,29 @@ tests:
     command: "git log --oneline -10"
     expect: allow
 
-  - name: "ask for git add"
+  - name: "allow git add"
     command: "git add ."
-    expect: ask 
+    expect: allow
 
-  - name: "ask for git commit"
+  - name: "allow git commit"
     command: "git commit -m 'test commit'"
+    expect: allow
+
+  - name: "ask git push -f"
+    command: "git push -f origin main"
     expect: ask
 
-  - name: "deny git push -f"
-    command: "git push -f origin main"
-    expect: deny
+  - name: "ask git push --force"
+    command: "git push --force origin main"
+    expect: ask
+
+  - name: "ask git push --force-with-lease"
+    command: "git push --force-with-lease origin main"
+    expect: ask
+
+  - name: "allow plain git push"
+    command: "git push origin main"
+    expect: allow
 
   # ==========================================================================
   # Wrapper Extraction
@@ -198,9 +210,9 @@ tests:
     command: "cargo clippy"
     expect: allow
 
-  - name: "deny() helper - git reset --hard"
+  - name: "ask() helper - git reset --hard"
     command: "git reset --hard HEAD"
-    expect: deny
+    expect: ask
 
   - name: "ask() helper - find with -exec"
     command: "find . -name '*.tmp' -exec rm {} \\;"
@@ -229,3 +241,103 @@ tests:
   - name: "unlisted subcommand falls through to ask"
     command: "cargo install some-crate"
     expect: ask
+
+  # ==========================================================================
+  # Exclusion Tables
+  # ==========================================================================
+
+  # Note: these tests verify the mechanism works. To actually test denied_subcommands,
+  # we need a .rego file that defines one. Add a test-only deny file or test inline.
+  # For now, verify that allowed commands still work (exclusions don't break existing behavior).
+  - name: "allowed_subcommands still works with empty denied_subcommands"
+    command: "git status"
+    expect: allow
+
+  - name: "allowed_with_args still works with empty denied_with_args"
+    command: "cargo build"
+    expect: allow
+
+  # ==========================================================================
+  # Docker
+  # ==========================================================================
+
+  - name: "allow docker ps"
+    command: "docker ps"
+    expect: allow
+
+  - name: "allow docker build"
+    command: "docker build -t myapp ."
+    expect: allow
+
+  - name: "ask docker run"
+    command: "docker run --rm ubuntu ls"
+    expect: ask
+
+  - name: "ask docker exec"
+    command: "docker exec -it mycontainer bash"
+    expect: ask
+
+  - name: "ask docker push"
+    command: "docker push myimage"
+    expect: ask
+
+  # ==========================================================================
+  # File Operations
+  # ==========================================================================
+
+  - name: "ask for rm -rf (no project root in test)"
+    command: "rm -rf ./temp"
+    expect: ask
+
+  # ==========================================================================
+  # Network
+  # ==========================================================================
+
+  - name: "deny wget recursive"
+    command: "wget -r https://example.com"
+    expect: deny
+
+  - name: "deny rsync --delete"
+    command: "rsync --delete src/ dest/"
+    expect: deny
+
+  # ==========================================================================
+  # Sed
+  # ==========================================================================
+
+  # sed is no longer blanket-allowed: GNU sed can run shell commands via the
+  # `e` script flag and write arbitrary files via `w`. With no matching
+  # rule, sed without -i falls through to ask.
+  - name: "ask sed without -i"
+    command: "sed 's/foo/bar/' file.txt"
+    expect: ask
+
+  - name: "ask sed -i"
+    command: "sed -i 's/foo/bar/' file.txt"
+    expect: ask
+
+  # sed in a pipe just transforms stdin -> stdout; allow without prompting.
+  - name: "allow sed in a pipe"
+    command: "cat file.txt | sed 's/foo/bar/'"
+    expect: allow
+
+  # ...but still ask if it's the first command (no pipe in)
+  - name: "ask sed at chain start"
+    command: "sed 's/foo/bar/' file.txt | cat"
+    expect: ask
+
+  # ==========================================================================
+  # Find
+  # ==========================================================================
+
+  - name: "deny find with -execdir"
+    command: "find . -execdir rm {} ;"
+    expect: ask
+
+  - name: "allow find without exec or delete"
+    command: "find . -name '*.tmp'"
+    expect: allow
+
+  - name: "deny find with -delete"
+    command: "find . -name '*.tmp' -delete"
+    expect: deny

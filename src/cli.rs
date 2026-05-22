@@ -89,6 +89,19 @@ pub enum Commands {
         #[command(subcommand)]
         action: HookAction,
     },
+
+    /// Sync embedded base policy files to config directory
+    Base {
+        #[command(subcommand)]
+        action: BaseAction,
+    },
+
+    /// Show loaded policies, rules, and tables
+    Status {
+        /// Policy directory (default: ~/.config/cmdguard)
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -99,4 +112,10 @@ pub enum HookAction {
     Uninstall,
     /// Check if the hook is registered
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum BaseAction {
+    /// Write embedded base policies to ~/.config/cmdguard/base/
+    Sync,
 }

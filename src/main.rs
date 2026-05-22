@@ -1,3 +1,4 @@
+mod base_sync;
 mod cli;
 mod command_defs;
 mod command_evaluator;
@@ -33,7 +34,7 @@ use paths::detect_paths;
 use policy::{PatternInput, PolicyEngine, PolicyInput, PythonAnalysisInput};
 use resolver::{detect_project_root, resolve_command};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use test_runner::{load_test_file, print_results, TestRunner};
 use tracing::{debug, error};
@@ -78,11 +79,117 @@ fn main() {
         Some(Commands::Hook { action }) => {
             hook::run(action);
         }
+        Some(Commands::Base { action }) => match action {
+            cli::BaseAction::Sync => base_sync::run(get_policy_dir(None)),
+        },
+        Some(Commands::Status { policy_dir }) => {
+            run_status(policy_dir);
+        }
         None => {
             // Default: run as hook (read from stdin)
             run_hook();
         }
     }
+}
+
+/// List `.rego` filenames in `dir`, sorted, returning Err if `dir` exists but
+/// can't be read. A non-existent directory returns an empty list.
+fn read_rego_filenames(dir: &Path) -> std::io::Result<Vec<String>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut names: Vec<String> = std::fs::read_dir(dir)?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("rego") {
+                path.file_name().map(|n| n.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+fn run_status(policy_dir: Option<PathBuf>) {
+    let policy_dir = get_policy_dir(policy_dir);
+    let base_dir = policy_dir.join("base");
+    let policies_dir = policy_dir.join("policies");
+
+    println!("Policy directory: {}", policy_dir.display());
+    println!();
+
+    // List loaded files (sorted for deterministic output)
+    println!("Loaded policy files:");
+    let mut file_count = 0;
+
+    for (label, dir) in [("base", &base_dir), ("policies", &policies_dir)] {
+        let names = match read_rego_filenames(dir) {
+            Ok(names) => names,
+            Err(e) => {
+                eprintln!("Warning: failed to list {}: {}", dir.display(), e);
+                continue;
+            }
+        };
+        for name in names {
+            println!("  {}/{}", label, name);
+            file_count += 1;
+        }
+    }
+
+    // Fallback: flat directory (legacy layout)
+    if file_count == 0 && policy_dir.exists() {
+        match read_rego_filenames(&policy_dir) {
+            Ok(names) => {
+                for name in names {
+                    println!("  {}", name);
+                    file_count += 1;
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to list {}: {}", policy_dir.display(), e);
+            }
+        }
+    }
+
+    if file_count == 0 {
+        println!("  (none)");
+    }
+    println!();
+
+    // Load engine and query tables
+    let mut engine = PolicyEngine::new();
+    if let Err(e) = load_all_policies(&mut engine, &policy_dir, None) {
+        eprintln!("Error loading policies: {}", e);
+        return;
+    }
+
+    // Show tables
+    println!("Tables:");
+    let allowed = engine.query_allowed_subcommands();
+    if !allowed.is_empty() {
+        print!("  allowed_subcommands: ");
+        let entries: Vec<String> = allowed.iter()
+            .map(|(binary, subcmds)| format!("{}({})", binary, subcmds.len()))
+            .collect();
+        println!("{}", entries.join(", "));
+    }
+
+    let denied = engine.query_denied_subcommands();
+    if !denied.is_empty() {
+        print!("  denied_subcommands: ");
+        let entries: Vec<String> = denied.iter()
+            .map(|(binary, subcmds)| format!("{}({})", binary, subcmds.len()))
+            .collect();
+        println!("{}", entries.join(", "));
+    }
+
+    if allowed.is_empty() && denied.is_empty() {
+        println!("  (none)");
+    }
+    println!();
 }
 
 fn run_validate(policy_dir: Option<PathBuf>) {
@@ -295,8 +402,7 @@ fn load_all_policies(
     global_dir: &PathBuf,
     project_root: Option<&PathBuf>,
 ) -> Result<(), String> {
-    // Load global policies first
-    engine.load_policies_from_dir(global_dir)?;
+    engine.load_policies_with_layout(global_dir)?;
 
     // Load project-local policies if they exist (they merge with global via shared 'rules' map)
     if let Some(project_policy_dir) = get_project_policy_dir(project_root) {
@@ -395,8 +501,11 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
 
     // Evaluate each command in chain
     println!("=== Per-Command Evaluation ===");
+    let mut prev_operator: Option<String> = None;
     for cmd in &parse_result.commands {
         println!("\n--- Command {}/{}: {} ---", cmd.position + 1, cmd.chain_length, cmd.text);
+        let this_prev_operator = prev_operator.clone();
+        prev_operator = cmd.next_operator.clone();
 
         let tokens = match tokenizer::tokenize(&cmd.text) {
             Ok(t) => t,
@@ -521,6 +630,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             chain_position: Some(cmd.position),
             chain_length: Some(cmd.chain_length),
             chain_operator: cmd.next_operator.clone(),
+            prev_operator: this_prev_operator,
             command_as_typed: Some(resolved.command_as_typed),
             binary_name: Some(resolved.binary_name),
             resolved_path: resolved.resolved_path,
@@ -544,13 +654,30 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
 
         let result = engine.evaluate(&policy_input);
         println!("Decision:   {:?}", result.decision);
-        if let Some(reason) = result.reason {
+        if let Some(reason) = &result.reason {
             println!("Reason:     {}", reason);
         }
-        if let Some(rule) = result.rule {
+        if let Some(rule) = &result.rule {
             println!("Rule:       {}", rule);
         }
         println!("Explicit:   {}", result.explicit);
+
+        // Show all matching rules for debugging
+        let all_rules = engine.evaluate_all_rules(&policy_input);
+        if all_rules.len() > 1 {
+            println!();
+            println!("Also matched:");
+            for other_rule in &all_rules {
+                // Skip the winning rule (already displayed)
+                if other_rule.rule == result.rule {
+                    continue;
+                }
+
+                if let (Some(rule_name), Some(reason)) = (&other_rule.rule, &other_rule.reason) {
+                    println!("  {} ({:?}) — {}", rule_name, other_rule.decision, reason);
+                }
+            }
+        }
     }
 
     // Show final result

@@ -41,3 +41,39 @@ Things that popped into my head, but aren't yet implemented.
   - Would require calling back into Nickel during parsing
   - More powerful but adds complexity and potential performance cost
   - Consider if claim_pattern proves insufficient for real-world use cases
+
+- Transient/scratch trust zone for paths
+  - Currently TrustZone is one of project/user/system/unknown. Anything
+    outside ~/.local/bin etc. and the project root falls into "unknown",
+    which is too coarse: `/tmp/foo`, `/var/tmp/foo`, `$TMPDIR/foo`, and
+    `~/.cache/foo` get the same treatment as `/etc/passwd`.
+  - A `TrustZone::Transient` (or similar) variant would let rules say "rm
+    -rf in /tmp is fine, but ask for arbitrary 'unknown' paths." Today
+    deny_rm_outside_project / ask_rm_outside_project can't tell those
+    apart, so the rule had to be downgraded to ask everywhere.
+  - Default transient roots: `/tmp`, `/var/tmp`, `$TMPDIR`, `~/.cache`,
+    plus a way for users to extend in policy or config.
+  - Path classifier lives in src/resolver.rs (TrustZonePaths) and the
+    positional path classifier in src/command_parser.rs around the
+    `trust_zone` block — both would need updating.
+
+- Command aliases (python/python3, pip/pip3, vi/vim, node/nodejs, ...)
+  - Currently builtins.ncl duplicates the full definition for each spelling,
+    which drifts and bloats the file.
+  - Proposed: a Nickel `aliases = { python3 = "python", pip3 = "pip", ... }`
+    table. At load time, alias keys resolve to the canonical CommandDef so
+    parsing is identical for every spelling.
+  - Rego rules also need to normalize. Two options:
+    - Expose a new `input.canonical_binary_name` field, populated from the
+      same alias table during input construction. Rules write
+      `input.canonical_binary_name == "python"` and match all aliases. One
+      contract, single source of truth, but rule authors have a new field
+      to learn and existing rules need a migration pass.
+    - Sprinkle `input.binary_name in {"python", "python3"}` in each rule.
+      Less new machinery but loses the point of having an alias table.
+    - Lean toward the canonical_binary_name approach.
+  - Keep `input.binary_name` as the literal typed name so eval output stays
+    honest about what the user actually invoked.
+  - Start with explicit aliases only. Auto-aliasing on PATH symlinks looks
+    tempting but gets surprising in nix/containers where everything is a
+    symlink chain.

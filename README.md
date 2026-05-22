@@ -1,145 +1,171 @@
 # cmdguard
 
-A PreToolUse hook for Claude Code that provides policy-driven permission control using Rego.
+Policy-driven permission control for AI coding agents. cmdguard evaluates shell commands against [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/) policies as a PreToolUse hook, silently allowing safe commands and blocking dangerous ones.
+
+**See also:** [Security Model](docs/security-model.md) | [Common Rules Recipes](docs/common-rules.md)
 
 ## Features
 
-- **Wrapper extraction**: Recognizes commands through `nix develop`, `docker run`, `sudo`, inline env vars, etc.
-- **Policy-based decisions**: Allow, deny, or ask based on Rego rules with priority
-- **Compound command parsing**: Handles `&&`, `||`, `;`, `|` chains safely
-- **Trust zones**: Classify binaries as system, user, project, or unknown
-- **Parsed flags**: Access flags by name (e.g., `input.parsed_flags.force`) instead of string matching
-- **Path-typed arguments**: Positional args with paths are resolved and classified
+- **Automatic decisions**: Safe commands pass silently; dangerous ones are blocked or prompt the user
+- **Compound command parsing**: Handles `&&`, `||`, `;`, `|` chains -- every segment is evaluated
+- **Wrapper extraction**: Sees through `nix develop`, `docker run`, `sudo`, inline env vars
+- **Trust zones**: Classifies binaries as system, user, project, or unknown by path
+- **Parsed flags**: Access flags by name (`input.parsed_flags.force`) instead of string matching
+- **Declarative tables**: Simple allow-lists for subcommands and first-argument patterns
+- **Exclusion tables**: Surgically block specific subcommands without rewriting allow rules
+- **Base + user separation**: Shipped policies update cleanly; your customizations are never overwritten
 - **Project-local rules**: Per-project policies in `.cmdguard/`
-- **Configurable via Nickel**: Define custom wrappers and command schemas
 - **Fail-safe**: Defaults to `ask` on any error
 
-## Installation
+## Quick Start
 
 ```bash
+# Build and install
 ./install.sh
 ```
 
-Then add the hook to `~/.claude/settings.json`:
+This builds the binary, syncs base policies, and registers the hook. The installer runs:
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.local/bin/cmdguard"
-          }
-        ]
-      }
-    ]
-  }
-}
+1. `cargo build --release` and copies to `~/.local/bin/cmdguard`
+2. `cmdguard base sync` to write base policies to `~/.config/cmdguard/base/`
+3. `cmdguard hook install` to register in `~/.claude/settings.json`
+
+After installation, cmdguard is active. Test it:
+
+```bash
+cmdguard eval "git status"        # -> allow
+cmdguard eval "rm -rf /"          # -> deny
+cmdguard eval "curl example.com"  # -> ask
 ```
 
 ## Directory Structure
 
 ```
-policies/                    # For unit tests (minimal, stable)
-  stdlib.rego                # Standard helpers (required by all)
-  test_policy.rego           # Minimal policy for unit tests
+~/.config/cmdguard/
+  base/                          # Shipped policies (managed by cmdguard base sync)
+    stdlib.rego                  # Decision helpers, table dispatch, priority resolution
+    safe.rego                    # Always-safe read-only commands (cat, ls, grep, ...)
+    git.rego                     # Git subcommand allow-list + force-push deny
+    rust.rego                    # Cargo subcommand allow-list
+    go.rego                      # Go tool allow-list
+    python.rego                  # Python/pytest rules + inline code analysis
+    javascript.rego              # npm/yarn/npx rules
+    gh.rego                      # GitHub CLI rules
+    kubectl.rego                 # kubectl/helm/flux rules
+    docker.rego                  # Docker subcommand rules
+    file-ops.rego                # rm/chmod/chown/mv/cp path restrictions
+    find.rego                    # find command rules
+    network.rego                 # curl/wget/rsync rules
+    sed.rego                     # sed rules
+    inproject.rego               # Project-scoped binary rules
+    tools.rego                   # Developer tools (jq, xargs, ...)
+    builtins.ncl                 # Command flag/positional schemas
 
-examples/                    # Reference implementations
-  basic/
-    policy.rego              # Simple single-file example
-  split/
-    git.rego                 # Git rules example
-    cargo.rego               # Cargo rules example
-    npm.rego                 # NPM/yarn rules example
-    safety.rego              # Dangerous command blocking
-  policy_tests.yaml          # Example test file
+  policies/                      # Your customizations (never overwritten)
+    custom.rego                  # Starter template created on first sync
 
-config/                      # User's working directory (symlink target)
-  stdlib.rego                # Copy of standard helpers
+  commands.ncl                   # Optional: custom wrapper extractors and command schemas
+
+.cmdguard/                       # Project-local policies (in any project repo)
+  *.rego                         # Merged with global rules at lower priority
 ```
 
-## Configuration
+## How It Works
 
-Policies live in `~/.config/cmdguard/`:
+cmdguard receives the command string from the agent hook, then:
 
-- `stdlib.rego` - Standard helpers (git_subcommand, path checks, etc.)
-- `policy.rego` - Your custom rules
+1. **Parses** compound commands into segments
+2. **Extracts** the real command from wrappers (`sudo`, `nix develop --command`, etc.)
+3. **Resolves** the binary path and classifies its trust zone
+4. **Parses** flags and positional arguments using command schemas
+5. **Evaluates** all Rego policies; each matching rule returns a decision with priority
+6. **Returns** the highest-priority decision: deny (100) > ask (50) > allow (25)
 
-### Development Workflow (Symlink)
+### Decisions
 
-For active development, symlink your config directory to this repo:
+| Decision | Priority | Behavior |
+|----------|----------|----------|
+| `deny`   | 100      | Block the command, agent sees the reason |
+| `ask`    | 50       | Prompt the user for confirmation |
+| `allow`  | 25       | Silent pass, no prompt |
 
-```bash
-# Remove installed config (if exists)
-rm -rf ~/.config/cmdguard
-
-# Symlink to repo's config directory
-ln -s /path/to/cmdguard/config ~/.config/cmdguard
-```
-
-This lets you edit policies in the repo and test immediately. The install script detects symlinks and won't overwrite them.
-
-### Using Split Examples
-
-The `examples/split/` directory shows how to organize rules by domain. Copy the files you need:
-
-```bash
-# Start with stdlib
-cp examples/split/../../../config/stdlib.rego ~/.config/cmdguard/
-
-# Add only the rules you want
-cp examples/split/git.rego ~/.config/cmdguard/
-cp examples/split/cargo.rego ~/.config/cmdguard/
-```
-
-All `.rego` files in the directory are loaded and merged automatically.
+When multiple rules match, the highest priority wins. Override with explicit `"priority": N`.
 
 ## Writing Policies
 
-Policies use named rules with priority-based resolution:
+### Declarative Tables (Simplest)
+
+For commands with subcommands (git, cargo, docker, etc.), add entries to the allow-list table:
 
 ```rego
 package cmdguard
 
-import data.cmdguard.stdlib
+import rego.v1
 
-# Safe git read operations
-rules["safe_git_read"] := {
-    "decision": "allow",
-    "reason": "Safe git read operation",
-} if {
-    input.binary_name == "git"
-    input.subcommand in {"status", "log", "diff", "branch", "show"}
-}
+allowed_subcommands["cargo"] := {"build", "test", "check", "clippy"}
+```
 
-# Block force push
-rules["deny_force_push"] := {
-    "decision": "deny",
-    "reason": "Force push to protected branch blocked",
-    "priority": 100,  # Higher priority overrides allows
-} if {
-    input.binary_name == "git"
-    input.subcommand == "push"
-    input.parsed_flags.force
-}
+For commands where the first argument is the action (go, make, npx, etc.):
 
-# Block rm outside project
-rules["deny_rm_outside_project"] := {
-    "decision": "deny",
-    "reason": "Cannot rm files outside project",
-} if {
+```rego
+package cmdguard
+
+import rego.v1
+
+allowed_with_args["make"] := {"build", "test", "clean", "lint"}
+```
+
+These are automatically dispatched by stdlib. No rule body needed.
+
+### Exclusion Tables
+
+Block specific subcommands without editing the base allow-list:
+
+```rego
+package cmdguard
+
+import rego.v1
+
+# Prevent cargo publish (allowed in base rust.rego)
+denied_subcommands["cargo"] := {"publish"}
+
+# Prevent git push (allowed in base git.rego)
+denied_subcommands["git"] := {"push"}
+```
+
+Similarly for first-argument patterns:
+
+```rego
+denied_with_args["npx"] := {"some-dangerous-tool"}
+```
+
+### Custom Rules
+
+For conditional logic, write named rules:
+
+```rego
+package cmdguard
+
+import rego.v1
+
+# Block rm outside the project directory
+rules["deny_rm_outside_project"] := deny("Cannot rm files outside project") if {
     input.binary_name == "rm"
     some target in input.positional.targets
     target.trust_zone != "project"
 }
+
+# Ask before force push
+rules["ask_force_push"] := ask("Force push requires confirmation") if {
+    input.binary_name == "git"
+    input.subcommand == "push"
+    input.parsed_flags.force
+}
 ```
 
-### Priority System
+The `allow()`, `deny()`, and `ask()` helpers from stdlib set the default priorities. Use `allow_at(reason, priority)`, `deny_at()`, and `ask_at()` to set custom priorities.
 
-When multiple rules match, highest priority wins. Default priorities:
+### Priority System
 
 | Source  | Decision | Default Priority |
 |---------|----------|------------------|
@@ -150,11 +176,9 @@ When multiple rules match, highest priority wins. Default priorities:
 | Global  | allow    | 25               |
 | Project | allow    | 20               |
 
-Override with explicit `"priority": N` in a rule.
-
 ## Policy Input
 
-Your policies receive this input:
+Your policies receive structured input for each command:
 
 ```json
 {
@@ -162,29 +186,20 @@ Your policies receive this input:
   "raw_command": "sudo -u postgres rm -rf ./temp",
   "command": ["rm", "-rf", "./temp"],
   "wrapper_chain": ["sudo"],
-  "flags_expanded": ["-r", "-f"],
-  "paths": [{"raw": "./temp", "resolved": "/project/temp", "exists": true, "is_dir": true}],
-  "cwd": "/home/user/project",
-  "project_root": "/home/user/project",
-  "session_id": "abc123",
-
   "binary_name": "rm",
   "resolved_path": "/bin/rm",
   "resolved_trust_zone": "system",
-  "is_symlink": false,
-
+  "subcommand": null,
   "parsed_flags": {
     "recursive": true,
     "force": true
   },
-  "positional_args": [
-    {"name": "targets", "values": [{"raw": "./temp", "resolved": "/project/temp", "trust_zone": "project"}]}
-  ],
   "positional": {
     "targets": [{"raw": "./temp", "resolved": "/project/temp", "trust_zone": "project"}]
   },
-  "subcommand": null,
-
+  "paths": [{"raw": "./temp", "resolved": "/project/temp", "exists": true, "is_dir": true}],
+  "cwd": "/home/user/project",
+  "project_root": "/home/user/project",
   "chain_position": 1,
   "chain_length": 1,
   "chain_operator": null
@@ -195,46 +210,101 @@ Your policies receive this input:
 
 Binaries are classified by location:
 
-- `system` - `/usr/bin`, `/bin`, `/usr/local/bin`, Nix store, Homebrew
-- `user` - `~/.local/bin`, `~/.cargo/bin`, `~/bin`
-- `project` - Under `$PROJECT_ROOT`
-- `unknown` - Resolution failed or not in any known zone
+| Zone | Paths |
+|------|-------|
+| `system` | `/usr/bin`, `/bin`, `/usr/local/bin`, Nix store, Homebrew |
+| `user` | `~/.local/bin`, `~/.cargo/bin`, `~/bin` |
+| `project` | Under `$PROJECT_ROOT` |
+| `unknown` | Resolution failed or not in any known zone |
 
 ### Parsed Flags
 
-Instead of string matching (`"-rf" in input.command`), use structured access:
+Instead of fragile string matching, use structured flag access:
 
 ```rego
-# Old way (fragile)
+# Fragile -- breaks with -rf, --recursive, etc.
 dangerous if "-rf" in input.command
 
-# New way (robust)
+# Robust -- works regardless of flag format
 dangerous if {
     input.parsed_flags.recursive
     input.parsed_flags.force
 }
 ```
 
-Flag definitions come from built-in command schemas and can be extended via Nickel config.
+Flag definitions come from built-in schemas (`builtins.ncl`) and can be extended via `commands.ncl`.
+
+## CLI Reference
+
+```bash
+# Evaluate a command (for debugging/testing)
+cmdguard eval "git push --force"
+cmdguard eval "rm -rf ./temp" --show-input    # Show JSON input sent to Rego
+
+# Run policy tests
+cmdguard test                                  # Uses policy_tests.yaml in policy dir
+cmdguard test my_tests.yaml --verbose
+
+# Manage base policies
+cmdguard base sync                             # Write/update base policies
+
+# Show loaded policies and tables
+cmdguard status
+
+# Manage hook registration
+cmdguard hook install                          # Register in ~/.claude/settings.json
+cmdguard hook uninstall
+cmdguard hook status
+
+# Validate Nickel configuration
+cmdguard validate
+```
+
+## Testing Policies
+
+Write test cases in YAML:
+
+```yaml
+tests:
+  - name: "allow git status"
+    command: "git status"
+    expect: allow
+    reason_contains: "git"
+
+  - name: "deny force push"
+    command: "git push --force origin main"
+    expect: deny
+
+  - name: "ask for curl"
+    command: "curl https://example.com"
+    expect: ask
+```
+
+Run with:
+
+```bash
+cmdguard test
+cmdguard test --verbose
+```
 
 ## Project-Local Rules
 
-Add project-specific policies in `.cmdguard/`:
+Add `.cmdguard/*.rego` files to a project for project-specific policies:
 
 ```
 my-project/
-  .claude/
-    permissions/
-      project.rego    # Project-specific rules
+  .cmdguard/
+    make.rego          # Allow make targets in this project
+    custom.rego        # Project-specific rules
 ```
 
-Project rules merge with global rules via priority. To allow something globally denied:
+Project rules merge with global rules. They have lower default priority (allow=20, ask=40, deny=75) so global deny rules win by default. To override a global deny:
 
 ```rego
 rules["allow_npm_scripts"] := {
     "decision": "allow",
     "reason": "NPM scripts allowed in this project",
-    "priority": 101,  # Override global deny (100)
+    "priority": 101,
 } if {
     input.binary_name == "npm"
     input.subcommand == "run"
@@ -248,7 +318,6 @@ Custom wrappers and command definitions go in `~/.config/cmdguard/commands.ncl`:
 ```nickel
 {
   wrappers = {
-    # Define custom wrapper extraction
     my_runner = {
       extract = fun tokens =>
         if std.array.length tokens >= 3 && std.array.at 1 tokens == "run" then
@@ -260,7 +329,6 @@ Custom wrappers and command definitions go in `~/.config/cmdguard/commands.ncl`:
   },
 
   commands = {
-    # Define flags and positional args for parsing
     my_tool = {
       flags = {
         verbose = { short = ["-v"], long = "--verbose", type = "boolean" },
@@ -275,66 +343,19 @@ Custom wrappers and command definitions go in `~/.config/cmdguard/commands.ncl`:
 }
 ```
 
-See `config/commands.ncl.example` for more examples.
-
-## Testing Policies
-
-Run policy tests:
-
-```bash
-# Run all tests from policy_tests.yaml
-cmdguard test
-
-# Run with verbose output
-cmdguard test --verbose
-
-# Run specific test file
-cmdguard test my_tests.yaml
-```
-
-Test file format (`policy_tests.yaml`):
-
-```yaml
-tests:
-  - name: "allow git status"
-    command: "git status"
-    expect: allow
-    reason_contains: "Safe git"
-
-  - name: "deny force push"
-    command: "git push --force origin main"
-    expect: deny
-```
-
 ## Debugging
 
-Evaluate a single command:
-
 ```bash
-cmdguard eval "git status"
-cmdguard eval "nix develop --command cargo build"
-cmdguard eval "RUST_LOG=debug cargo run"
-```
-
-Show full policy input (useful for writing Rego rules):
-
-```bash
+# Show the full JSON input for a command
 cmdguard eval "rm -rf ./temp" --show-input
-```
 
-Validate Nickel configuration:
-
-```bash
-cmdguard validate
-```
-
-Enable logging:
-
-```bash
+# Enable debug logging
 export RUST_LOG=debug
-```
+# Logs go to ~/.local/state/cmdguard/debug.log
 
-Logs written to `~/.local/state/cmdguard/debug.log`
+# Check what policies are loaded
+cmdguard status
+```
 
 ## License
 
