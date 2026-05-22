@@ -23,9 +23,21 @@ tests:
     command: "git commit -m 'test commit'"
     expect: allow
 
-  - name: "deny git push -f"
+  - name: "ask git push -f"
     command: "git push -f origin main"
-    expect: deny
+    expect: ask
+
+  - name: "ask git push --force"
+    command: "git push --force origin main"
+    expect: ask
+
+  - name: "ask git push --force-with-lease"
+    command: "git push --force-with-lease origin main"
+    expect: ask
+
+  - name: "allow plain git push"
+    command: "git push origin main"
+    expect: allow
 
   # ==========================================================================
   # Wrapper Extraction
@@ -293,9 +305,12 @@ tests:
   # Sed
   # ==========================================================================
 
-  - name: "allow sed without -i"
+  # sed is no longer blanket-allowed: GNU sed can run shell commands via the
+  # `e` script flag and write arbitrary files via `w`. With no matching
+  # rule, sed without -i falls through to ask.
+  - name: "ask sed without -i"
     command: "sed 's/foo/bar/' file.txt"
-    expect: allow
+    expect: ask
 
   - name: "ask sed -i"
     command: "sed -i 's/foo/bar/' file.txt"
@@ -304,6 +319,10 @@ tests:
   # ==========================================================================
   # Find
   # ==========================================================================
+
+  - name: "deny find with -execdir"
+    command: "find . -execdir rm {} ;"
+    expect: ask
 
   - name: "allow find without exec or delete"
     command: "find . -name '*.tmp'"

@@ -31,18 +31,30 @@ allowed_subcommands["cargo"] := {
 # Explicit rules using parsed_flags
 # ==========================================================================
 
-# Allow git push without --force
+is_force_push if input.parsed_flags.force == true
+
+is_force_push if input.parsed_flags.force_with_lease == true
+
+# Allow git push without --force / --force-with-lease
 rules["allow_git_push"] := allow("git push") if {
 	input.binary_name == "git"
 	input.subcommand == "push"
-	not input.parsed_flags.force
+	not is_force_push
 }
 
-# Deny force push (higher priority than the allow above)
-rules["deny_force_push"] := deny("Force push is blocked - use regular push instead") if {
+# Force pushes are destructive but sometimes intentional - ask the user.
+# Prefer --force-with-lease, which won't overwrite other people's commits.
+rules["ask_force_push"] := ask("Force push - prefer --force-with-lease over --force") if {
 	input.binary_name == "git"
 	input.subcommand == "push"
 	input.parsed_flags.force == true
+	not input.parsed_flags.force_with_lease == true
+}
+
+rules["ask_force_with_lease_push"] := ask("Force-with-lease push - confirm overwrite") if {
+	input.binary_name == "git"
+	input.subcommand == "push"
+	input.parsed_flags.force_with_lease == true
 }
 
 # Ask for git reset --hard (destructive but sometimes needed)

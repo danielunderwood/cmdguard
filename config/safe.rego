@@ -32,7 +32,6 @@ rules["safe_command"] := allow("Safe command") if {
 		"pwd",
 		"read",
 		"rg",
-		"sed",
 		"sleep",
 		"sort",
 		"tail",

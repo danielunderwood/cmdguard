@@ -6,9 +6,13 @@ is_find if input.command[0] == "find"
 
 # find uses non-standard single-dash flags (-exec, -delete, -name)
 # which the parser doesn't handle via parsed_flags, so we check input.command.
+# -exec/-execdir run external commands; -ok/-okdir do the same with confirmation.
+exec_like_flags := {"-exec", "-execdir", "-ok", "-okdir"}
+
 find_has_exec if {
 	is_find
-	"-exec" in input.command
+	some flag in exec_like_flags
+	flag in input.command
 }
 
 find_has_delete if {

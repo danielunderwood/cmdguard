@@ -183,7 +183,7 @@ in
       flags = {
         long = bool_flag "-l" null,
         all = bool_flag "-a" "--all",
-        human_readable = bool_flag "-h" "--hutman-readable",
+        human_readable = bool_flag "-h" "--human-readable",
       },
       positional = [{ name = "paths", type = "path", variadic = true, optional = true }],
     },
@@ -202,7 +202,7 @@ in
 
     sed = {
       flags = {
-        in_place = { type = "with_arg", short = ["-i"], long = null, optional_arg = true },
+        in_place = { type = "with_optional_arg", short = ["-i"], long = null },
         expression = arg_flag "-e" null,
         quiet = bool_flag "-n" null,
       },

@@ -23,17 +23,30 @@ allowed_subcommands["git"] := {
 	"version",
 }
 
+is_force_push if input.parsed_flags.force == true
+
+is_force_push if input.parsed_flags.force_with_lease == true
+
 # Allow push without force
 rules["allow_git_push"] := allow("git push") if {
 	input.binary_name == "git"
 	input.subcommand == "push"
-	not input.parsed_flags.force
+	not is_force_push
 }
 
-# Deny force push
-rules["deny_force_push"] := deny("Force push blocked") if {
+# Force pushes are destructive but sometimes intended; ask the user.
+# --force-with-lease is preferred over --force when one is needed.
+rules["ask_force_push"] := ask("Force push - prefer --force-with-lease over --force") if {
+	input.binary_name == "git"
 	input.subcommand == "push"
 	input.parsed_flags.force == true
+	not input.parsed_flags.force_with_lease == true
+}
+
+rules["ask_force_with_lease_push"] := ask("Force-with-lease push - confirm overwrite") if {
+	input.binary_name == "git"
+	input.subcommand == "push"
+	input.parsed_flags.force_with_lease == true
 }
 
 # Ask for reset --hard

@@ -15,18 +15,30 @@ rules["safe_git_write"] := allow("Safe git write operation") if {
 	input.subcommand in {"add", "commit", "restore", "switch", "checkout"}
 }
 
-# Allow push without --force
+is_force_push if input.parsed_flags.force == true
+
+is_force_push if input.parsed_flags.force_with_lease == true
+
+# Allow push without --force / --force-with-lease
 rules["allow_git_push"] := allow("git push") if {
 	input.binary_name == "git"
 	input.subcommand == "push"
-	not input.parsed_flags.force
+	not is_force_push
 }
 
-# Deny force push (parsed_flags-based)
-rules["deny_force_push"] := deny("Force push is blocked - use regular push instead") if {
+# Force pushes destructive but sometimes intentional - ask. Prefer
+# --force-with-lease, which doesn't blow away other people's work.
+rules["ask_force_push"] := ask("Force push - prefer --force-with-lease over --force") if {
 	input.binary_name == "git"
 	input.subcommand == "push"
 	input.parsed_flags.force == true
+	not input.parsed_flags.force_with_lease == true
+}
+
+rules["ask_force_with_lease_push"] := ask("Force-with-lease push - confirm overwrite") if {
+	input.binary_name == "git"
+	input.subcommand == "push"
+	input.parsed_flags.force_with_lease == true
 }
 
 # Ask for git reset --hard
