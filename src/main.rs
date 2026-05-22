@@ -131,10 +131,47 @@ fn main() {
     }
 }
 
-#[cfg(unix)]
-fn chmod(path: &Path, mode: u32) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+/// Cross-platform helpers for the `base sync` filesystem layout.
+/// On Unix the base/ directory and its contents are locked to read-only
+/// (0444 / 0555) after writing. On non-Unix these are no-ops — Windows
+/// doesn't have a Unix mode to set, and the security claim is documented
+/// as Unix-only in the README.
+mod permissions {
+    use std::path::Path;
+
+    #[cfg(unix)]
+    fn chmod(path: &Path, mode: u32) -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
+
+    #[cfg(not(unix))]
+    fn chmod(_path: &Path, _mode: u32) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    /// Lock a file to read-only for owner/group/other (0o444). No-op on non-Unix.
+    pub fn lock_readonly_file(path: &Path) -> std::io::Result<()> {
+        chmod(path, 0o444)
+    }
+
+    /// Lock a directory to read+execute (0o555) so nothing can be added.
+    /// No-op on non-Unix.
+    pub fn lock_readonly_dir(path: &Path) -> std::io::Result<()> {
+        chmod(path, 0o555)
+    }
+
+    /// Make a previously locked file writable so it can be overwritten on
+    /// re-sync. No-op on non-Unix.
+    pub fn relax_file_for_rewrite(path: &Path) -> std::io::Result<()> {
+        chmod(path, 0o644)
+    }
+
+    /// Make a previously locked directory writable so files can be replaced
+    /// on re-sync. No-op on non-Unix.
+    pub fn relax_dir_for_rewrite(path: &Path) -> std::io::Result<()> {
+        chmod(path, 0o755)
+    }
 }
 
 /// List `.rego` filenames in `dir`, sorted, returning Err if `dir` exists but
@@ -174,9 +211,8 @@ fn run_base_sync() {
 
     // Make base directory writable for re-sync. If this fails, the writes below
     // will fail too, so don't pre-empt with a hard error here.
-    #[cfg(unix)]
     if base_dir.exists() {
-        if let Err(e) = chmod(&base_dir, 0o755) {
+        if let Err(e) = permissions::relax_dir_for_rewrite(&base_dir) {
             eprintln!("Warning: could not relax base/ permissions for re-sync: {}", e);
         }
     }
@@ -184,56 +220,38 @@ fn run_base_sync() {
     println!("Syncing base policies to {}", base_dir.display());
     println!();
 
-    // Write each base file
-    for (filename, contents) in embedded::BASE_FILES {
-        let path = base_dir.join(filename);
-
-        // Make file writable if it exists (for re-sync)
-        #[cfg(unix)]
+    // Helper to write a file, relaxing permissions on re-sync, then locking
+    // it back to read-only. Tracks lockdown failures in the outer Vec so we
+    // don't claim success while leaving files writable.
+    let mut write_locked_file = |path: &Path, contents: &str, label: &str| {
         if path.exists() {
-            if let Err(e) = chmod(&path, 0o644) {
-                eprintln!("Warning: could not relax {} permissions for re-sync: {}", filename, e);
+            if let Err(e) = permissions::relax_file_for_rewrite(path) {
+                eprintln!(
+                    "Warning: could not relax {} permissions for re-sync: {}",
+                    label, e
+                );
             }
         }
-
-        std::fs::write(&path, contents).unwrap_or_else(|e| {
-            eprintln!("Failed to write {}: {}", filename, e);
+        std::fs::write(path, contents).unwrap_or_else(|e| {
+            eprintln!("Failed to write {}: {}", label, e);
             std::process::exit(1);
         });
-
-        // Set read-only permissions
-        #[cfg(unix)]
-        if let Err(e) = chmod(&path, 0o444) {
-            lockdown_failures.push(format!("{}: {}", filename, e));
+        if let Err(e) = permissions::lock_readonly_file(path) {
+            lockdown_failures.push(format!("{}: {}", label, e));
         }
-        println!("  {}", filename);
+        println!("  {}", label);
+    };
+
+    for (filename, contents) in embedded::BASE_FILES {
+        write_locked_file(&base_dir.join(filename), contents, filename);
     }
+    write_locked_file(
+        &base_dir.join("builtins.ncl"),
+        embedded::BUILTINS_NCL,
+        "builtins.ncl",
+    );
 
-    // Write builtins.ncl
-    let builtins_path = base_dir.join("builtins.ncl");
-
-    // Make file writable if it exists (for re-sync)
-    #[cfg(unix)]
-    if builtins_path.exists() {
-        if let Err(e) = chmod(&builtins_path, 0o644) {
-            eprintln!("Warning: could not relax builtins.ncl permissions for re-sync: {}", e);
-        }
-    }
-
-    std::fs::write(&builtins_path, embedded::BUILTINS_NCL).unwrap_or_else(|e| {
-        eprintln!("Failed to write builtins.ncl: {}", e);
-        std::process::exit(1);
-    });
-
-    #[cfg(unix)]
-    if let Err(e) = chmod(&builtins_path, 0o444) {
-        lockdown_failures.push(format!("builtins.ncl: {}", e));
-    }
-    println!("  builtins.ncl");
-
-    // Set base directory permissions
-    #[cfg(unix)]
-    if let Err(e) = chmod(&base_dir, 0o555) {
+    if let Err(e) = permissions::lock_readonly_dir(&base_dir) {
         lockdown_failures.push(format!("base/: {}", e));
     }
 
