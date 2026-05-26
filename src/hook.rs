@@ -73,31 +73,58 @@ fn make_hook_entry(bin_path: &str) -> Value {
     })
 }
 
-/// Detects either form of our hook entry:
-/// - the legacy bare invocation: `.../cmdguard` (or with prefix env vars)
-/// - the current form: `.../cmdguard hook run`
-/// Both should be considered "ours" so install/uninstall act on either,
-/// e.g. uninstall correctly removes a stale legacy registration.
-fn is_our_entry(entry: &Value) -> bool {
-    if let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) {
-        hooks.iter().any(|hook| {
-            let cmd = match hook.get("command").and_then(|c| c.as_str()) {
-                Some(c) => c,
-                None => return false,
-            };
-            // Strip optional trailing `hook run` and any surrounding whitespace
-            let trimmed = cmd.trim_end();
-            let binary_part = trimmed
-                .strip_suffix("hook run")
-                .map(|s| s.trim_end())
-                .unwrap_or(trimmed);
-            // Last whitespace-separated token is the binary path
-            let last_token = binary_part.split_whitespace().last().unwrap_or("");
-            last_token.ends_with("cmdguard")
-        })
+/// Returns `Some(bin_basename)` if `command` invokes our binary — that is,
+/// the executable's basename (after stripping any leading `KEY=VAL`
+/// environment-variable prefixes from the shell-tokenized command) equals
+/// "cmdguard".
+///
+/// This is the shape settings.json hook commands take. We use shlex so
+/// quoted paths with spaces and other shell-style escapes parse correctly,
+/// and we match the basename exactly so foreign tools like
+/// `mycmdguard` / `acme-cmdguard` don't get mistaken for ours.
+fn cmdguard_basename_in(command: &str) -> Option<&'static str> {
+    let tokens = shlex::split(command)?;
+    // Skip leading env assignments like `RUST_LOG=debug`, which the shell
+    // treats as variable bindings for the command, not the command itself.
+    let bin_token = tokens
+        .iter()
+        .find(|t| !is_env_assignment(t))?;
+
+    let basename = std::path::Path::new(bin_token)
+        .file_name()
+        .and_then(|n| n.to_str())?;
+
+    if basename == "cmdguard" {
+        Some("cmdguard")
     } else {
-        false
+        None
     }
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    // POSIX-style env prefix: identifier followed by '='. We only need to
+    // recognize, not fully validate; treat any token containing '=' before
+    // any '/' as an env assignment.
+    match (token.find('='), token.find('/')) {
+        (Some(eq), Some(slash)) => eq < slash,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn is_our_entry(entry: &Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|c| c.as_str())
+                    .and_then(cmdguard_basename_in)
+                    .is_some()
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn install() {
@@ -300,35 +327,74 @@ mod tests {
         assert_eq!(hooks[0]["hooks"][0]["command"], format!("{} hook run", bin));
     }
 
+    fn entry(cmd: &str) -> Value {
+        json!({
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": cmd}]
+        })
+    }
+
     #[test]
-    fn test_is_our_entry_matches_legacy_and_current_forms() {
-        // Current: `cmdguard hook run`
-        let current = json!({
-            "matcher": "Bash",
-            "hooks": [{"type": "command", "command": "/usr/local/bin/cmdguard hook run"}]
-        });
-        assert!(is_our_entry(&current));
+    fn test_is_our_entry_current_form() {
+        assert!(is_our_entry(&entry("/usr/local/bin/cmdguard hook run")));
+    }
 
-        // Legacy: bare cmdguard binary
-        let legacy = json!({
-            "matcher": "Bash",
-            "hooks": [{"type": "command", "command": "/usr/local/bin/cmdguard"}]
-        });
-        assert!(is_our_entry(&legacy));
+    #[test]
+    fn test_is_our_entry_legacy_bare_form() {
+        assert!(is_our_entry(&entry("/usr/local/bin/cmdguard")));
+    }
 
-        // Legacy with env-var prefix
-        let with_env = json!({
-            "matcher": "Bash",
-            "hooks": [{"type": "command", "command": "RUST_LOG=debug ~/.cargo/bin/cmdguard"}]
-        });
-        assert!(is_our_entry(&with_env));
+    #[test]
+    fn test_is_our_entry_with_env_prefix() {
+        // POSIX-style env-var prefix is a common debugging shape:
+        assert!(is_our_entry(&entry("RUST_LOG=debug ~/.cargo/bin/cmdguard")));
+        assert!(is_our_entry(&entry(
+            "RUST_LOG=debug /usr/local/bin/cmdguard hook run"
+        )));
+        // Multiple env vars
+        assert!(is_our_entry(&entry(
+            "FOO=1 BAR=2 /usr/local/bin/cmdguard hook run"
+        )));
+    }
 
-        // Foreign hook: should not match
-        let foreign = json!({
-            "matcher": "Bash",
-            "hooks": [{"type": "command", "command": "/usr/bin/some-other-tool"}]
-        });
-        assert!(!is_our_entry(&foreign));
+    #[test]
+    fn test_is_our_entry_quoted_path_with_spaces() {
+        // Path containing a space, properly quoted: must still match.
+        assert!(is_our_entry(&entry(
+            "\"/Users/my user/bin/cmdguard\" hook run"
+        )));
+        assert!(is_our_entry(&entry(
+            "'/Users/my user/bin/cmdguard' hook run"
+        )));
+    }
+
+    #[test]
+    fn test_is_our_entry_with_trailing_redirection() {
+        // shlex preserves the redirection token so it stays in the token
+        // list, but the binary token is still the first non-env token —
+        // so detection should still work.
+        assert!(is_our_entry(&entry(
+            "/usr/local/bin/cmdguard hook run 2>>/tmp/log"
+        )));
+    }
+
+    #[test]
+    fn test_is_our_entry_rejects_foreign_binaries() {
+        // Different name entirely
+        assert!(!is_our_entry(&entry("/usr/bin/some-other-tool")));
+        // Substring match must NOT be enough — basename has to be exactly
+        // `cmdguard`. Otherwise `cmdguard hook uninstall` would happily
+        // remove some unrelated tool's hook.
+        assert!(!is_our_entry(&entry("/usr/local/bin/mycmdguard")));
+        assert!(!is_our_entry(&entry("/opt/acme-cmdguard")));
+        assert!(!is_our_entry(&entry("/usr/local/bin/cmdguardx")));
+    }
+
+    #[test]
+    fn test_is_our_entry_unparseable_command_safe() {
+        // Unbalanced quote — shlex returns None, we should not panic and
+        // not falsely claim it's ours.
+        assert!(!is_our_entry(&entry("/usr/local/bin/cmdguard \"unclosed")));
     }
 
     #[test]
