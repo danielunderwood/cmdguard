@@ -7,6 +7,10 @@ pub fn run(action: HookAction) {
         HookAction::Install => install(),
         HookAction::Uninstall => uninstall(),
         HookAction::Status => status(),
+        // The Run arm is handled directly in main.rs (it calls into the
+        // stdin-reading hook handler that lives there). Reaching it here
+        // means the dispatch in main is wrong.
+        HookAction::Run => unreachable!("HookAction::Run dispatched here"),
     }
 }
 
@@ -63,19 +67,33 @@ fn make_hook_entry(bin_path: &str) -> Value {
         "hooks": [
             {
                 "type": "command",
-                "command": bin_path
+                "command": format!("{} hook run", bin_path)
             }
         ]
     })
 }
 
+/// Detects either form of our hook entry:
+/// - the legacy bare invocation: `.../cmdguard` (or with prefix env vars)
+/// - the current form: `.../cmdguard hook run`
+/// Both should be considered "ours" so install/uninstall act on either,
+/// e.g. uninstall correctly removes a stale legacy registration.
 fn is_our_entry(entry: &Value) -> bool {
     if let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) {
         hooks.iter().any(|hook| {
-            hook.get("command")
-                .and_then(|c| c.as_str())
-                .map(|c| c.ends_with("cmdguard"))
-                .unwrap_or(false)
+            let cmd = match hook.get("command").and_then(|c| c.as_str()) {
+                Some(c) => c,
+                None => return false,
+            };
+            // Strip optional trailing `hook run` and any surrounding whitespace
+            let trimmed = cmd.trim_end();
+            let binary_part = trimmed
+                .strip_suffix("hook run")
+                .map(|s| s.trim_end())
+                .unwrap_or(trimmed);
+            // Last whitespace-separated token is the binary path
+            let last_token = binary_part.split_whitespace().last().unwrap_or("");
+            last_token.ends_with("cmdguard")
         })
     } else {
         false
@@ -279,7 +297,38 @@ mod tests {
         let hooks = &settings["hooks"]["PreToolUse"];
         assert_eq!(hooks.as_array().unwrap().len(), 1);
         assert_eq!(hooks[0]["matcher"], "Bash");
-        assert_eq!(hooks[0]["hooks"][0]["command"], bin);
+        assert_eq!(hooks[0]["hooks"][0]["command"], format!("{} hook run", bin));
+    }
+
+    #[test]
+    fn test_is_our_entry_matches_legacy_and_current_forms() {
+        // Current: `cmdguard hook run`
+        let current = json!({
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "/usr/local/bin/cmdguard hook run"}]
+        });
+        assert!(is_our_entry(&current));
+
+        // Legacy: bare cmdguard binary
+        let legacy = json!({
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "/usr/local/bin/cmdguard"}]
+        });
+        assert!(is_our_entry(&legacy));
+
+        // Legacy with env-var prefix
+        let with_env = json!({
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "RUST_LOG=debug ~/.cargo/bin/cmdguard"}]
+        });
+        assert!(is_our_entry(&with_env));
+
+        // Foreign hook: should not match
+        let foreign = json!({
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "/usr/bin/some-other-tool"}]
+        });
+        assert!(!is_our_entry(&foreign));
     }
 
     #[test]

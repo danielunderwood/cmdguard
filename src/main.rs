@@ -76,9 +76,10 @@ fn main() {
         Some(Commands::Version) => {
             println!("cmdguard {}", env!("CARGO_PKG_VERSION"));
         }
-        Some(Commands::Hook { action }) => {
-            hook::run(action);
-        }
+        Some(Commands::Hook { action }) => match action {
+            cli::HookAction::Run => run_hook(),
+            other => hook::run(other),
+        },
         Some(Commands::Base { action }) => match action {
             cli::BaseAction::Sync => base_sync::run(get_policy_dir(None)),
         },
@@ -86,8 +87,14 @@ fn main() {
             run_status(policy_dir);
         }
         None => {
-            // Default: run as hook (read from stdin)
-            run_hook();
+            // No subcommand: print clap help and exit non-zero so callers
+            // notice. Reading stdin in the no-arg case used to be
+            // load-bearing for the hook integration, but that path is now
+            // explicit (`cmdguard hook run`).
+            use clap::CommandFactory;
+            let _ = Cli::command().print_help();
+            println!();
+            std::process::exit(2);
         }
     }
 }
