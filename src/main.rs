@@ -87,13 +87,15 @@ fn main() {
             run_status(policy_dir);
         }
         None => {
-            // No subcommand: print clap help and exit non-zero so callers
-            // notice. Reading stdin in the no-arg case used to be
-            // load-bearing for the hook integration, but that path is now
-            // explicit (`cmdguard hook run`).
+            // No subcommand: print clap help to stderr and exit non-zero
+            // so callers notice. Reading stdin in the no-arg case used to
+            // be load-bearing for the hook integration, but that path is
+            // now explicit (`cmdguard hook run`). Help goes to stderr to
+            // keep stdout clean for scripts that pipe a wanted command's
+            // output but accidentally invoke cmdguard with no args.
             use clap::CommandFactory;
-            let _ = Cli::command().print_help();
-            println!();
+            let _ = Cli::command().write_help(&mut std::io::stderr());
+            eprintln!();
             std::process::exit(2);
         }
     }

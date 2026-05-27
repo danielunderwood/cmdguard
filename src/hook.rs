@@ -62,41 +62,49 @@ fn write_settings(path: &PathBuf, settings: &Value) {
 }
 
 fn make_hook_entry(bin_path: &str) -> Value {
+    // Shell-quote the binary path so install paths with spaces or shell
+    // metacharacters are emitted as a single shell token. Without this,
+    // a path like `/Users/foo bar/cmdguard` would be split by Claude
+    // Code's shell into multiple args and the hook would silently fail.
+    // try_quote can fail on bytes that are unrepresentable in shell (NULs);
+    // fall back to the unquoted form rather than failing install — the
+    // shell would have rejected such a path anyway.
+    let quoted_bin = shlex::try_quote(bin_path)
+        .map(|c| c.into_owned())
+        .unwrap_or_else(|_| bin_path.to_string());
     json!({
         "matcher": "Bash",
         "hooks": [
             {
                 "type": "command",
-                "command": format!("{} hook run", bin_path)
+                "command": format!("{} hook run", quoted_bin)
             }
         ]
     })
 }
 
-/// Returns `Some(bin_basename)` if `command` invokes our binary — that is,
-/// the executable's basename (after stripping any leading `KEY=VAL`
-/// environment-variable prefixes from the shell-tokenized command) equals
-/// "cmdguard".
+/// Returns `true` if `command` invokes our binary — that is, after shell
+/// tokenization and skipping any leading `KEY=VAL` env-var prefixes, the
+/// first remaining token's basename equals `"cmdguard"`.
 ///
-/// This is the shape settings.json hook commands take. We use shlex so
-/// quoted paths with spaces and other shell-style escapes parse correctly,
-/// and we match the basename exactly so foreign tools like
-/// `mycmdguard` / `acme-cmdguard` don't get mistaken for ours.
-fn cmdguard_basename_in(command: &str) -> Option<&'static str> {
-    let tokens = shlex::split(command)?;
+/// We match the basename exactly so foreign tools whose name happens to
+/// contain "cmdguard" (e.g. `mycmdguard`, `acme-cmdguard`) don't get
+/// misidentified as ours.
+fn is_our_command(command: &str) -> bool {
+    let tokens = match shlex::split(command) {
+        Some(t) => t,
+        None => return false,
+    };
     // Skip leading env assignments like `RUST_LOG=debug`, which the shell
     // treats as variable bindings for the command, not the command itself.
-    let bin_token = tokens.iter().find(|t| !is_env_assignment(t))?;
-
+    let bin_token = match tokens.iter().find(|t| !is_env_assignment(t)) {
+        Some(t) => t,
+        None => return false,
+    };
     let basename = std::path::Path::new(bin_token)
         .file_name()
-        .and_then(|n| n.to_str())?;
-
-    if basename == "cmdguard" {
-        Some("cmdguard")
-    } else {
-        None
-    }
+        .and_then(|n| n.to_str());
+    basename == Some("cmdguard")
 }
 
 fn is_env_assignment(token: &str) -> bool {
@@ -118,8 +126,8 @@ fn is_our_entry(entry: &Value) -> bool {
             hooks.iter().any(|hook| {
                 hook.get("command")
                     .and_then(|c| c.as_str())
-                    .and_then(cmdguard_basename_in)
-                    .is_some()
+                    .map(is_our_command)
+                    .unwrap_or(false)
             })
         })
         .unwrap_or(false)
@@ -393,6 +401,24 @@ mod tests {
         // Unbalanced quote — shlex returns None, we should not panic and
         // not falsely claim it's ours.
         assert!(!is_our_entry(&entry("/usr/local/bin/cmdguard \"unclosed")));
+    }
+
+    #[test]
+    fn test_make_hook_entry_quotes_paths_with_spaces() {
+        // current_exe() can resolve to a path with spaces (e.g. when the
+        // user's home or install dir contains a space). The generated
+        // command must shell-quote so Claude Code parses it as a single
+        // token; otherwise the leading slice would be invoked as the
+        // binary and the rest passed as args.
+        let entry = make_hook_entry("/Users/Some User/bin/cmdguard");
+        let cmd = entry["hooks"][0]["command"].as_str().unwrap();
+        // Round-trip: the entry we just generated must be detectable as
+        // ours, which proves shlex parses it back to a single bin token.
+        assert!(
+            is_our_command(cmd),
+            "round-trip detection failed for spaced path; got command: {:?}",
+            cmd
+        );
     }
 
     #[test]
