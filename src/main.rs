@@ -415,7 +415,7 @@ fn get_project_policy_dir(project_root: Option<&PathBuf>) -> Option<PathBuf> {
 /// Load policies from global directory and optionally from project-local directory
 fn load_all_policies(
     engine: &mut PolicyEngine,
-    global_dir: &PathBuf,
+    global_dir: &Path,
     project_root: Option<&PathBuf>,
 ) -> Result<(), String> {
     engine.load_policies_with_layout(global_dir)?;
@@ -550,10 +550,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
 
         // Resolve the command binary and trust zone
         let resolved = if !extracted.command.is_empty() {
-            resolve_command(
-                &extracted.command[0],
-                project_root_detected.as_ref().map(|p| p.as_path()),
-            )
+            resolve_command(&extracted.command[0], project_root_detected.as_deref())
         } else {
             resolve_command("", None)
         };
@@ -587,7 +584,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             command_parser::parse_command(
                 &extracted.command,
                 &command_defs,
-                project_root_detected.as_ref().map(|p| p.as_path()),
+                project_root_detected.as_deref(),
             )
         } else {
             command_parser::ParsedCommand {
@@ -642,7 +639,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         // Serialize to JSON for PolicyInput
         let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
         let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
-        let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
+        let positional_map_json = serde_json::to_value(parsed_cmd.positional_as_map()).ok();
 
         // Check for python -c and analyze inline code
         let python_analysis =
@@ -752,6 +749,9 @@ fn run_hook() {
 }
 
 /// Evaluate a compound command, short-circuiting on first non-allow
+// Bundling these into an EvaluationContext-style struct would be the
+// idiomatic fix; deferring it so this chore PR stays mechanical.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_compound(
     parsed: &[parser::ParsedCommand],
     has_parse_errors: bool,

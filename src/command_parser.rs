@@ -768,9 +768,7 @@ fn parse_without_definition(
         }
 
         // Handle long flags (--foo, --foo=bar)
-        if arg.starts_with("--") {
-            let without_dashes = &arg[2..];
-
+        if let Some(without_dashes) = arg.strip_prefix("--") {
             // Check for = form
             if let Some(equals_pos) = without_dashes.find('=') {
                 let flag_name = &without_dashes[..equals_pos];

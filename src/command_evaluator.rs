@@ -101,7 +101,7 @@ impl<'a> CommandEvaluator<'a> {
         // Serialize to JSON for PolicyInput
         let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
         let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
-        let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
+        let positional_map_json = serde_json::to_value(parsed_cmd.positional_as_map()).ok();
 
         // Check for python -c and analyze inline code
         let python_analysis =

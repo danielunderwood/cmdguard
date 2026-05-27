@@ -18,15 +18,9 @@ pub fn extract_command(
     let mut wrapper_chain = Vec::new();
     let mut current = tokens.to_vec();
 
-    loop {
-        // Reborrow nickel_config each iteration to avoid move
-        match try_extract_wrapper(&current, nickel_config.as_deref_mut()) {
-            Some((wrapper, inner)) => {
-                wrapper_chain.push(wrapper);
-                current = inner;
-            }
-            None => break,
-        }
+    while let Some((wrapper, inner)) = try_extract_wrapper(&current, nickel_config.as_deref_mut()) {
+        wrapper_chain.push(wrapper);
+        current = inner;
     }
 
     ExtractedCommand {
@@ -173,11 +167,9 @@ fn extract_nix(tokens: &[String]) -> Option<(String, Vec<String>)> {
 
     // Find --command flag
     for (i, token) in tokens.iter().enumerate() {
-        if token == "--command" || token == "-c" {
-            if i + 1 < tokens.len() {
-                let wrapper = format!("nix {}", subcommand);
-                return Some((wrapper, tokens[i + 1..].to_vec()));
-            }
+        if (token == "--command" || token == "-c") && i + 1 < tokens.len() {
+            let wrapper = format!("nix {}", subcommand);
+            return Some((wrapper, tokens[i + 1..].to_vec()));
         }
     }
     None
@@ -186,12 +178,10 @@ fn extract_nix(tokens: &[String]) -> Option<(String, Vec<String>)> {
 fn extract_nix_shell(tokens: &[String]) -> Option<(String, Vec<String>)> {
     // nix-shell --run "command"
     for (i, token) in tokens.iter().enumerate() {
-        if token == "--run" {
-            if i + 1 < tokens.len() {
-                // The next token is a quoted command string, need to re-tokenize
-                if let Ok(inner_tokens) = tokenize(&tokens[i + 1]) {
-                    return Some(("nix-shell".to_string(), inner_tokens));
-                }
+        if token == "--run" && i + 1 < tokens.len() {
+            // The next token is a quoted command string, need to re-tokenize
+            if let Ok(inner_tokens) = tokenize(&tokens[i + 1]) {
+                return Some(("nix-shell".to_string(), inner_tokens));
             }
         }
     }
@@ -263,12 +253,10 @@ fn extract_shell_c(tokens: &[String]) -> Option<(String, Vec<String>)> {
     let shell = &tokens[0];
 
     for (i, token) in tokens.iter().enumerate() {
-        if token == "-c" {
-            if i + 1 < tokens.len() {
-                // The next token is a quoted command string, need to re-tokenize
-                if let Ok(inner_tokens) = tokenize(&tokens[i + 1]) {
-                    return Some((shell.clone(), inner_tokens));
-                }
+        if token == "-c" && i + 1 < tokens.len() {
+            // The next token is a quoted command string, need to re-tokenize
+            if let Ok(inner_tokens) = tokenize(&tokens[i + 1]) {
+                return Some((shell.clone(), inner_tokens));
             }
         }
     }

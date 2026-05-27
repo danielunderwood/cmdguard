@@ -36,12 +36,12 @@ pub enum ExpectedDecision {
 
 impl ExpectedDecision {
     fn matches(&self, decision: Decision) -> bool {
-        match (self, decision) {
-            (ExpectedDecision::Allow, Decision::Allow) => true,
-            (ExpectedDecision::Deny, Decision::Deny) => true,
-            (ExpectedDecision::Ask, Decision::Ask) => true,
-            _ => false,
-        }
+        matches!(
+            (self, decision),
+            (ExpectedDecision::Allow, Decision::Allow)
+                | (ExpectedDecision::Deny, Decision::Deny)
+                | (ExpectedDecision::Ask, Decision::Ask)
+        )
     }
 }
 
@@ -136,11 +136,8 @@ impl TestRunner {
             // Short-circuit on non-allow
             if result.decision != Decision::Allow {
                 let decision_matches = test.expect.matches(result.decision);
-                let reason_matches = test.reason_contains.as_ref().map_or(true, |expected| {
-                    result
-                        .reason
-                        .as_ref()
-                        .map_or(false, |r| r.contains(expected))
+                let reason_matches = test.reason_contains.as_ref().is_none_or(|expected| {
+                    result.reason.as_ref().is_some_and(|r| r.contains(expected))
                 });
 
                 let error = if !reason_matches {
@@ -166,7 +163,7 @@ impl TestRunner {
 
         // All commands allowed
         let decision_matches = test.expect.matches(Decision::Allow);
-        let reason_matches = test.reason_contains.as_ref().map_or(true, |_| false);
+        let reason_matches = test.reason_contains.as_ref().is_none_or(|_| false);
 
         let error = if !reason_matches && test.reason_contains.is_some() {
             Some(format!(
