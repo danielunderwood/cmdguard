@@ -99,7 +99,9 @@ cmdguard eval "curl example.com"         # -> ask
     builtins.ncl                 # Command flag/positional schemas
 
   policies/                      # Your customizations (never overwritten)
-    custom.rego                  # Starter template created on first sync
+    custom.rego                  # Starter template created on first `base sync`;
+                                 # add your own rules here. Drop in additional
+                                 # *.rego files alongside it for organization.
 
   commands.ncl                   # Optional: custom wrapper extractors and command schemas
 
@@ -129,6 +131,18 @@ cmdguard receives the command string from the agent hook, then:
 When multiple rules match, the highest priority wins. Override with explicit `"priority": N`.
 
 ## Writing Policies
+
+Custom rules live in `~/.config/cmdguard/policies/`. The `cmdguard base
+sync` command creates a starter `custom.rego` there on first run; edit
+it directly, or add additional `*.rego` files alongside it (every
+`.rego` file in `policies/` is loaded). Files in `base/` are managed by
+the binary and shouldn't be edited — your changes there are blown away
+on the next `base sync`.
+
+After editing, no reload is needed. The hook reads policies fresh on
+each invocation, so the next command will use the updated rules. To
+sanity-check, run `cmdguard eval "<some command>"` (or
+`cmdguard test path/to/tests.yaml`) before relying on the rule.
 
 ### Declarative Tables (Simplest)
 
