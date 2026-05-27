@@ -112,6 +112,9 @@ pub enum HookAction {
     Uninstall,
     /// Check if the hook is registered
     Status,
+    /// Read a hook payload from stdin and emit a permission decision.
+    /// Used by Claude Code's PreToolUse hook integration.
+    Run,
 }
 
 #[derive(Subcommand)]

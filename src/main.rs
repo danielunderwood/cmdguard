@@ -25,11 +25,11 @@ use command_defs::CommandDefinitions;
 use command_evaluator::{CommandEvaluator, EvaluationContext};
 use extractor::extract_command;
 use flags::expand_flags;
-use nickel_config::NickelConfig;
-use parser::parse_command;
 use input::parse_input;
 use logging::init_logging;
+use nickel_config::NickelConfig;
 use output::HookOutput;
+use parser::parse_command;
 use paths::detect_paths;
 use policy::{PatternInput, PolicyEngine, PolicyInput, PythonAnalysisInput};
 use resolver::{detect_project_root, resolve_command};
@@ -76,9 +76,10 @@ fn main() {
         Some(Commands::Version) => {
             println!("cmdguard {}", env!("CARGO_PKG_VERSION"));
         }
-        Some(Commands::Hook { action }) => {
-            hook::run(action);
-        }
+        Some(Commands::Hook { action }) => match action {
+            cli::HookAction::Run => run_hook(),
+            other => hook::run(other),
+        },
         Some(Commands::Base { action }) => match action {
             cli::BaseAction::Sync => base_sync::run(get_policy_dir(None)),
         },
@@ -86,8 +87,16 @@ fn main() {
             run_status(policy_dir);
         }
         None => {
-            // Default: run as hook (read from stdin)
-            run_hook();
+            // No subcommand: print clap help to stderr and exit non-zero
+            // so callers notice. Reading stdin in the no-arg case used to
+            // be load-bearing for the hook integration, but that path is
+            // now explicit (`cmdguard hook run`). Help goes to stderr to
+            // keep stdout clean for scripts that pipe a wanted command's
+            // output but accidentally invoke cmdguard with no args.
+            use clap::CommandFactory;
+            let _ = Cli::command().write_help(&mut std::io::stderr());
+            eprintln!();
+            std::process::exit(2);
         }
     }
 }
@@ -171,7 +180,8 @@ fn run_status(policy_dir: Option<PathBuf>) {
     let allowed = engine.query_allowed_subcommands();
     if !allowed.is_empty() {
         print!("  allowed_subcommands: ");
-        let entries: Vec<String> = allowed.iter()
+        let entries: Vec<String> = allowed
+            .iter()
             .map(|(binary, subcmds)| format!("{}({})", binary, subcmds.len()))
             .collect();
         println!("{}", entries.join(", "));
@@ -180,7 +190,8 @@ fn run_status(policy_dir: Option<PathBuf>) {
     let denied = engine.query_denied_subcommands();
     if !denied.is_empty() {
         print!("  denied_subcommands: ");
-        let entries: Vec<String> = denied.iter()
+        let entries: Vec<String> = denied
+            .iter()
             .map(|(binary, subcmds)| format!("{}({})", binary, subcmds.len()))
             .collect();
         println!("{}", entries.join(", "));
@@ -249,7 +260,10 @@ fn run_analyze_python(code: &str) {
             } else {
                 println!("Matched patterns:");
                 for pattern in &result.patterns {
-                    println!("  - @{} \"{}\" at line {}:{}", pattern.capture, pattern.text, pattern.line, pattern.column);
+                    println!(
+                        "  - @{} \"{}\" at line {}:{}",
+                        pattern.capture, pattern.text, pattern.line, pattern.column
+                    );
                 }
             }
             println!();
@@ -323,7 +337,10 @@ fn run_query(
                 println!("No matches found.");
             } else {
                 for m in &matches {
-                    println!("  @{} \"{}\" at line {}:{}", m.capture, m.text, m.line, m.column);
+                    println!(
+                        "  @{} \"{}\" at line {}:{}",
+                        m.capture, m.text, m.line, m.column
+                    );
                 }
             }
         }
@@ -352,11 +369,8 @@ fn analyze_python_if_applicable(
     // Run Python analyzer
     match python_analyzer::analyze(&code) {
         Ok(analysis) => {
-            let patterns: Vec<PatternInput> = analysis
-                .patterns
-                .iter()
-                .map(PatternInput::from)
-                .collect();
+            let patterns: Vec<PatternInput> =
+                analysis.patterns.iter().map(PatternInput::from).collect();
 
             Some(PythonAnalysisInput {
                 patterns,
@@ -393,7 +407,9 @@ fn get_policy_dir(override_dir: Option<PathBuf>) -> PathBuf {
 
 /// Get the project-local policy directory if it exists
 fn get_project_policy_dir(project_root: Option<&PathBuf>) -> Option<PathBuf> {
-    project_root.map(|root| root.join(".cmdguard")).filter(|p| p.exists())
+    project_root
+        .map(|root| root.join(".cmdguard"))
+        .filter(|p| p.exists())
 }
 
 /// Load policies from global directory and optionally from project-local directory
@@ -465,7 +481,10 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
     let mut command_defs = CommandDefinitions::builtin();
     let custom_commands = nickel_config.get_command_definitions();
     if !custom_commands.is_empty() {
-        debug!("Merging {} custom command definitions", custom_commands.len());
+        debug!(
+            "Merging {} custom command definitions",
+            custom_commands.len()
+        );
         command_defs.merge(custom_commands);
     }
 
@@ -503,7 +522,12 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
     println!("=== Per-Command Evaluation ===");
     let mut prev_operator: Option<String> = None;
     for cmd in &parse_result.commands {
-        println!("\n--- Command {}/{}: {} ---", cmd.position + 1, cmd.chain_length, cmd.text);
+        println!(
+            "\n--- Command {}/{}: {} ---",
+            cmd.position + 1,
+            cmd.chain_length,
+            cmd.text
+        );
         let this_prev_operator = prev_operator.clone();
         prev_operator = cmd.next_operator.clone();
 
@@ -526,7 +550,10 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
 
         // Resolve the command binary and trust zone
         let resolved = if !extracted.command.is_empty() {
-            resolve_command(&extracted.command[0], project_root_detected.as_ref().map(|p| p.as_path()))
+            resolve_command(
+                &extracted.command[0],
+                project_root_detected.as_ref().map(|p| p.as_path()),
+            )
         } else {
             resolve_command("", None)
         };
@@ -539,7 +566,10 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             println!("Flags:      {:?}", flags_expanded);
         }
         if !paths.is_empty() {
-            println!("Paths:      {:?}", paths.iter().map(|p| &p.raw).collect::<Vec<_>>());
+            println!(
+                "Paths:      {:?}",
+                paths.iter().map(|p| &p.raw).collect::<Vec<_>>()
+            );
         }
         println!("Binary:     {}", resolved.binary_name);
         if let Some(path) = &resolved.resolved_path {
@@ -615,7 +645,8 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
 
         // Check for python -c and analyze inline code
-        let python_analysis = analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
+        let python_analysis =
+            analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
 
         let policy_input = PolicyInput {
             tool: "Bash".to_string(),
@@ -694,7 +725,10 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         &command_defs,
         &mut nickel_config,
     );
-    println!("{}", serde_json::to_string_pretty(&final_output).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&final_output).unwrap_or_default()
+    );
 }
 
 fn run_hook() {
@@ -776,7 +810,10 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     let mut command_defs = CommandDefinitions::builtin();
     let custom_commands = nickel_config.get_command_definitions();
     if !custom_commands.is_empty() {
-        debug!("Merging {} custom command definitions", custom_commands.len());
+        debug!(
+            "Merging {} custom command definitions",
+            custom_commands.len()
+        );
         command_defs.merge(custom_commands);
     }
 
