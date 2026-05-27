@@ -19,23 +19,60 @@ Policy-driven permission control for AI coding agents. cmdguard evaluates shell 
 
 ## Quick Start
 
+### Option A: Prebuilt binary (no Rust toolchain needed)
+
+Download the latest release for your platform from the [releases page][releases],
+extract it, and place the binary on `PATH`:
+
 ```bash
-# Build and install
+# Linux x86_64
+curl -L -o /tmp/cmdguard.tar.gz \
+  https://github.com/danielunderwood/cmdguard/releases/latest/download/cmdguard-x86_64-unknown-linux-gnu.tar.gz
+
+# macOS Apple Silicon
+curl -L -o /tmp/cmdguard.tar.gz \
+  https://github.com/danielunderwood/cmdguard/releases/latest/download/cmdguard-aarch64-apple-darwin.tar.gz
+
+mkdir -p ~/.local/bin
+tar xzf /tmp/cmdguard.tar.gz -C ~/.local/bin
+cmdguard base sync       # populate ~/.config/cmdguard/{base,policies}/
+cmdguard hook install    # register in ~/.claude/settings.json
+```
+
+For other platforms (e.g. Linux aarch64), build from source.
+
+### Option B: Build from source
+
+Requires a Rust toolchain (1.75+ recommended).
+
+```bash
+git clone https://github.com/danielunderwood/cmdguard
+cd cmdguard
 ./install.sh
 ```
 
-This builds the binary, syncs base policies, and registers the hook. The installer runs:
+`install.sh` runs three steps:
 
 1. `cargo build --release` and copies to `~/.local/bin/cmdguard`
-2. `cmdguard base sync` to write base policies to `~/.config/cmdguard/base/`
-3. `cmdguard hook install` to register in `~/.claude/settings.json`
+2. `cmdguard base sync` writes base policies to `~/.config/cmdguard/base/`
+3. `cmdguard hook install` registers the binary in `~/.claude/settings.json`
+
+Or via cargo directly:
+
+```bash
+cargo install --git https://github.com/danielunderwood/cmdguard
+cmdguard base sync
+cmdguard hook install
+```
+
+[releases]: https://github.com/danielunderwood/cmdguard/releases
 
 After installation, cmdguard is active. Test it:
 
 ```bash
-cmdguard eval "git status"        # -> allow
-cmdguard eval "rm -rf /"          # -> deny
-cmdguard eval "curl example.com"  # -> ask
+cmdguard eval "git status"               # -> allow
+cmdguard eval "rm --no-preserve-root /"  # -> deny
+cmdguard eval "curl example.com"         # -> ask
 ```
 
 ## Directory Structure
@@ -271,9 +308,9 @@ tests:
     expect: allow
     reason_contains: "git"
 
-  - name: "deny force push"
+  - name: "ask for force push"
     command: "git push --force origin main"
-    expect: deny
+    expect: ask
 
   - name: "ask for curl"
     command: "curl https://example.com"
@@ -357,6 +394,3 @@ export RUST_LOG=debug
 cmdguard status
 ```
 
-## License
-
-MIT
