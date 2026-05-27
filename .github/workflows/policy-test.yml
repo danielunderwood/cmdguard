@@ -1,0 +1,26 @@
+name: Policy test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "config/**"
+      - "policies/**"
+      - "examples/**"
+  pull_request:
+    paths:
+      - "config/**"
+      - "policies/**"
+      - "examples/**"
+
+jobs:
+  policy-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - run: cargo build
+      - run: cargo run -- test config/policy_tests.yaml --policy-dir config
+      - run: cargo run -- test examples/policy_tests.yaml --policy-dir examples/basic
