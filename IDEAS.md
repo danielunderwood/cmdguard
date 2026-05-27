@@ -77,3 +77,53 @@ Things that popped into my head, but aren't yet implemented.
   - Start with explicit aliases only. Auto-aliasing on PATH symlinks looks
     tempting but gets surprising in nix/containers where everything is a
     symlink chain.
+
+- First-run experience
+  - `cmdguard init` that generates a starter `custom.rego` with commented
+    examples, similar to the template emitted by `base sync`.
+  - Detect an empty `policies/` directory and offer a guided setup
+    (permissive / restrictive / custom profiles).
+
+- Testing improvements
+  - `cmdguard test --watch` to rerun the policy suite when `.rego` files
+    change.
+  - `cmdguard check` to report rule coverage — which rules have/don't
+    have test cases.
+
+- TOML simple mode
+  - A `cmdguard.toml` config surface for the 80% case (allow-lists, simple
+    deny rules) that compiles to Rego internally at load time. Users who
+    need anything beyond that (trust-zone checks, iteration over positional
+    args, etc.) drop down to Rego.
+  - Example:
+    ```toml
+    [git]
+    allow = ["status", "log", "diff", "commit", "push"]
+    deny_flags.push = ["force"]
+
+    [cargo]
+    allow = ["build", "test", "check", "fmt", "clippy", "run"]
+    ```
+  - Additive — doesn't replace Rego, just provides a friendlier entry point.
+
+- URL parsing for curl/wget rules
+  - Extract domain/scheme/path from URL-typed positional args so rules can
+    write `input.positional.url[0].domain == "api.github.com"` instead of
+    matching against regexes.
+  - Rust-side parsing with the `url` crate is probably the right approach
+    (reliable, fast, already a transitive dep). Alternatives: a Nickel
+    post-parse transform, or a Rego helper.
+
+- Language choice rationale (notes for future readers)
+  - Rego (via regorus) + Nickel were chosen after evaluating Lua, Rhai,
+    Wasm, KCL, and a Nickel-only design.
+  - Rego stays for policy: declarative model, partial-rule merging, and
+    fail-loud semantics fit allow/deny decisions well.
+  - Nickel handles command schemas (rarely user-facing) without imposing
+    its full programming model on rule authors.
+  - Lua: more readable for imperative logic but loses automatic multi-file
+    rule merging; would need significant Rust glue to reimplement.
+  - Wasm: too heavy for the &lt;100 ms per-call budget. KCL: too new/niche.
+    Rhai: Rust-only community, smaller ecosystem.
+  - The TOML simple mode (above) is the better path to accessibility
+    without an engine rewrite.
