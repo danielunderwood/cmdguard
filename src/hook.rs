@@ -86,9 +86,7 @@ fn cmdguard_basename_in(command: &str) -> Option<&'static str> {
     let tokens = shlex::split(command)?;
     // Skip leading env assignments like `RUST_LOG=debug`, which the shell
     // treats as variable bindings for the command, not the command itself.
-    let bin_token = tokens
-        .iter()
-        .find(|t| !is_env_assignment(t))?;
+    let bin_token = tokens.iter().find(|t| !is_env_assignment(t))?;
 
     let basename = std::path::Path::new(bin_token)
         .file_name()
