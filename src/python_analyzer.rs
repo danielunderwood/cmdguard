@@ -85,7 +85,6 @@ pub struct Pattern {
     pub column: usize,
 }
 
-
 /// Analyze Python code for dangerous patterns using default config
 pub fn analyze(code: &str) -> Result<PythonAnalysis, String> {
     analyze_with_config(code, &PythonConfig::default())
@@ -148,7 +147,10 @@ fn find_patterns(
             let start = node.start_position();
 
             // Avoid duplicates for the same location
-            if !patterns.iter().any(|p: &Pattern| p.line == start.row + 1 && p.column == start.column) {
+            if !patterns
+                .iter()
+                .any(|p: &Pattern| p.line == start.row + 1 && p.column == start.column)
+            {
                 patterns.push(Pattern {
                     capture: capture_name.to_string(),
                     text,
@@ -203,7 +205,11 @@ print(pd.DataFrame.__doc__)
 x = json.dumps({"a": 1})
 "#;
         let result = analyze(code).unwrap();
-        assert!(result.is_inspection_safe, "Expected safe, got: {:?}", result.patterns);
+        assert!(
+            result.is_inspection_safe,
+            "Expected safe, got: {:?}",
+            result.patterns
+        );
         assert!(result.imports.contains(&"json".to_string()));
         assert!(result.imports.contains(&"pandas".to_string()));
     }
@@ -305,7 +311,8 @@ open("file.txt")
 (import_statement
   name: (dotted_name) @dangerous_import
   (#match? @dangerous_import "^subprocess$"))
-"#.to_string(),
+"#
+            .to_string(),
             imports_query: DEFAULT_IMPORTS_QUERY.to_string(),
         };
         let result = analyze_with_config(code, &config).unwrap();

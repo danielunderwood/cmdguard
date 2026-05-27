@@ -1,6 +1,8 @@
 //! Nickel configuration runtime for user-defined wrapper extractors and command definitions.
 
-use crate::command_defs::{CommandDef, FlagDef, FlagType, PositionalDef, ArgType, ParsingOptions, SubcommandDef};
+use crate::command_defs::{
+    ArgType, CommandDef, FlagDef, FlagType, ParsingOptions, PositionalDef, SubcommandDef,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -243,7 +245,10 @@ impl NickelConfig {
                         if let Some(end) = error_msg[start..].find("`,") {
                             let ident = &error_msg[start + 8..start + end];
                             errors.push(format!("Undefined identifier: `{}`", ident));
-                            errors.push("Hint: For recursive functions, use `let rec` instead of `let`".to_string());
+                            errors.push(
+                                "Hint: For recursive functions, use `let rec` instead of `let`"
+                                    .to_string(),
+                            );
                         }
                     }
                 } else if error_msg.contains("TypecheckError") {
@@ -290,10 +295,8 @@ impl NickelConfig {
                             if def_record.value_by_name("extract").is_some() {
                                 wrappers.push(name.to_string());
                             } else {
-                                warnings.push(format!(
-                                    "Wrapper '{}' has no 'extract' function",
-                                    name
-                                ));
+                                warnings
+                                    .push(format!("Wrapper '{}' has no 'extract' function", name));
                             }
                         } else {
                             errors.push(format!(
@@ -548,10 +551,7 @@ impl NickelConfig {
             }
         }
 
-        Some(SubcommandDef {
-            flags,
-            positional,
-        })
+        Some(SubcommandDef { flags, positional })
     }
 
     /// Parse a flag definition from a Nickel expression
@@ -793,7 +793,11 @@ mod tests {
         let (dir, path) = create_temp_config(content);
         let mut config = NickelConfig::load(&path);
 
-        let tokens = vec!["test_wrapper".to_string(), "inner".to_string(), "cmd".to_string()];
+        let tokens = vec![
+            "test_wrapper".to_string(),
+            "inner".to_string(),
+            "cmd".to_string(),
+        ];
         let result = config.extract_wrapper("test_wrapper", &tokens);
 
         assert!(result.is_some(), "Expected Some result, got None");
@@ -1009,7 +1013,12 @@ mod tests {
         let git = commands.get("git").unwrap();
         assert!(git.flags.contains_key("directory"));
         assert!(git.subcommands.contains_key("push"));
-        assert!(git.subcommands.get("push").unwrap().flags.contains_key("force"));
+        assert!(git
+            .subcommands
+            .get("push")
+            .unwrap()
+            .flags
+            .contains_key("force"));
 
         drop(dir);
     }
@@ -1057,16 +1066,31 @@ mod tests {
         let git = commands.get("git").unwrap();
 
         // Builtin flags should still exist
-        assert!(git.flags.contains_key("directory"), "git -C flag should exist");
+        assert!(
+            git.flags.contains_key("directory"),
+            "git -C flag should exist"
+        );
 
         // Builtin subcommand push with flags should still exist
-        assert!(git.subcommands.contains_key("push"), "push subcommand should exist");
+        assert!(
+            git.subcommands.contains_key("push"),
+            "push subcommand should exist"
+        );
         let push = git.subcommands.get("push").unwrap();
-        assert!(push.flags.contains_key("force"), "push --force flag should exist");
-        assert!(push.flags.contains_key("delete"), "push --delete flag should exist");
+        assert!(
+            push.flags.contains_key("force"),
+            "push --force flag should exist"
+        );
+        assert!(
+            push.flags.contains_key("delete"),
+            "push --delete flag should exist"
+        );
 
         // User subcommand should also exist
-        assert!(git.subcommands.contains_key("town"), "town subcommand should exist");
+        assert!(
+            git.subcommands.contains_key("town"),
+            "town subcommand should exist"
+        );
         let town = git.subcommands.get("town").unwrap();
         assert_eq!(town.positional.len(), 1);
         assert_eq!(town.positional[0].name, "subcmd");
@@ -1116,8 +1140,14 @@ mod tests {
         let push = git.subcommands.get("push").unwrap();
 
         // Both builtin and user flags should exist
-        assert!(push.flags.contains_key("force"), "builtin force flag should exist");
-        assert!(push.flags.contains_key("set_upstream"), "user set_upstream flag should exist");
+        assert!(
+            push.flags.contains_key("force"),
+            "builtin force flag should exist"
+        );
+        assert!(
+            push.flags.contains_key("set_upstream"),
+            "user set_upstream flag should exist"
+        );
 
         drop(dir);
     }
@@ -1162,7 +1192,10 @@ mod tests {
         assert!(force.short.contains(&"-F".to_string()));
 
         // Builtin recursive flag should still exist
-        assert!(rm.flags.contains_key("recursive"), "recursive flag should exist");
+        assert!(
+            rm.flags.contains_key("recursive"),
+            "recursive flag should exist"
+        );
 
         drop(dir);
     }
@@ -1200,7 +1233,10 @@ mod tests {
 
         // Both commands should exist
         assert!(commands.contains_key("git"), "builtin git should exist");
-        assert!(commands.contains_key("my_tool"), "user my_tool should exist");
+        assert!(
+            commands.contains_key("my_tool"),
+            "user my_tool should exist"
+        );
 
         let my_tool = commands.get("my_tool").unwrap();
         assert!(my_tool.flags.contains_key("verbose"));

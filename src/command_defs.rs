@@ -122,7 +122,6 @@ impl CommandDefinitions {
         }
     }
 
-
     /// Get built-in default definitions (empty - real definitions come from builtins.ncl)
     pub fn builtin() -> Self {
         CommandDefinitions {
@@ -152,7 +151,11 @@ impl CommandDefinitions {
                         }
                         // Merge positional args
                         for pos_def in subcmd_def.positional {
-                            if !existing_subcmd.positional.iter().any(|p| p.name == pos_def.name) {
+                            if !existing_subcmd
+                                .positional
+                                .iter()
+                                .any(|p| p.name == pos_def.name)
+                            {
                                 existing_subcmd.positional.push(pos_def);
                             }
                         }
@@ -207,7 +210,10 @@ mod tests {
         }
     }
 
-    fn make_subcommand(flags: HashMap<String, FlagDef>, positional: Vec<PositionalDef>) -> SubcommandDef {
+    fn make_subcommand(
+        flags: HashMap<String, FlagDef>,
+        positional: Vec<PositionalDef>,
+    ) -> SubcommandDef {
         SubcommandDef { flags, positional }
     }
 
@@ -216,141 +222,184 @@ mod tests {
         let mut commands = HashMap::new();
 
         // git with subcommands
-        commands.insert("git".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("directory".to_string(), make_flag(&["-C"], None, FlagType::WithArg)),
-            ]),
-            positional: vec![],
-            subcommands: HashMap::from([
-                ("status".to_string(), make_subcommand(
-                    HashMap::from([
-                        ("short".to_string(), make_flag(&["-s"], Some("--short"), FlagType::Boolean)),
-                    ]),
-                    vec![],
-                )),
-                ("push".to_string(), make_subcommand(
-                    HashMap::from([
-                        ("force".to_string(), make_flag(&["-f"], Some("--force"), FlagType::Boolean)),
-                    ]),
-                    vec![],
-                )),
-                ("reset".to_string(), make_subcommand(
-                    HashMap::from([
-                        ("hard".to_string(), make_flag(&[], Some("--hard"), FlagType::Boolean)),
-                    ]),
-                    vec![],
-                )),
-            ]),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        commands.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: HashMap::from([(
+                    "directory".to_string(),
+                    make_flag(&["-C"], None, FlagType::WithArg),
+                )]),
+                positional: vec![],
+                subcommands: HashMap::from([
+                    (
+                        "status".to_string(),
+                        make_subcommand(
+                            HashMap::from([(
+                                "short".to_string(),
+                                make_flag(&["-s"], Some("--short"), FlagType::Boolean),
+                            )]),
+                            vec![],
+                        ),
+                    ),
+                    (
+                        "push".to_string(),
+                        make_subcommand(
+                            HashMap::from([(
+                                "force".to_string(),
+                                make_flag(&["-f"], Some("--force"), FlagType::Boolean),
+                            )]),
+                            vec![],
+                        ),
+                    ),
+                    (
+                        "reset".to_string(),
+                        make_subcommand(
+                            HashMap::from([(
+                                "hard".to_string(),
+                                make_flag(&[], Some("--hard"), FlagType::Boolean),
+                            )]),
+                            vec![],
+                        ),
+                    ),
+                ]),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         // rm
-        commands.insert("rm".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("recursive".to_string(), make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean)),
-                ("force".to_string(), make_flag(&["-f"], Some("--force"), FlagType::Boolean)),
-            ]),
-            positional: vec![PositionalDef {
-                name: "targets".to_string(),
-                arg_type: ArgType::Path,
-                position: None,
-                variadic: true,
-                last: false,
-                optional: false,
-            }],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
-
-        // chmod
-        commands.insert("chmod".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("recursive".to_string(), make_flag(&["-R"], Some("--recursive"), FlagType::Boolean)),
-            ]),
-            positional: vec![
-                PositionalDef {
-                    name: "mode".to_string(),
-                    arg_type: ArgType::String,
-                    position: Some(0),
-                    variadic: false,
-                    last: false,
-                    optional: false,
-                },
-                PositionalDef {
+        commands.insert(
+            "rm".to_string(),
+            CommandDef {
+                flags: HashMap::from([
+                    (
+                        "recursive".to_string(),
+                        make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean),
+                    ),
+                    (
+                        "force".to_string(),
+                        make_flag(&["-f"], Some("--force"), FlagType::Boolean),
+                    ),
+                ]),
+                positional: vec![PositionalDef {
                     name: "targets".to_string(),
                     arg_type: ArgType::Path,
                     position: None,
                     variadic: true,
                     last: false,
                     optional: false,
-                },
-            ],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+                }],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // chmod
+        commands.insert(
+            "chmod".to_string(),
+            CommandDef {
+                flags: HashMap::from([(
+                    "recursive".to_string(),
+                    make_flag(&["-R"], Some("--recursive"), FlagType::Boolean),
+                )]),
+                positional: vec![
+                    PositionalDef {
+                        name: "mode".to_string(),
+                        arg_type: ArgType::String,
+                        position: Some(0),
+                        variadic: false,
+                        last: false,
+                        optional: false,
+                    },
+                    PositionalDef {
+                        name: "targets".to_string(),
+                        arg_type: ArgType::Path,
+                        position: None,
+                        variadic: true,
+                        last: false,
+                        optional: false,
+                    },
+                ],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         // cp
-        commands.insert("cp".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("recursive".to_string(), make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean)),
-            ]),
-            positional: vec![
-                PositionalDef {
-                    name: "sources".to_string(),
-                    arg_type: ArgType::Path,
-                    position: None,
-                    variadic: true,
-                    last: false,
-                    optional: false,
-                },
-                PositionalDef {
-                    name: "destination".to_string(),
-                    arg_type: ArgType::Path,
-                    position: None,
-                    variadic: false,
-                    last: true,
-                    optional: false,
-                },
-            ],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        commands.insert(
+            "cp".to_string(),
+            CommandDef {
+                flags: HashMap::from([(
+                    "recursive".to_string(),
+                    make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean),
+                )]),
+                positional: vec![
+                    PositionalDef {
+                        name: "sources".to_string(),
+                        arg_type: ArgType::Path,
+                        position: None,
+                        variadic: true,
+                        last: false,
+                        optional: false,
+                    },
+                    PositionalDef {
+                        name: "destination".to_string(),
+                        arg_type: ArgType::Path,
+                        position: None,
+                        variadic: false,
+                        last: true,
+                        optional: false,
+                    },
+                ],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         // cargo
-        commands.insert("cargo".to_string(), CommandDef {
-            flags: HashMap::new(),
-            positional: vec![],
-            subcommands: HashMap::from([
-                ("build".to_string(), make_subcommand(
-                    HashMap::from([
-                        ("release".to_string(), make_flag(&["-r"], Some("--release"), FlagType::Boolean)),
-                    ]),
-                    vec![],
-                )),
-            ]),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        commands.insert(
+            "cargo".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![],
+                subcommands: HashMap::from([(
+                    "build".to_string(),
+                    make_subcommand(
+                        HashMap::from([(
+                            "release".to_string(),
+                            make_flag(&["-r"], Some("--release"), FlagType::Boolean),
+                        )]),
+                        vec![],
+                    ),
+                )]),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         // npm
-        commands.insert("npm".to_string(), CommandDef {
-            flags: HashMap::new(),
-            positional: vec![],
-            subcommands: HashMap::from([
-                ("install".to_string(), make_subcommand(
-                    HashMap::from([
-                        ("save_dev".to_string(), make_flag(&["-D"], Some("--save-dev"), FlagType::Boolean)),
-                    ]),
-                    vec![],
-                )),
-            ]),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        commands.insert(
+            "npm".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![],
+                subcommands: HashMap::from([(
+                    "install".to_string(),
+                    make_subcommand(
+                        HashMap::from([(
+                            "save_dev".to_string(),
+                            make_flag(&["-D"], Some("--save-dev"), FlagType::Boolean),
+                        )]),
+                        vec![],
+                    ),
+                )]),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         CommandDefinitions {
             commands,
@@ -367,7 +416,10 @@ mod tests {
         let mut git_subcommands = HashMap::new();
         git_subcommands.insert(
             "my-custom-subcmd".to_string(),
-            make_subcommand(HashMap::new(), vec![make_positional("arg", ArgType::String)]),
+            make_subcommand(
+                HashMap::new(),
+                vec![make_positional("arg", ArgType::String)],
+            ),
         );
         custom.insert(
             "git".to_string(),
@@ -409,10 +461,7 @@ mod tests {
             "my-custom-flag".to_string(),
             make_flag(&["-x"], Some("--my-custom-flag"), FlagType::Boolean),
         );
-        git_subcommands.insert(
-            "log".to_string(),
-            make_subcommand(custom_log_flags, vec![]),
-        );
+        git_subcommands.insert("log".to_string(), make_subcommand(custom_log_flags, vec![]));
 
         custom.insert(
             "git".to_string(),
@@ -490,15 +539,26 @@ mod tests {
         );
 
         let git_before = defs.get("git").unwrap();
-        assert!(matches!(git_before.flags.get("directory").unwrap().flag_type, FlagType::WithArg));
+        assert!(matches!(
+            git_before.flags.get("directory").unwrap().flag_type,
+            FlagType::WithArg
+        ));
 
         defs.merge(custom);
 
         let git = defs.get("git").unwrap();
         // Flag should be overridden
-        assert!(matches!(git.flags.get("directory").unwrap().flag_type, FlagType::Boolean));
+        assert!(matches!(
+            git.flags.get("directory").unwrap().flag_type,
+            FlagType::Boolean
+        ));
         // Short flag should also be updated
-        assert!(git.flags.get("directory").unwrap().short.contains(&"-D".to_string()));
+        assert!(git
+            .flags
+            .get("directory")
+            .unwrap()
+            .short
+            .contains(&"-D".to_string()));
     }
 
     #[test]
@@ -544,9 +604,7 @@ mod tests {
             "git".to_string(),
             CommandDef {
                 flags: HashMap::new(),
-                positional: vec![
-                    make_positional("custom-arg", ArgType::String),
-                ],
+                positional: vec![make_positional("custom-arg", ArgType::String)],
                 subcommands: HashMap::new(),
                 is_wrapper: false,
                 parsing: ParsingOptions::default(),
@@ -643,7 +701,11 @@ mod tests {
         }
         // All original subcommands should still exist
         for subcmd in &original_subcommands {
-            assert!(git.subcommands.contains_key(subcmd), "Missing subcommand: {}", subcmd);
+            assert!(
+                git.subcommands.contains_key(subcmd),
+                "Missing subcommand: {}",
+                subcmd
+            );
         }
         // Plus the new one
         assert!(git.subcommands.contains_key("my-subcmd"));

@@ -104,7 +104,8 @@ impl<'a> CommandEvaluator<'a> {
         let positional_map_json = serde_json::to_value(&parsed_cmd.positional_as_map()).ok();
 
         // Check for python -c and analyze inline code
-        let python_analysis = self.analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
+        let python_analysis =
+            self.analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
 
         // Build policy input
         let policy_input = PolicyInput {
@@ -124,9 +125,7 @@ impl<'a> CommandEvaluator<'a> {
             command_as_typed: Some(resolved.command_as_typed),
             binary_name: Some(resolved.binary_name),
             resolved_path: resolved.resolved_path,
-            resolved_trust_zone: Some(
-                format!("{:?}", resolved.resolved_trust_zone).to_lowercase(),
-            ),
+            resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
             is_symlink: Some(resolved.is_symlink),
             symlink_source: resolved.symlink_source,
             parsed_flags: parsed_flags_json,
@@ -159,11 +158,8 @@ impl<'a> CommandEvaluator<'a> {
         // Run Python analyzer
         match python_analyzer::analyze(&code) {
             Ok(analysis) => {
-                let patterns: Vec<PatternInput> = analysis
-                    .patterns
-                    .iter()
-                    .map(PatternInput::from)
-                    .collect();
+                let patterns: Vec<PatternInput> =
+                    analysis.patterns.iter().map(PatternInput::from).collect();
 
                 Some(PythonAnalysisInput {
                     patterns,
@@ -247,10 +243,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    fn create_test_context<'a>(
-        cwd: &'a str,
-        cwd_path: &'a Path,
-    ) -> EvaluationContext<'a> {
+    fn create_test_context<'a>(cwd: &'a str, cwd_path: &'a Path) -> EvaluationContext<'a> {
         EvaluationContext {
             cwd,
             cwd_path,
@@ -267,11 +260,7 @@ mod tests {
         let command_defs = CommandDefinitions::builtin();
         let mut nickel_config = NickelConfig::empty();
 
-        let mut evaluator = CommandEvaluator::new(
-            &mut engine,
-            &command_defs,
-            &mut nickel_config,
-        );
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cwd = "/tmp";
         let cwd_path = PathBuf::from(cwd);
@@ -297,11 +286,7 @@ mod tests {
         let command_defs = CommandDefinitions::builtin();
         let mut nickel_config = NickelConfig::empty();
 
-        let mut evaluator = CommandEvaluator::new(
-            &mut engine,
-            &command_defs,
-            &mut nickel_config,
-        );
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cwd = "/tmp";
         let cwd_path = PathBuf::from(cwd);
@@ -318,22 +303,15 @@ mod tests {
         let command_defs = CommandDefinitions::builtin();
         let mut nickel_config = NickelConfig::empty();
 
-        let mut evaluator = CommandEvaluator::new(
-            &mut engine,
-            &command_defs,
-            &mut nickel_config,
-        );
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cwd = "/tmp";
         let cwd_path = PathBuf::from(cwd);
         let context = create_test_context(cwd, &cwd_path);
 
         let parse_result = parse_command("echo hello");
-        let result = evaluator.evaluate_compound(
-            &parse_result.commands,
-            parse_result.has_errors,
-            &context,
-        );
+        let result =
+            evaluator.evaluate_compound(&parse_result.commands, parse_result.has_errors, &context);
 
         // With no policies, should return Ask (no rule matched)
         assert_eq!(result.decision(), Decision::Ask);

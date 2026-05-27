@@ -11,7 +11,10 @@ pub struct ExtractedCommand {
 ///
 /// If a NickelConfig is provided, it will try user-defined extractors first
 /// before falling back to built-in extractors.
-pub fn extract_command(tokens: &[String], mut nickel_config: Option<&mut NickelConfig>) -> ExtractedCommand {
+pub fn extract_command(
+    tokens: &[String],
+    mut nickel_config: Option<&mut NickelConfig>,
+) -> ExtractedCommand {
     let mut wrapper_chain = Vec::new();
     let mut current = tokens.to_vec();
 
@@ -32,7 +35,10 @@ pub fn extract_command(tokens: &[String], mut nickel_config: Option<&mut NickelC
     }
 }
 
-fn try_extract_wrapper(tokens: &[String], nickel_config: Option<&mut NickelConfig>) -> Option<(String, Vec<String>)> {
+fn try_extract_wrapper(
+    tokens: &[String],
+    nickel_config: Option<&mut NickelConfig>,
+) -> Option<(String, Vec<String>)> {
     if tokens.is_empty() {
         return None;
     }
@@ -100,10 +106,13 @@ fn extract_inline_env(tokens: &[String]) -> Option<(String, Vec<String>)> {
 
     if idx > 0 && idx < tokens.len() {
         // Collect the env vars for the wrapper name
-        let env_vars: Vec<_> = tokens[..idx].iter().map(|s| {
-            // Just show the variable name, not the value
-            s.split('=').next().unwrap_or(s)
-        }).collect();
+        let env_vars: Vec<_> = tokens[..idx]
+            .iter()
+            .map(|s| {
+                // Just show the variable name, not the value
+                s.split('=').next().unwrap_or(s)
+            })
+            .collect();
         let wrapper_name = format!("env:{}", env_vars.join(","));
         Some((wrapper_name, tokens[idx..].to_vec()))
     } else {
@@ -215,9 +224,20 @@ fn extract_docker(tokens: &[String]) -> Option<(String, Vec<String>)> {
                 // Heuristic: common docker flags that take values
                 let takes_value = matches!(
                     token.as_str(),
-                    "-e" | "--env" | "-v" | "--volume" | "-p" | "--publish" |
-                    "-w" | "--workdir" | "--name" | "-u" | "--user" |
-                    "--network" | "--entrypoint" | "-m" | "--memory"
+                    "-e" | "--env"
+                        | "-v"
+                        | "--volume"
+                        | "-p"
+                        | "--publish"
+                        | "-w"
+                        | "--workdir"
+                        | "--name"
+                        | "-u"
+                        | "--user"
+                        | "--network"
+                        | "--entrypoint"
+                        | "-m"
+                        | "--memory"
                 );
                 if takes_value {
                     idx += 1;

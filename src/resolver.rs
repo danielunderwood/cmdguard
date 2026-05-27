@@ -127,7 +127,8 @@ pub fn resolve_symlinks(path: &Path) -> (Option<PathBuf>, bool) {
         Ok(resolved) => {
             // Check if the path was a symlink by comparing
             // We need to check the original path, not the resolved one
-            let is_symlink = path.symlink_metadata()
+            let is_symlink = path
+                .symlink_metadata()
                 .map(|m| m.file_type().is_symlink())
                 .unwrap_or(false);
 
@@ -193,11 +194,7 @@ pub fn resolve_command(command: &str, project_root: Option<&Path>) -> ResolvedCo
             let (resolved_path, is_symlink) = resolve_symlinks(&path_in_path);
 
             // Classify based on where found in PATH (not where it resolves to!)
-            let resolved_trust_zone = classify_trust_zone(
-                &path_in_path,
-                project_root,
-                &zone_paths,
-            );
+            let resolved_trust_zone = classify_trust_zone(&path_in_path, project_root, &zone_paths);
 
             ResolvedCommand {
                 command_as_typed,
@@ -227,16 +224,8 @@ pub fn resolve_command(command: &str, project_root: Option<&Path>) -> ResolvedCo
 }
 
 /// Invalid paths that should not be used as project roots
-const INVALID_PROJECT_ROOTS: &[&str] = &[
-    "/",
-    "/usr",
-    "/home",
-    "/var",
-    "/etc",
-    "/tmp",
-    "/opt",
-    "/nix",
-];
+const INVALID_PROJECT_ROOTS: &[&str] =
+    &["/", "/usr", "/home", "/var", "/etc", "/tmp", "/opt", "/nix"];
 
 /// Detect project root by walking up from cwd looking for .git
 /// Returns None if no valid project root found or if root is invalid
@@ -492,18 +481,10 @@ mod tests {
     fn test_classify_trust_zone_system() {
         let zone_paths = TrustZonePaths::defaults();
 
-        let zone = classify_trust_zone(
-            Path::new("/usr/bin/git"),
-            None,
-            &zone_paths,
-        );
+        let zone = classify_trust_zone(Path::new("/usr/bin/git"), None, &zone_paths);
         assert_eq!(zone, TrustZone::System);
 
-        let zone = classify_trust_zone(
-            Path::new("/bin/ls"),
-            None,
-            &zone_paths,
-        );
+        let zone = classify_trust_zone(Path::new("/bin/ls"), None, &zone_paths);
         assert_eq!(zone, TrustZone::System);
     }
 
@@ -539,11 +520,7 @@ mod tests {
     fn test_classify_trust_zone_unknown() {
         let zone_paths = TrustZonePaths::defaults();
 
-        let zone = classify_trust_zone(
-            Path::new("/some/random/path/tool"),
-            None,
-            &zone_paths,
-        );
+        let zone = classify_trust_zone(Path::new("/some/random/path/tool"), None, &zone_paths);
         assert_eq!(zone, TrustZone::Unknown);
     }
 
@@ -558,7 +535,7 @@ mod tests {
         // Either is acceptable for this test
         assert!(
             result.resolved_trust_zone == TrustZone::System
-            || result.resolved_trust_zone == TrustZone::Unknown
+                || result.resolved_trust_zone == TrustZone::Unknown
         );
     }
 }

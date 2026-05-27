@@ -137,7 +137,10 @@ impl TestRunner {
             if result.decision != Decision::Allow {
                 let decision_matches = test.expect.matches(result.decision);
                 let reason_matches = test.reason_contains.as_ref().map_or(true, |expected| {
-                    result.reason.as_ref().map_or(false, |r| r.contains(expected))
+                    result
+                        .reason
+                        .as_ref()
+                        .map_or(false, |r| r.contains(expected))
                 });
 
                 let error = if !reason_matches {
@@ -202,11 +205,9 @@ pub fn print_results(results: &[TestResult], verbose: bool) {
             let status = if result.passed { "✓" } else { "✗" };
             let decision_str = format!("{:?}", result.actual).to_lowercase();
 
-            println!("{} {} -> {} (expected {:?})",
-                status,
-                result.name,
-                decision_str,
-                result.expected
+            println!(
+                "{} {} -> {} (expected {:?})",
+                status, result.name, decision_str, result.expected
             );
 
             if !result.passed {
@@ -229,10 +230,9 @@ pub fn print_results(results: &[TestResult], verbose: bool) {
         if !verbose {
             println!("\nFailed tests:");
             for result in results.iter().filter(|r| !r.passed) {
-                println!("  - {} (expected {:?}, got {:?})",
-                    result.name,
-                    result.expected,
-                    result.actual
+                println!(
+                    "  - {} (expected {:?}, got {:?})",
+                    result.name, result.expected, result.actual
                 );
                 if let Some(ref err) = result.error {
                     println!("    {}", err);
@@ -262,6 +262,9 @@ tests:
         assert_eq!(test_file.tests.len(), 2);
         assert_eq!(test_file.tests[0].name, "test allow");
         assert_eq!(test_file.tests[0].expect, ExpectedDecision::Allow);
-        assert_eq!(test_file.tests[1].reason_contains, Some("blocked".to_string()));
+        assert_eq!(
+            test_file.tests[1].reason_contains,
+            Some("blocked".to_string())
+        );
     }
 }

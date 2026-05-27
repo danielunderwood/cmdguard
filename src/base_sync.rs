@@ -112,7 +112,10 @@ pub fn run(config_dir: PathBuf) {
     // will fail too, so don't pre-empt with a hard error here.
     if base_dir.exists() {
         if let Err(e) = permissions::relax_dir_for_rewrite(&base_dir) {
-            eprintln!("Warning: could not relax base/ permissions for re-sync: {}", e);
+            eprintln!(
+                "Warning: could not relax base/ permissions for re-sync: {}",
+                e
+            );
         }
     }
 

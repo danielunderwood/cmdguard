@@ -3,7 +3,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::command_defs::{CommandDefinitions, CommandDef, FlagDef, FlagType, ParsingOptions, SubcommandDef, PositionalDef, ArgType};
+use crate::command_defs::{
+    ArgType, CommandDef, CommandDefinitions, FlagDef, FlagType, ParsingOptions, PositionalDef,
+    SubcommandDef,
+};
 use crate::resolver::TrustZonePaths;
 
 /// Parsed flag value
@@ -74,9 +77,7 @@ pub fn parse_command(
 
     // Get command definition (or use defaults)
     let cmd_def = definitions.get(binary_name);
-    let parsing = cmd_def
-        .map(|c| &c.parsing)
-        .unwrap_or(&definitions.defaults);
+    let parsing = cmd_def.map(|c| &c.parsing).unwrap_or(&definitions.defaults);
 
     // Check for subcommand (e.g., git push)
     let (subcommand, subcommand_def, _args_after_subcommand) = detect_subcommand(args, cmd_def);
@@ -99,7 +100,7 @@ pub fn parse_command(
                 &sub_def.positional,
                 parsing,
                 project_root,
-                subcommand.as_ref() // Skip the subcommand name in positional args
+                subcommand.as_ref(), // Skip the subcommand name in positional args
             );
 
             return ParsedCommand {
@@ -118,7 +119,8 @@ pub fn parse_command(
         return parse_without_definition(args, parsing, subcommand, project_root);
     };
 
-    let mut result = parse_with_definition_skip_token(args, flags, positional_defs, parsing, project_root, None);
+    let mut result =
+        parse_with_definition_skip_token(args, flags, positional_defs, parsing, project_root, None);
     result.subcommand = subcommand;
     result
 }
@@ -154,7 +156,7 @@ fn detect_subcommand<'a>(
         if !arg.starts_with('-') {
             if let Some(sub_def) = cmd_def.subcommands.get(arg) {
                 // Found a subcommand - return everything after it
-                return (Some(arg.clone()), Some(sub_def), &args[i+1..]);
+                return (Some(arg.clone()), Some(sub_def), &args[i + 1..]);
             } else {
                 // Not a subcommand, stop looking
                 return (None, None, args);
@@ -197,14 +199,20 @@ fn flag_takes_arg(flags: &HashMap<String, FlagDef>, flag_str: &str) -> bool {
     for def in flags.values() {
         // Check short forms
         if def.short.contains(&flag_str.to_string()) {
-            return matches!(def.flag_type, FlagType::WithArg | FlagType::WithOptionalArg | FlagType::Repeatable);
+            return matches!(
+                def.flag_type,
+                FlagType::WithArg | FlagType::WithOptionalArg | FlagType::Repeatable
+            );
         }
         // Check long form
         if let Some(long) = &def.long {
             let long_without_dashes = long.strip_prefix("--").unwrap_or(long);
             let flag_without_dashes = flag_str.strip_prefix("--").unwrap_or(flag_str);
             if long_without_dashes == flag_without_dashes {
-                return matches!(def.flag_type, FlagType::WithArg | FlagType::WithOptionalArg | FlagType::Repeatable);
+                return matches!(
+                    def.flag_type,
+                    FlagType::WithArg | FlagType::WithOptionalArg | FlagType::Repeatable
+                );
             }
         }
     }
@@ -270,7 +278,8 @@ fn parse_with_definition_skip_token(
 
         // Handle long flags (--foo, --foo=bar)
         if arg.starts_with("--") {
-            let (consumed, flag_name, value, is_repeatable) = parse_long_flag(arg, &args[i+1..], flags);
+            let (consumed, flag_name, value, is_repeatable) =
+                parse_long_flag(arg, &args[i + 1..], flags);
             if let Some(name) = flag_name {
                 insert_flag(&mut parsed_flags, name, value, is_repeatable);
             }
@@ -288,12 +297,13 @@ fn parse_with_definition_skip_token(
         let mut extra_consumed = 0;
         for (j, short) in expanded.iter().enumerate() {
             let remaining = if j == expanded.len() - 1 {
-                &args[i+1..]
+                &args[i + 1..]
             } else {
                 &[]
             };
 
-            let (consumed, flag_name, value, is_repeatable) = parse_short_flag(short, remaining, flags);
+            let (consumed, flag_name, value, is_repeatable) =
+                parse_short_flag(short, remaining, flags);
             if let Some(name) = flag_name {
                 insert_flag(&mut parsed_flags, name, value, is_repeatable);
             }
@@ -334,10 +344,20 @@ fn parse_long_flag(
                     return (1, Some(name), FlagValue::Bool(true), false);
                 }
                 FlagType::WithArg | FlagType::WithOptionalArg => {
-                    return (1, Some(name), FlagValue::String(value_part.to_string()), false);
+                    return (
+                        1,
+                        Some(name),
+                        FlagValue::String(value_part.to_string()),
+                        false,
+                    );
                 }
                 FlagType::Repeatable => {
-                    return (1, Some(name), FlagValue::String(value_part.to_string()), true);
+                    return (
+                        1,
+                        Some(name),
+                        FlagValue::String(value_part.to_string()),
+                        true,
+                    );
                 }
             }
         }
@@ -355,7 +375,12 @@ fn parse_long_flag(
             FlagType::WithArg => {
                 // Needs an argument
                 if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (2, Some(name), FlagValue::String(remaining[0].clone()), false);
+                    return (
+                        2,
+                        Some(name),
+                        FlagValue::String(remaining[0].clone()),
+                        false,
+                    );
                 } else {
                     // Missing required argument, treat as boolean
                     return (1, Some(name), FlagValue::Bool(true), false);
@@ -364,7 +389,12 @@ fn parse_long_flag(
             FlagType::WithOptionalArg => {
                 // Optional argument
                 if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (2, Some(name), FlagValue::String(remaining[0].clone()), false);
+                    return (
+                        2,
+                        Some(name),
+                        FlagValue::String(remaining[0].clone()),
+                        false,
+                    );
                 } else {
                     return (1, Some(name), FlagValue::Bool(true), false);
                 }
@@ -401,7 +431,12 @@ fn parse_short_flag(
             FlagType::WithArg => {
                 // Needs an argument
                 if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (1, Some(name), FlagValue::String(remaining[0].clone()), false);
+                    return (
+                        1,
+                        Some(name),
+                        FlagValue::String(remaining[0].clone()),
+                        false,
+                    );
                 } else {
                     // Missing required argument, treat as boolean
                     return (0, Some(name), FlagValue::Bool(true), false);
@@ -410,7 +445,12 @@ fn parse_short_flag(
             FlagType::WithOptionalArg => {
                 // Optional argument
                 if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (1, Some(name), FlagValue::String(remaining[0].clone()), false);
+                    return (
+                        1,
+                        Some(name),
+                        FlagValue::String(remaining[0].clone()),
+                        false,
+                    );
                 } else {
                     return (0, Some(name), FlagValue::Bool(true), false);
                 }
@@ -468,17 +508,15 @@ fn match_flag_by_short<'a>(
 
 /// Try to match an unknown flag against claim_patterns
 /// Returns (flag_name, captured_value) if a pattern matches
-fn try_claim_pattern(
-    flag: &str,
-    flags: &HashMap<String, FlagDef>,
-) -> Option<(String, String)> {
+fn try_claim_pattern(flag: &str, flags: &HashMap<String, FlagDef>) -> Option<(String, String)> {
     for (name, def) in flags {
         if let Some(pattern) = &def.claim_pattern {
             // Compile the regex (in production, we'd cache this)
             if let Ok(re) = Regex::new(pattern) {
                 if let Some(caps) = re.captures(flag) {
                     // Use first capture group if present, otherwise whole match
-                    let value = caps.get(1)
+                    let value = caps
+                        .get(1)
                         .or_else(|| caps.get(0))
                         .map(|m| m.as_str().to_string())
                         .unwrap_or_default();
@@ -535,12 +573,15 @@ fn process_positional_args(
         // No definitions - return raw args
         return vec![PositionalArg {
             name: "args".to_string(),
-            values: raw_args.into_iter().map(|s| PositionalValue {
-                raw: s,
-                resolved: None,
-                trust_zone: None,
-                value_type: "string".to_string(),
-            }).collect(),
+            values: raw_args
+                .into_iter()
+                .map(|s| PositionalValue {
+                    raw: s,
+                    resolved: None,
+                    trust_zone: None,
+                    value_type: "string".to_string(),
+                })
+                .collect(),
         }];
     }
 
@@ -552,7 +593,12 @@ fn process_positional_args(
         let pos = def.position.unwrap() as usize;
         if pos < remaining.len() {
             let value = remaining.remove(pos);
-            result.push(create_positional_arg(&def.name, vec![value], &def.arg_type, project_root));
+            result.push(create_positional_arg(
+                &def.name,
+                vec![value],
+                &def.arg_type,
+                project_root,
+            ));
         }
     }
 
@@ -560,7 +606,12 @@ fn process_positional_args(
     if let Some(last_def) = positional_defs.iter().find(|d| d.last) {
         if !remaining.is_empty() {
             let last = remaining.pop().unwrap();
-            result.push(create_positional_arg(&last_def.name, vec![last], &last_def.arg_type, project_root));
+            result.push(create_positional_arg(
+                &last_def.name,
+                vec![last],
+                &last_def.arg_type,
+                project_root,
+            ));
         }
     }
 
@@ -576,24 +627,37 @@ fn process_positional_args(
             break;
         }
         let value = remaining.remove(0);
-        result.push(create_positional_arg(&def.name, vec![value], &def.arg_type, project_root));
+        result.push(create_positional_arg(
+            &def.name,
+            vec![value],
+            &def.arg_type,
+            project_root,
+        ));
     }
 
     // Handle variadic arg (remaining args after sequential)
     if let Some(variadic_def) = positional_defs.iter().find(|d| d.variadic) {
         if !remaining.is_empty() {
-            result.push(create_positional_arg(&variadic_def.name, remaining, &variadic_def.arg_type, project_root));
+            result.push(create_positional_arg(
+                &variadic_def.name,
+                remaining,
+                &variadic_def.arg_type,
+                project_root,
+            ));
         }
     } else if !remaining.is_empty() {
         // No variadic def but have remaining args - use generic "args"
         result.push(PositionalArg {
             name: "args".to_string(),
-            values: remaining.into_iter().map(|s| PositionalValue {
-                raw: s,
-                resolved: None,
-                trust_zone: None,
-                value_type: "string".to_string(),
-            }).collect(),
+            values: remaining
+                .into_iter()
+                .map(|s| PositionalValue {
+                    raw: s,
+                    resolved: None,
+                    trust_zone: None,
+                    value_type: "string".to_string(),
+                })
+                .collect(),
         });
     }
 
@@ -607,8 +671,9 @@ fn create_positional_arg(
     arg_type: &ArgType,
     project_root: Option<&Path>,
 ) -> PositionalArg {
-    let resolved_values: Vec<PositionalValue> = values.into_iter().map(|raw| {
-        match arg_type {
+    let resolved_values: Vec<PositionalValue> = values
+        .into_iter()
+        .map(|raw| match arg_type {
             ArgType::Path => resolve_path_arg(&raw, project_root),
             ArgType::String => PositionalValue {
                 raw,
@@ -622,8 +687,8 @@ fn create_positional_arg(
                 trust_zone: None,
                 value_type: "number".to_string(),
             },
-        }
-    }).collect();
+        })
+        .collect();
 
     PositionalArg {
         name: name.to_string(),
@@ -644,7 +709,9 @@ fn resolve_path_arg(raw: &str, project_root: Option<&Path>) -> PositionalValue {
     } else if let Some(root) = project_root {
         root.join(path).canonicalize().ok()
     } else {
-        std::env::current_dir().ok().and_then(|cwd| cwd.join(path).canonicalize().ok())
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cwd.join(path).canonicalize().ok())
     };
 
     // Classify trust zone
@@ -717,7 +784,10 @@ fn parse_without_definition(
             // Be conservative: treat as boolean unless next arg is clearly a value
             if i + 1 < args.len() && !args[i + 1].starts_with('-') {
                 // Next arg might be the value, be conservative and include it
-                parsed_flags.insert(without_dashes.to_string(), FlagValue::String(args[i + 1].clone()));
+                parsed_flags.insert(
+                    without_dashes.to_string(),
+                    FlagValue::String(args[i + 1].clone()),
+                );
                 i += 2;
             } else {
                 parsed_flags.insert(without_dashes.to_string(), FlagValue::Bool(true));
@@ -739,7 +809,10 @@ fn parse_without_definition(
             // Last flag in expansion might take an argument
             if j == expanded.len() - 1 && i + 1 < args.len() && !args[i + 1].starts_with('-') {
                 // Could be a flag with argument
-                parsed_flags.insert(short_without_dash.to_string(), FlagValue::String(args[i + 1].clone()));
+                parsed_flags.insert(
+                    short_without_dash.to_string(),
+                    FlagValue::String(args[i + 1].clone()),
+                );
                 i += 2;
             } else {
                 parsed_flags.insert(short_without_dash.to_string(), FlagValue::Bool(true));
@@ -757,12 +830,15 @@ fn parse_without_definition(
         } else {
             vec![PositionalArg {
                 name: "args".to_string(),
-                values: positional.into_iter().map(|s| PositionalValue {
-                    raw: s,
-                    resolved: None,
-                    trust_zone: None,
-                    value_type: "string".to_string(),
-                }).collect(),
+                values: positional
+                    .into_iter()
+                    .map(|s| PositionalValue {
+                        raw: s,
+                        resolved: None,
+                        trust_zone: None,
+                        value_type: "string".to_string(),
+                    })
+                    .collect(),
             }]
         },
         subcommand,
@@ -787,7 +863,10 @@ mod tests {
     }
 
     fn make_subcommand(flags: HashMap<String, FlagDef>) -> SubcommandDef {
-        SubcommandDef { flags, positional: vec![] }
+        SubcommandDef {
+            flags,
+            positional: vec![],
+        }
     }
 
     /// Test definitions for command parser tests
@@ -795,137 +874,184 @@ mod tests {
         let mut commands = HashMap::new();
 
         // rm
-        commands.insert("rm".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("recursive".to_string(), make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean)),
-                ("force".to_string(), make_flag(&["-f"], Some("--force"), FlagType::Boolean)),
-            ]),
-            positional: vec![PositionalDef {
-                name: "targets".to_string(),
-                arg_type: ArgType::Path,
-                position: None,
-                variadic: true,
-                last: false,
-                optional: false,
-            }],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
-
-        // sudo
-        commands.insert("sudo".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("user".to_string(), make_flag(&["-u"], Some("--user"), FlagType::WithArg)),
-            ]),
-            positional: vec![],
-            subcommands: HashMap::new(),
-            is_wrapper: true,
-            parsing: ParsingOptions::default(),
-        });
-
-        // git
-        commands.insert("git".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("directory".to_string(), make_flag(&["-C"], None, FlagType::WithArg)),
-            ]),
-            positional: vec![],
-            subcommands: HashMap::from([
-                ("status".to_string(), make_subcommand(HashMap::from([
-                    ("short".to_string(), make_flag(&["-s"], Some("--short"), FlagType::Boolean)),
-                ]))),
-                ("push".to_string(), make_subcommand(HashMap::from([
-                    ("force".to_string(), make_flag(&["-f"], Some("--force"), FlagType::Boolean)),
-                ]))),
-                ("reset".to_string(), make_subcommand(HashMap::from([
-                    ("hard".to_string(), make_flag(&[], Some("--hard"), FlagType::Boolean)),
-                ]))),
-            ]),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
-
-        // chmod
-        commands.insert("chmod".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("recursive".to_string(), make_flag(&["-R"], Some("--recursive"), FlagType::Boolean)),
-            ]),
-            positional: vec![
-                PositionalDef {
-                    name: "mode".to_string(),
-                    arg_type: ArgType::String,
-                    position: Some(0),
-                    variadic: false,
-                    last: false,
-                    optional: false,
-                },
-                PositionalDef {
+        commands.insert(
+            "rm".to_string(),
+            CommandDef {
+                flags: HashMap::from([
+                    (
+                        "recursive".to_string(),
+                        make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean),
+                    ),
+                    (
+                        "force".to_string(),
+                        make_flag(&["-f"], Some("--force"), FlagType::Boolean),
+                    ),
+                ]),
+                positional: vec![PositionalDef {
                     name: "targets".to_string(),
                     arg_type: ArgType::Path,
                     position: None,
                     variadic: true,
                     last: false,
                     optional: false,
-                },
-            ],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+                }],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // sudo
+        commands.insert(
+            "sudo".to_string(),
+            CommandDef {
+                flags: HashMap::from([(
+                    "user".to_string(),
+                    make_flag(&["-u"], Some("--user"), FlagType::WithArg),
+                )]),
+                positional: vec![],
+                subcommands: HashMap::new(),
+                is_wrapper: true,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // git
+        commands.insert(
+            "git".to_string(),
+            CommandDef {
+                flags: HashMap::from([(
+                    "directory".to_string(),
+                    make_flag(&["-C"], None, FlagType::WithArg),
+                )]),
+                positional: vec![],
+                subcommands: HashMap::from([
+                    (
+                        "status".to_string(),
+                        make_subcommand(HashMap::from([(
+                            "short".to_string(),
+                            make_flag(&["-s"], Some("--short"), FlagType::Boolean),
+                        )])),
+                    ),
+                    (
+                        "push".to_string(),
+                        make_subcommand(HashMap::from([(
+                            "force".to_string(),
+                            make_flag(&["-f"], Some("--force"), FlagType::Boolean),
+                        )])),
+                    ),
+                    (
+                        "reset".to_string(),
+                        make_subcommand(HashMap::from([(
+                            "hard".to_string(),
+                            make_flag(&[], Some("--hard"), FlagType::Boolean),
+                        )])),
+                    ),
+                ]),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // chmod
+        commands.insert(
+            "chmod".to_string(),
+            CommandDef {
+                flags: HashMap::from([(
+                    "recursive".to_string(),
+                    make_flag(&["-R"], Some("--recursive"), FlagType::Boolean),
+                )]),
+                positional: vec![
+                    PositionalDef {
+                        name: "mode".to_string(),
+                        arg_type: ArgType::String,
+                        position: Some(0),
+                        variadic: false,
+                        last: false,
+                        optional: false,
+                    },
+                    PositionalDef {
+                        name: "targets".to_string(),
+                        arg_type: ArgType::Path,
+                        position: None,
+                        variadic: true,
+                        last: false,
+                        optional: false,
+                    },
+                ],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         // cp
-        commands.insert("cp".to_string(), CommandDef {
-            flags: HashMap::from([
-                ("recursive".to_string(), make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean)),
-            ]),
-            positional: vec![
-                PositionalDef {
-                    name: "sources".to_string(),
-                    arg_type: ArgType::Path,
-                    position: None,
-                    variadic: true,
-                    last: false,
-                    optional: false,
-                },
-                PositionalDef {
-                    name: "destination".to_string(),
-                    arg_type: ArgType::Path,
-                    position: None,
-                    variadic: false,
-                    last: true,
-                    optional: false,
-                },
-            ],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        commands.insert(
+            "cp".to_string(),
+            CommandDef {
+                flags: HashMap::from([(
+                    "recursive".to_string(),
+                    make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean),
+                )]),
+                positional: vec![
+                    PositionalDef {
+                        name: "sources".to_string(),
+                        arg_type: ArgType::Path,
+                        position: None,
+                        variadic: true,
+                        last: false,
+                        optional: false,
+                    },
+                    PositionalDef {
+                        name: "destination".to_string(),
+                        arg_type: ArgType::Path,
+                        position: None,
+                        variadic: false,
+                        last: true,
+                        optional: false,
+                    },
+                ],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         // cargo
-        commands.insert("cargo".to_string(), CommandDef {
-            flags: HashMap::new(),
-            positional: vec![],
-            subcommands: HashMap::from([
-                ("build".to_string(), make_subcommand(HashMap::from([
-                    ("release".to_string(), make_flag(&["-r"], Some("--release"), FlagType::Boolean)),
-                ]))),
-            ]),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        commands.insert(
+            "cargo".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![],
+                subcommands: HashMap::from([(
+                    "build".to_string(),
+                    make_subcommand(HashMap::from([(
+                        "release".to_string(),
+                        make_flag(&["-r"], Some("--release"), FlagType::Boolean),
+                    )])),
+                )]),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         // npm
-        commands.insert("npm".to_string(), CommandDef {
-            flags: HashMap::new(),
-            positional: vec![],
-            subcommands: HashMap::from([
-                ("install".to_string(), make_subcommand(HashMap::from([
-                    ("save_dev".to_string(), make_flag(&["-D"], Some("--save-dev"), FlagType::Boolean)),
-                ]))),
-            ]),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        commands.insert(
+            "npm".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![],
+                subcommands: HashMap::from([(
+                    "install".to_string(),
+                    make_subcommand(HashMap::from([(
+                        "save_dev".to_string(),
+                        make_flag(&["-D"], Some("--save-dev"), FlagType::Boolean),
+                    )])),
+                )]),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         CommandDefinitions {
             commands,
@@ -938,8 +1064,14 @@ mod tests {
         let defs = test_definitions();
         let result = parse_command(&to_tokens("rm -rf /tmp/foo"), &defs, None);
 
-        assert_eq!(result.parsed_flags.get("recursive"), Some(&FlagValue::Bool(true)));
-        assert_eq!(result.parsed_flags.get("force"), Some(&FlagValue::Bool(true)));
+        assert_eq!(
+            result.parsed_flags.get("recursive"),
+            Some(&FlagValue::Bool(true))
+        );
+        assert_eq!(
+            result.parsed_flags.get("force"),
+            Some(&FlagValue::Bool(true))
+        );
     }
 
     #[test]
@@ -947,7 +1079,10 @@ mod tests {
         let defs = test_definitions();
         let result = parse_command(&to_tokens("sudo -u postgres psql"), &defs, None);
 
-        assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("postgres".to_string())));
+        assert_eq!(
+            result.parsed_flags.get("user"),
+            Some(&FlagValue::String("postgres".to_string()))
+        );
     }
 
     #[test]
@@ -955,7 +1090,10 @@ mod tests {
         let defs = test_definitions();
         let result = parse_command(&to_tokens("sudo --user=root ls"), &defs, None);
 
-        assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("root".to_string())));
+        assert_eq!(
+            result.parsed_flags.get("user"),
+            Some(&FlagValue::String("root".to_string()))
+        );
     }
 
     #[test]
@@ -976,7 +1114,10 @@ mod tests {
         let result = parse_command(&to_tokens("git push -f origin main"), &defs, None);
 
         assert_eq!(result.subcommand, Some("push".to_string()));
-        assert_eq!(result.parsed_flags.get("force"), Some(&FlagValue::Bool(true)));
+        assert_eq!(
+            result.parsed_flags.get("force"),
+            Some(&FlagValue::Bool(true))
+        );
     }
 
     #[test]
@@ -1001,7 +1142,10 @@ mod tests {
         let defs = test_definitions();
         let result = parse_command(&to_tokens("rm -f file1.txt file2.txt"), &defs, None);
 
-        assert_eq!(result.parsed_flags.get("force"), Some(&FlagValue::Bool(true)));
+        assert_eq!(
+            result.parsed_flags.get("force"),
+            Some(&FlagValue::Bool(true))
+        );
         assert_eq!(result.positional_args[0].values.len(), 2);
         assert_eq!(result.positional_args[0].values[0].raw, "file1.txt");
         assert_eq!(result.positional_args[0].values[1].raw, "file2.txt");
@@ -1012,7 +1156,10 @@ mod tests {
         let defs = test_definitions();
         let result = parse_command(&to_tokens("sudo --user postgres psql"), &defs, None);
 
-        assert_eq!(result.parsed_flags.get("user"), Some(&FlagValue::String("postgres".to_string())));
+        assert_eq!(
+            result.parsed_flags.get("user"),
+            Some(&FlagValue::String("postgres".to_string()))
+        );
     }
 
     #[test]
@@ -1022,8 +1169,14 @@ mod tests {
         let result1 = parse_command(&to_tokens("rm -r /tmp"), &defs, None);
         let result2 = parse_command(&to_tokens("rm -R /tmp"), &defs, None);
 
-        assert_eq!(result1.parsed_flags.get("recursive"), Some(&FlagValue::Bool(true)));
-        assert_eq!(result2.parsed_flags.get("recursive"), Some(&FlagValue::Bool(true)));
+        assert_eq!(
+            result1.parsed_flags.get("recursive"),
+            Some(&FlagValue::Bool(true))
+        );
+        assert_eq!(
+            result2.parsed_flags.get("recursive"),
+            Some(&FlagValue::Bool(true))
+        );
     }
 
     #[test]
@@ -1042,7 +1195,10 @@ mod tests {
         let result = parse_command(&to_tokens("git reset --hard HEAD~1"), &defs, None);
 
         assert_eq!(result.subcommand, Some("reset".to_string()));
-        assert_eq!(result.parsed_flags.get("hard"), Some(&FlagValue::Bool(true)));
+        assert_eq!(
+            result.parsed_flags.get("hard"),
+            Some(&FlagValue::Bool(true))
+        );
         assert_eq!(result.positional_args[0].values[0].raw, "HEAD~1");
     }
 
@@ -1051,7 +1207,10 @@ mod tests {
         let defs = test_definitions();
         let result = parse_command(&to_tokens("myapp --config=prod.yaml"), &defs, None);
 
-        assert_eq!(result.parsed_flags.get("config"), Some(&FlagValue::String("prod.yaml".to_string())));
+        assert_eq!(
+            result.parsed_flags.get("config"),
+            Some(&FlagValue::String("prod.yaml".to_string()))
+        );
     }
 
     #[test]
@@ -1077,7 +1236,10 @@ mod tests {
         assert!(sources.is_some());
         assert_eq!(sources.unwrap().values.len(), 2);
 
-        let dest = result.positional_args.iter().find(|a| a.name == "destination");
+        let dest = result
+            .positional_args
+            .iter()
+            .find(|a| a.name == "destination");
         assert!(dest.is_some());
     }
 
@@ -1103,19 +1265,25 @@ mod tests {
         // Create custom definitions with a repeatable flag
         let mut commands = HashMap::new();
         let mut flags = HashMap::new();
-        flags.insert("header".to_string(), FlagDef {
-            short: vec!["-H".to_string()],
-            long: Some("--header".to_string()),
-            flag_type: FlagType::Repeatable,
-            claim_pattern: None,
-        });
-        commands.insert("curl".to_string(), CommandDef {
-            flags,
-            positional: vec![],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        flags.insert(
+            "header".to_string(),
+            FlagDef {
+                short: vec!["-H".to_string()],
+                long: Some("--header".to_string()),
+                flag_type: FlagType::Repeatable,
+                claim_pattern: None,
+            },
+        );
+        commands.insert(
+            "curl".to_string(),
+            CommandDef {
+                flags,
+                positional: vec![],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         let defs = CommandDefinitions::from_map(commands);
         // Pre-tokenized (as the real tokenizer would produce)
@@ -1148,19 +1316,25 @@ mod tests {
 
         let mut commands = HashMap::new();
         let mut flags = HashMap::new();
-        flags.insert("header".to_string(), FlagDef {
-            short: vec!["-H".to_string()],
-            long: None,
-            flag_type: FlagType::Repeatable,
-            claim_pattern: None,
-        });
-        commands.insert("curl".to_string(), CommandDef {
-            flags,
-            positional: vec![],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions::default(),
-        });
+        flags.insert(
+            "header".to_string(),
+            FlagDef {
+                short: vec!["-H".to_string()],
+                long: None,
+                flag_type: FlagType::Repeatable,
+                claim_pattern: None,
+            },
+        );
+        commands.insert(
+            "curl".to_string(),
+            CommandDef {
+                flags,
+                positional: vec![],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
 
         let defs = CommandDefinitions::from_map(commands);
         // Pre-tokenized
@@ -1190,7 +1364,10 @@ mod tests {
         let result = parse_command(&to_tokens("cargo build --release"), &defs, None);
 
         assert_eq!(result.subcommand, Some("build".to_string()));
-        assert_eq!(result.parsed_flags.get("release"), Some(&FlagValue::Bool(true)));
+        assert_eq!(
+            result.parsed_flags.get("release"),
+            Some(&FlagValue::Bool(true))
+        );
     }
 
     #[test]
@@ -1199,7 +1376,10 @@ mod tests {
         let result = parse_command(&to_tokens("npm install -D typescript"), &defs, None);
 
         assert_eq!(result.subcommand, Some("install".to_string()));
-        assert_eq!(result.parsed_flags.get("save_dev"), Some(&FlagValue::Bool(true)));
+        assert_eq!(
+            result.parsed_flags.get("save_dev"),
+            Some(&FlagValue::Bool(true))
+        );
     }
 
     #[test]
@@ -1209,31 +1389,47 @@ mod tests {
         // Create a command with claim_pattern for -NUM syntax (like tail -30)
         let mut commands = HashMap::new();
         let mut flags = HashMap::new();
-        flags.insert("lines".to_string(), FlagDef {
-            short: vec!["-n".to_string()],
-            long: Some("--lines".to_string()),
-            flag_type: FlagType::WithArg,
-            claim_pattern: Some("^-(\\d+)$".to_string()),
-        });
-        commands.insert("tail".to_string(), CommandDef {
-            flags,
-            positional: vec![],
-            subcommands: HashMap::new(),
-            is_wrapper: false,
-            parsing: ParsingOptions {
-                combine_short_flags: false, // Important for -30 not to become -3 -0
-                double_dash_ends_flags: true,
+        flags.insert(
+            "lines".to_string(),
+            FlagDef {
+                short: vec!["-n".to_string()],
+                long: Some("--lines".to_string()),
+                flag_type: FlagType::WithArg,
+                claim_pattern: Some("^-(\\d+)$".to_string()),
             },
-        });
+        );
+        commands.insert(
+            "tail".to_string(),
+            CommandDef {
+                flags,
+                positional: vec![],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions {
+                    combine_short_flags: false, // Important for -30 not to become -3 -0
+                    double_dash_ends_flags: true,
+                },
+            },
+        );
 
         let defs = CommandDefinitions::from_map(commands);
 
         // Test -30 gets parsed as lines: "30"
         let result = parse_command(&vec!["tail".to_string(), "-30".to_string()], &defs, None);
-        assert_eq!(result.parsed_flags.get("lines"), Some(&FlagValue::String("30".to_string())));
+        assert_eq!(
+            result.parsed_flags.get("lines"),
+            Some(&FlagValue::String("30".to_string()))
+        );
 
         // Test -n 50 still works normally
-        let result2 = parse_command(&vec!["tail".to_string(), "-n".to_string(), "50".to_string()], &defs, None);
-        assert_eq!(result2.parsed_flags.get("lines"), Some(&FlagValue::String("50".to_string())));
+        let result2 = parse_command(
+            &vec!["tail".to_string(), "-n".to_string(), "50".to_string()],
+            &defs,
+            None,
+        );
+        assert_eq!(
+            result2.parsed_flags.get("lines"),
+            Some(&FlagValue::String("50".to_string()))
+        );
     }
 }

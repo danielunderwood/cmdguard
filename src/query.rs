@@ -60,8 +60,8 @@ pub fn run_query(
         .parse(code, None)
         .ok_or_else(|| "Failed to parse code".to_string())?;
 
-    let query = Query::new(&ts_lang, query_str)
-        .map_err(|e| format!("Failed to compile query: {:?}", e))?;
+    let query =
+        Query::new(&ts_lang, query_str).map_err(|e| format!("Failed to compile query: {:?}", e))?;
 
     let root = tree.root_node();
     let source = code.as_bytes();
@@ -128,7 +128,10 @@ mod tests {
 
     #[test]
     fn test_language_from_str() {
-        assert_eq!(QueryLanguage::from_str("python"), Some(QueryLanguage::Python));
+        assert_eq!(
+            QueryLanguage::from_str("python"),
+            Some(QueryLanguage::Python)
+        );
         assert_eq!(QueryLanguage::from_str("py"), Some(QueryLanguage::Python));
         assert_eq!(QueryLanguage::from_str("bash"), Some(QueryLanguage::Bash));
         assert_eq!(QueryLanguage::from_str("sh"), Some(QueryLanguage::Bash));

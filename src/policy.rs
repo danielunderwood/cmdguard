@@ -119,7 +119,8 @@ impl PolicyEngine {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read policy file {:?}: {}", path, e))?;
 
-        let filename = path.file_name()
+        let filename = path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("policy.rego");
 
@@ -159,9 +160,9 @@ impl PolicyEngine {
         let base_dir = config_dir.join("base");
         let has_populated_base = std::fs::read_dir(&base_dir)
             .map(|entries| {
-                entries.flatten().any(|e| {
-                    e.path().extension().and_then(|s| s.to_str()) == Some("rego")
-                })
+                entries
+                    .flatten()
+                    .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("rego"))
             })
             .unwrap_or(false);
 
@@ -278,7 +279,9 @@ impl PolicyEngine {
         self.engine.set_input(input_value);
 
         // Query all rules - try both all_rules (helper) and rules (direct)
-        let query_result = self.engine.eval_rule("data.cmdguard.all_rules".to_string())
+        let query_result = self
+            .engine
+            .eval_rule("data.cmdguard.all_rules".to_string())
             .or_else(|_| self.engine.eval_rule("data.cmdguard.rules".to_string()));
 
         match query_result {
@@ -325,7 +328,10 @@ impl PolicyEngine {
 
                 // Stable order so `cmdguard eval` output is reproducible.
                 results.sort_by(|a, b| {
-                    a.rule.as_deref().unwrap_or("").cmp(b.rule.as_deref().unwrap_or(""))
+                    a.rule
+                        .as_deref()
+                        .unwrap_or("")
+                        .cmp(b.rule.as_deref().unwrap_or(""))
                 });
                 results
             }
@@ -338,7 +344,10 @@ impl PolicyEngine {
 
     /// Query allowed_subcommands table from policy
     pub fn query_allowed_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
-        match self.engine.eval_rule("data.cmdguard.allowed_subcommands".to_string()) {
+        match self
+            .engine
+            .eval_rule("data.cmdguard.allowed_subcommands".to_string())
+        {
             Ok(value) => {
                 let obj = match value.as_object() {
                     Ok(o) => o,
@@ -375,7 +384,10 @@ impl PolicyEngine {
 
     /// Query denied_subcommands table from policy
     pub fn query_denied_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
-        match self.engine.eval_rule("data.cmdguard.denied_subcommands".to_string()) {
+        match self
+            .engine
+            .eval_rule("data.cmdguard.denied_subcommands".to_string())
+        {
             Ok(value) => {
                 let obj = match value.as_object() {
                     Ok(o) => o,
@@ -542,12 +554,22 @@ denied_subcommands["mybin"] := {"blocked"}
         input.subcommand = Some("safe".to_string());
 
         let mut engine = PolicyEngine::new();
-        engine.engine.add_policy("stdlib.rego".into(), stdlib.clone()).unwrap();
-        engine.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        engine
+            .engine
+            .add_policy("stdlib.rego".into(), stdlib.clone())
+            .unwrap();
+        engine
+            .engine
+            .add_policy("user.rego".into(), user_policy.into())
+            .unwrap();
 
         // "safe" is allowed (in allow set, not in deny set)
         let result = engine.evaluate(&input);
-        assert_eq!(result.decision, Decision::Allow, "safe subcommand should be allowed");
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "safe subcommand should be allowed"
+        );
 
         // Now check "blocked" -- present in allow AND deny -> must NOT allow
         let mut input2 = make_input(vec!["mybin", "blocked"]);
@@ -555,8 +577,14 @@ denied_subcommands["mybin"] := {"blocked"}
         input2.subcommand = Some("blocked".to_string());
 
         let mut engine2 = PolicyEngine::new();
-        engine2.engine.add_policy("stdlib.rego".into(), stdlib).unwrap();
-        engine2.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        engine2
+            .engine
+            .add_policy("stdlib.rego".into(), stdlib)
+            .unwrap();
+        engine2
+            .engine
+            .add_policy("user.rego".into(), user_policy.into())
+            .unwrap();
         let result2 = engine2.evaluate(&input2);
         assert_ne!(
             result2.decision,
@@ -586,14 +614,30 @@ denied_with_args["mytool"] := {"bar"}
 "#;
 
         let mut engine = PolicyEngine::new();
-        engine.engine.add_policy("stdlib.rego".into(), stdlib.clone()).unwrap();
-        engine.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        engine
+            .engine
+            .add_policy("stdlib.rego".into(), stdlib.clone())
+            .unwrap();
+        engine
+            .engine
+            .add_policy("user.rego".into(), user_policy.into())
+            .unwrap();
         let result = engine.evaluate(&make_input(vec!["mytool", "foo"]));
-        assert_eq!(result.decision, Decision::Allow, "non-denied arg should allow");
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "non-denied arg should allow"
+        );
 
         let mut engine2 = PolicyEngine::new();
-        engine2.engine.add_policy("stdlib.rego".into(), stdlib).unwrap();
-        engine2.engine.add_policy("user.rego".into(), user_policy.into()).unwrap();
+        engine2
+            .engine
+            .add_policy("stdlib.rego".into(), stdlib)
+            .unwrap();
+        engine2
+            .engine
+            .add_policy("user.rego".into(), user_policy.into())
+            .unwrap();
         let result2 = engine2.evaluate(&make_input(vec!["mytool", "bar"]));
         assert_ne!(
             result2.decision,
