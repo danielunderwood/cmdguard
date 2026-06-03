@@ -1,6 +1,6 @@
 [package]
 name = "cmdguard"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Policy-driven permission control for AI coding agents (Claude Code PreToolUse hook)"
 license = "MIT"

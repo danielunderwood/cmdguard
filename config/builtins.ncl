@@ -382,6 +382,7 @@ in
         },
         log = stub,
         diff = stub,
+        grep = stub,
         branch = stub,
         checkout = stub,
         commit = stub,

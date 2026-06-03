@@ -10,6 +10,7 @@ allowed_subcommands["git"] := {
 	"commit",
 	"diff",
 	"fetch",
+	"grep",
 	"log",
 	"ls-files",
 	"ls-tree",
