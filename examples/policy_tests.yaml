@@ -36,17 +36,17 @@ tests:
     expect: allow
 
   # ==========================================================================
-  # Git Dangerous Operations (deny / ask via parsed_flags)
+  # Git Dangerous Operations (ask via parsed_flags)
   # ==========================================================================
 
-  - name: "deny git push --force"
+  - name: "ask git push --force"
     command: "git push --force origin main"
-    expect: deny
+    expect: ask
     reason_contains: "Force push"
 
-  - name: "deny git push -f"
+  - name: "ask git push -f"
     command: "git push -f origin main"
-    expect: deny
+    expect: ask
 
   - name: "ask git reset --hard"
     command: "git reset --hard"
@@ -69,9 +69,9 @@ tests:
     command: "bash -c 'git status'"
     expect: allow
 
-  - name: "deny force push through wrapper"
+  - name: "ask force push through wrapper"
     command: "nix develop --command git push --force origin main"
-    expect: deny
+    expect: ask
 
   # ==========================================================================
   # Cargo Commands
