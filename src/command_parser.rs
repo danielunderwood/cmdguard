@@ -1,7 +1,7 @@
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use crate::command_defs::{
     ArgType, CommandDef, CommandDefinitions, FlagDef, FlagType, ParsingOptions, PositionalDef,
@@ -700,42 +700,81 @@ fn create_positional_arg(
 fn resolve_path_arg(raw: &str, project_root: Option<&Path>) -> PositionalValue {
     use std::path::Path as StdPath;
 
-    let path = StdPath::new(raw);
+    let expanded = expand_tilde(raw);
+    let path = expanded.as_deref().unwrap_or_else(|| StdPath::new(raw));
     let zone_paths = TrustZonePaths::defaults();
 
-    // Try to canonicalize the path
-    let resolved = if path.is_absolute() {
-        path.canonicalize().ok()
+    // Try to canonicalize the path. For non-existent targets, keep a lexical
+    // absolute path so create/write operations can still be scoped by policy.
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
     } else if let Some(root) = project_root {
-        root.join(path).canonicalize().ok()
+        root.join(path)
     } else {
         std::env::current_dir()
-            .ok()
-            .and_then(|cwd| cwd.join(path).canonicalize().ok())
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| PathBuf::from(path))
     };
+    let resolved = candidate
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_path(&candidate));
 
     // Classify trust zone
-    let trust_zone = resolved.as_ref().map(|p| {
+    let trust_zone = {
         if let Some(root) = project_root {
-            if p.starts_with(root) {
-                return "project".to_string();
+            if path_in_project(&resolved, root) {
+                "project".to_string()
+            } else if zone_paths.is_user(&resolved) {
+                "user".to_string()
+            } else if zone_paths.is_system(&resolved) {
+                "system".to_string()
+            } else {
+                "unknown".to_string()
             }
-        }
-        if zone_paths.is_user(p) {
+        } else if zone_paths.is_user(&resolved) {
             "user".to_string()
-        } else if zone_paths.is_system(p) {
+        } else if zone_paths.is_system(&resolved) {
             "system".to_string()
         } else {
             "unknown".to_string()
         }
-    });
+    };
 
     PositionalValue {
         raw: raw.to_string(),
-        resolved: resolved.map(|p| p.to_string_lossy().to_string()),
-        trust_zone,
+        resolved: Some(resolved.to_string_lossy().to_string()),
+        trust_zone: Some(trust_zone),
         value_type: "path".to_string(),
     }
+}
+
+fn expand_tilde(raw: &str) -> Option<PathBuf> {
+    if raw == "~" {
+        return dirs::home_dir();
+    }
+
+    raw.strip_prefix("~/")
+        .and_then(|suffix| dirs::home_dir().map(|home| home.join(suffix)))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+
+    normalized
+}
+
+fn path_in_project(path: &Path, project_root: &Path) -> bool {
+    path == project_root || path.starts_with(project_root)
 }
 
 /// Parse without a known command definition (best effort)
@@ -1254,6 +1293,52 @@ mod tests {
         assert_eq!(value.value_type, "path");
         // resolved and trust_zone should be set
         assert!(value.resolved.is_some() || value.trust_zone.is_some() || value.raw == "./src");
+    }
+
+    #[test]
+    fn test_nonexistent_project_path_resolution() {
+        let defs = test_definitions();
+        let project_root = std::env::current_dir().unwrap();
+        let result = parse_command(
+            &to_tokens("rm ./definitely-missing-cmdguard-path"),
+            &defs,
+            Some(&project_root),
+        );
+
+        let targets = result.positional_args.iter().find(|a| a.name == "targets");
+        let value = &targets.unwrap().values[0];
+        assert_eq!(value.trust_zone.as_deref(), Some("project"));
+        assert_eq!(
+            value.resolved.as_deref(),
+            Some(
+                project_root
+                    .join("definitely-missing-cmdguard-path")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[test]
+    fn test_tilde_path_not_project_scoped() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let defs = test_definitions();
+        let project_root = std::env::current_dir().unwrap();
+        let result = parse_command(
+            &to_tokens("rm ~/.cmdguard-nonexistent-path-for-test"),
+            &defs,
+            Some(&project_root),
+        );
+
+        let targets = result.positional_args.iter().find(|a| a.name == "targets");
+        let value = &targets.unwrap().values[0];
+        assert_ne!(value.trust_zone.as_deref(), Some("project"));
+        assert!(value
+            .resolved
+            .as_deref()
+            .is_some_and(|resolved| resolved.starts_with(&home.to_string_lossy().to_string())));
     }
 
     #[test]

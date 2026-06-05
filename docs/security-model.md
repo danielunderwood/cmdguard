@@ -72,7 +72,7 @@ cmdguard strips inline environment variables (e.g., `RUST_LOG=debug cargo build`
 GIT_SSH_COMMAND="evil-script" git push
 ```
 
-cmdguard sees `git push` and evaluates it normally. The environment variable changes git's behavior in ways the policy cannot inspect.
+cmdguard sees `git push` and evaluates it normally. The base policy prompts for `git push`, but the environment variable can still change git's behavior in ways the policy cannot inspect.
 
 **Mitigation:** This is a low-probability vector for most AI agent use cases. For high-security environments, consider sandboxing that restricts environment inheritance.
 
@@ -101,12 +101,34 @@ cmdguard is one layer in a defense-in-depth approach. It works best alongside:
 
 No single layer is sufficient. cmdguard reduces friction for the common case while providing meaningful guardrails. It is not a security boundary against a determined adversary with full shell access.
 
+## Claude Code Auto Mode
+
+cmdguard integrates with Claude Code as a Bash `PreToolUse` hook. It makes
+policy decisions from the command string and returns `allow`, `deny`, or
+`ask` before the Bash tool runs. Claude Code auto mode is a separate
+classifier layer that evaluates higher-level risk from the session
+context.
+
+Those layers are complementary, not interchangeable. A cmdguard `deny`
+blocks before auto mode classifier denial telemetry is emitted. A
+cmdguard `ask` prompts the user. A cmdguard `allow` should not be treated
+as proof that auto mode considers the action safe. `PermissionDenied`
+hooks are useful for logging auto-mode classifier denials, but they do
+not reverse a denial.
+
+The base policy stays conservative for cases where the shell command
+does not include enough context. For example, `git push` prompts because
+the command string alone does not prove whether the push targets a
+non-default working branch or a default branch such as `main` or
+`master`.
+
 ## Threat Model Summary
 
 | Threat | cmdguard helps? | Notes |
 |--------|----------------|-------|
 | Agent runs `rm -rf /` | Yes | Denied by default |
-| Agent runs `git push --force` | Yes | Denied by default |
+| Agent runs `git push --force` | Yes | Prompts by default |
+| Agent runs `git push origin main` | Yes | Prompts by default |
 | Agent installs unknown packages | Partially | `npm install`, `pip install` trigger ask |
 | Agent edits Makefile, then runs `make` | No | Build file content is opaque |
 | Agent exfiltrates data via curl | Partially | curl triggers ask, but can be bypassed via pipes |

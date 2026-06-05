@@ -568,6 +568,9 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
                 paths.iter().map(|p| &p.raw).collect::<Vec<_>>()
             );
         }
+        if !cmd.redirections.is_empty() {
+            println!("Redirects:  {:?}", cmd.redirections);
+        }
         println!("Binary:     {}", resolved.binary_name);
         if let Some(path) = &resolved.resolved_path {
             println!("Resolved:   {}", path);
@@ -652,6 +655,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             wrapper_chain: extracted.wrapper_chain,
             flags_expanded,
             paths,
+            redirections: cmd.redirections.clone(),
             cwd: cwd.to_string(),
             project_root: project_root_str.clone(),
             session_id: "eval".to_string(),

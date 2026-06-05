@@ -179,9 +179,6 @@ import rego.v1
 
 # Prevent cargo publish (allowed in base rust.rego)
 denied_subcommands["cargo"] := {"publish"}
-
-# Prevent git push (allowed in base git.rego)
-denied_subcommands["git"] := {"push"}
 ```
 
 Similarly for first-argument patterns:
@@ -215,6 +212,21 @@ rules["ask_force_push"] := ask("Force push requires confirmation") if {
 ```
 
 The `allow()`, `deny()`, and `ask()` helpers from stdlib set the default priorities. Use `allow_at(reason, priority)`, `deny_at()`, and `ask_at()` to set custom priorities.
+
+### Claude Code Auto Mode
+
+cmdguard installs as a Claude Code Bash `PreToolUse` hook. It can allow,
+deny, or ask before a Bash command runs. Claude Code auto mode is a
+separate classifier layer with its own rules for actions such as direct
+pushes to default branches, irreversible local writes, production
+changes, and data exfiltration.
+
+The base policy is intentionally conservative where cmdguard cannot infer
+Claude's session context. For example, `git push` prompts by default
+because the command string alone does not prove whether the target is a
+non-default working branch. `PermissionDenied` hooks are useful for
+observing auto-mode classifier denials, but they cannot reverse those
+denials.
 
 ### Priority System
 
@@ -407,4 +419,3 @@ export RUST_LOG=debug
 # Check what policies are loaded
 cmdguard status
 ```
-

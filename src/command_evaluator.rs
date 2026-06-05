@@ -115,6 +115,7 @@ impl<'a> CommandEvaluator<'a> {
             wrapper_chain: extracted.wrapper_chain,
             flags_expanded,
             paths,
+            redirections: cmd.redirections.clone(),
             cwd: context.cwd.to_string(),
             project_root: context.project_root_str.to_string(),
             session_id: context.session_id.to_string(),
@@ -269,6 +270,7 @@ mod tests {
         // Empty command text
         let cmd = ParsedCommand {
             text: "".to_string(),
+            redirections: vec![],
             position: 0,
             chain_length: 1,
             next_operator: None,

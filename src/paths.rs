@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DetectedPath {
@@ -40,7 +40,8 @@ fn looks_like_path(token: &str) -> bool {
 }
 
 fn resolve_path(raw: &str, cwd: &Path) -> DetectedPath {
-    let path = Path::new(raw);
+    let expanded = expand_tilde(raw);
+    let path = expanded.as_deref().unwrap_or_else(|| Path::new(raw));
 
     let resolved = if path.is_absolute() {
         path.to_path_buf()
@@ -48,8 +49,11 @@ fn resolve_path(raw: &str, cwd: &Path) -> DetectedPath {
         cwd.join(path)
     };
 
-    // Canonicalize if possible (resolves .., symlinks)
-    let resolved = resolved.canonicalize().unwrap_or(resolved);
+    // Canonicalize if possible (resolves .., symlinks), otherwise normalize
+    // lexically so non-existent targets still have stable policy paths.
+    let resolved = resolved
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_path(&resolved));
 
     let exists = resolved.exists();
     let is_dir = resolved.is_dir();
@@ -60,6 +64,31 @@ fn resolve_path(raw: &str, cwd: &Path) -> DetectedPath {
         exists,
         is_dir,
     }
+}
+
+fn expand_tilde(raw: &str) -> Option<PathBuf> {
+    if raw == "~" {
+        return dirs::home_dir();
+    }
+
+    raw.strip_prefix("~/")
+        .and_then(|suffix| dirs::home_dir().map(|home| home.join(suffix)))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+
+    normalized
 }
 
 #[cfg(test)]
@@ -101,6 +130,32 @@ mod tests {
 
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].raw, "src/main.rs");
+    }
+
+    #[test]
+    fn test_tilde_expands_to_home() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let tokens = to_vec(&["touch", "~/.cmdguard-nonexistent-path-for-test"]);
+        let cwd = PathBuf::from("/project");
+        let paths = detect_paths(&tokens, &cwd);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].raw, "~/.cmdguard-nonexistent-path-for-test");
+        assert!(paths[0]
+            .resolved
+            .starts_with(&home.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_nonexistent_relative_path_is_normalized() {
+        let tokens = to_vec(&["touch", "./new-file"]);
+        let cwd = PathBuf::from("/home/user/project");
+        let paths = detect_paths(&tokens, &cwd);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].resolved, "/home/user/project/new-file");
     }
 
     #[test]

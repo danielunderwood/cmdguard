@@ -371,9 +371,6 @@ import rego.v1
 
 # Block cargo publish (allowed by base rust.rego)
 denied_subcommands["cargo"] := {"publish"}
-
-# Block git push (allowed by base git.rego)
-denied_subcommands["git"] := {"push"}
 ```
 
 **Use `cmdguard eval` to test your rules:**

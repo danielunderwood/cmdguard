@@ -28,8 +28,11 @@ is_force_push if input.parsed_flags.force == true
 
 is_force_push if input.parsed_flags.force_with_lease == true
 
-# Allow push without force
-rules["allow_git_push"] := allow("git push") if {
+# Pushing changes remote state and Claude Code auto mode treats direct pushes
+# to default branches as risky. cmdguard does not know the current/default
+# branch from the shell command alone, so prompt unless a user policy narrows
+# this to a known-safe branch workflow.
+rules["ask_git_push"] := ask("git push changes remote state - confirm branch") if {
 	input.binary_name == "git"
 	input.subcommand == "push"
 	not is_force_push

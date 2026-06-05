@@ -35,9 +35,17 @@ tests:
     command: "git push --force-with-lease origin main"
     expect: ask
 
-  - name: "allow plain git push"
+  - name: "ask plain git push"
     command: "git push origin main"
-    expect: allow
+    expect: ask
+
+  - name: "ask ambiguous git push"
+    command: "git push"
+    expect: ask
+
+  - name: "ask git push to feature branch"
+    command: "git push origin feature/cmdguard"
+    expect: ask
 
   # ==========================================================================
   # Wrapper Extraction
@@ -194,13 +202,21 @@ tests:
     expect: ask
 
   # With redirects
-  - name: "redirect with allowed command"
+  - name: "ask for shell output redirect"
     command: "git log > /tmp/log.txt"
+    expect: ask
+
+  - name: "ask for pipeline output redirect"
+    command: "git log | grep TODO > /tmp/todos.txt"
+    expect: ask
+
+  - name: "allow fd duplication redirect"
+    command: "python -m pytest 2>&1 | tail -30"
     expect: allow
 
-  - name: "pipeline with redirect"
-    command: "git log | grep TODO > /tmp/todos.txt"
-    expect: allow
+  - name: "ask for exfil-style local write redirect"
+    command: "cat /etc/passwd > secrets.txt"
+    expect: ask
 
   # ==========================================================================
   # Stdlib Helpers (verified via migrated rules)
@@ -287,6 +303,26 @@ tests:
 
   - name: "ask for rm -rf (no project root in test)"
     command: "rm -rf ./temp"
+    expect: ask
+
+  - name: "allow touch in project"
+    command: "touch ./new-file.txt"
+    expect: allow
+
+  - name: "ask touch outside project"
+    command: "touch /etc/cmdguard_probe"
+    expect: ask
+
+  - name: "ask touch in home directory"
+    command: "touch ~/.zshrc"
+    expect: ask
+
+  - name: "allow mkdir in project"
+    command: "mkdir ./scratch"
+    expect: allow
+
+  - name: "ask mkdir outside project"
+    command: "mkdir /etc/cmdguard_probe"
     expect: ask
 
   # ==========================================================================
