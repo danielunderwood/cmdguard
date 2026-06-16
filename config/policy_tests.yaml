@@ -370,6 +370,22 @@ tests:
     command: "find . -execdir rm {} ;"
     expect: ask
 
+  - name: "allow find with read-only exec"
+    command: "find . -name '*.rs' -exec grep TODO {} \\;"
+    expect: allow
+
+  - name: "ask find with batch exec"
+    command: "find . -name '*.rs' -exec grep TODO {} +"
+    expect: ask
+
+  - name: "ask find exec placeholder mutation"
+    command: "find /tmp -exec touch {} \\;"
+    expect: ask
+
+  - name: "ask find with exec and trailing expression"
+    command: "find . -name '*.rs' -exec grep TODO {} \\; -print"
+    expect: ask
+
   - name: "allow find without exec or delete"
     command: "find . -name '*.tmp'"
     expect: allow
