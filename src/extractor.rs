@@ -59,6 +59,7 @@ fn try_extract_wrapper(
         "nix" => extract_nix(tokens),
         "nix-shell" => extract_nix_shell(tokens),
         "docker" => extract_docker(tokens),
+        "find" => extract_find_exec(tokens),
         "sh" | "bash" | "zsh" => extract_shell_c(tokens),
         "poetry" => extract_poetry(tokens),
         _ => None,
@@ -271,6 +272,53 @@ fn extract_poetry(tokens: &[String]) -> Option<(String, Vec<String>)> {
     None
 }
 
+fn extract_find_exec(tokens: &[String]) -> Option<(String, Vec<String>)> {
+    let exec_idx = tokens.iter().position(|token| token == "-exec")?;
+
+    // Keep find-specific side effects and interactive variants on the
+    // existing find policy path until the model can represent their context.
+    if tokens[..exec_idx]
+        .iter()
+        .any(|token| matches!(token.as_str(), "-delete" | "-execdir" | "-ok" | "-okdir"))
+    {
+        return None;
+    }
+
+    let command_start = exec_idx + 1;
+    if command_start >= tokens.len() {
+        return None;
+    }
+
+    let mut end_idx = command_start;
+    while end_idx < tokens.len() {
+        if tokens[end_idx] == ";" {
+            break;
+        }
+
+        if tokens[end_idx] == "+" && end_idx > command_start && tokens[end_idx - 1] == "{}" {
+            // Batch mode appends matched paths to a single command. That is
+            // different enough from normal wrapper semantics to leave as ask.
+            return None;
+        }
+
+        end_idx += 1;
+    }
+
+    if end_idx == tokens.len() || end_idx == command_start {
+        return None;
+    }
+
+    if end_idx != tokens.len() - 1 {
+        // Do not unwrap if find continues evaluating more expression terms.
+        return None;
+    }
+
+    Some((
+        "find -exec".to_string(),
+        tokens[command_start..end_idx].to_vec(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +397,64 @@ mod tests {
         let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["pytest", "-v"]));
         assert_eq!(result.wrapper_chain, vec!["poetry run"]);
+    }
+
+    #[test]
+    fn test_find_exec() {
+        let tokens = to_vec(&[
+            "find", ".", "-name", "*.rs", "-exec", "grep", "TODO", "{}", ";",
+        ]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["grep", "TODO", "{}"]));
+        assert_eq!(result.wrapper_chain, vec!["find -exec"]);
+    }
+
+    #[test]
+    fn test_find_exec_allows_inner_find_like_args() {
+        let tokens = to_vec(&["find", ".", "-exec", "tool", "-exec", "literal", ";"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["tool", "-exec", "literal"]));
+        assert_eq!(result.wrapper_chain, vec!["find -exec"]);
+    }
+
+    #[test]
+    fn test_find_exec_with_delete_not_extracted() {
+        let tokens = to_vec(&["find", ".", "-delete", "-exec", "echo", "{}", ";"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, tokens);
+        assert!(result.wrapper_chain.is_empty());
+    }
+
+    #[test]
+    fn test_find_exec_batch_not_extracted() {
+        let tokens = to_vec(&["find", ".", "-exec", "grep", "TODO", "{}", "+"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, tokens);
+        assert!(result.wrapper_chain.is_empty());
+    }
+
+    #[test]
+    fn test_find_exec_with_trailing_expression_not_extracted() {
+        let tokens = to_vec(&["find", ".", "-exec", "grep", "TODO", "{}", ";", "-print"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, tokens);
+        assert!(result.wrapper_chain.is_empty());
+    }
+
+    #[test]
+    fn test_find_execdir_not_extracted() {
+        let tokens = to_vec(&["find", ".", "-execdir", "grep", "TODO", "{}", ";"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, tokens);
+        assert!(result.wrapper_chain.is_empty());
+    }
+
+    #[test]
+    fn test_find_ok_not_extracted() {
+        let tokens = to_vec(&["find", ".", "-ok", "grep", "TODO", "{}", ";"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, tokens);
+        assert!(result.wrapper_chain.is_empty());
     }
 
     #[test]
