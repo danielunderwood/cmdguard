@@ -48,6 +48,54 @@ mod embedded {
     ];
 }
 
+/// FNV-1a 64-bit over the embedded base bundle. Content-based so identical
+/// policies across releases produce identical hashes (no spurious warnings).
+pub fn embedded_base_hash() -> u64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x00000100000001b3;
+    let mut hash = OFFSET;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(PRIME);
+        }
+    };
+    let mut entries: Vec<(&str, &str)> = embedded::BASE_FILES.to_vec();
+    entries.push(("builtins.ncl", embedded::BUILTINS_NCL));
+    for (name, contents) in entries {
+        feed(name.as_bytes());
+        feed(&[0]);
+        feed(contents.as_bytes());
+        feed(&[0]);
+    }
+    hash
+}
+
+fn manifest_hex() -> String {
+    format!("{:016x}", embedded_base_hash())
+}
+
+/// True iff the user is on the base layout and the on-disk base differs from
+/// (or predates) the embedded bundle. Never returns true on IO error or when
+/// there is no populated base/ directory.
+pub fn base_is_stale(config_dir: &Path) -> bool {
+    let base_dir = config_dir.join("base");
+    let has_base_rego = std::fs::read_dir(&base_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("rego"))
+        })
+        .unwrap_or(false);
+    if !has_base_rego {
+        return false; // flat-layout or not installed: not "stale"
+    }
+    match std::fs::read_to_string(base_dir.join(".manifest")) {
+        Ok(on_disk) => on_disk.trim() != manifest_hex(),
+        Err(_) => true, // base present but no manifest => old install => stale
+    }
+}
+
 /// Cross-platform helpers for the `base sync` filesystem layout.
 /// On Unix the base/ directory and its contents are locked to read-only
 /// (0444 / 0555) after writing. On non-Unix these are no-ops — Windows
@@ -152,6 +200,7 @@ pub fn run(config_dir: PathBuf) {
         embedded::BUILTINS_NCL,
         "builtins.ncl",
     );
+    write_locked_file(&base_dir.join(".manifest"), &manifest_hex(), ".manifest");
 
     if let Err(e) = permissions::lock_readonly_dir(&base_dir) {
         lockdown_failures.push(format!("base/: {}", e));
@@ -186,5 +235,56 @@ pub fn run(config_dir: PathBuf) {
         eprintln!("Base files may be writable. The sandbox layer (filesystem ACLs/sandbox) is the");
         eprintln!("only thing protecting them from modification — review your environment.");
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_hash_is_stable_and_nonzero() {
+        let h1 = embedded_base_hash();
+        let h2 = embedded_base_hash();
+        assert_eq!(h1, h2);
+        assert_ne!(h1, 0);
+    }
+
+    #[test]
+    fn fresh_sync_is_not_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        run(tmp.path().to_path_buf()); // writes base/ + .manifest
+        assert!(!base_is_stale(tmp.path()));
+    }
+
+    #[test]
+    fn missing_manifest_with_base_is_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        // a base rego file exists, but no .manifest (old install)
+        std::fs::write(base.join("stdlib.rego"), "package cmdguard\n").unwrap();
+        assert!(base_is_stale(tmp.path()));
+    }
+
+    #[test]
+    fn no_base_dir_is_not_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(!base_is_stale(tmp.path()));
+    }
+
+    #[test]
+    fn wrong_manifest_hash_is_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        run(tmp.path().to_path_buf());
+        let manifest = tmp.path().join("base").join(".manifest");
+        // .manifest is written read-only (0444) by sync; relax before overwrite.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        std::fs::write(&manifest, "deadbeefdeadbeef").unwrap();
+        assert!(base_is_stale(tmp.path()));
     }
 }

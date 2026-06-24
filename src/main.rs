@@ -22,13 +22,13 @@ mod tokenizer;
 use clap::Parser;
 use cli::{Cli, Commands};
 use command_defs::CommandDefinitions;
-use command_evaluator::{CommandEvaluator, EvaluationContext};
+use command_evaluator::{CommandEvaluator, DeferMode, EvaluationContext};
 use extractor::extract_command;
 use flags::expand_flags;
 use input::parse_input;
 use logging::init_logging;
 use nickel_config::NickelConfig;
-use output::HookOutput;
+use output::{Decision, HookOutput};
 use parser::parse_command;
 use paths::detect_paths;
 use policy::{PatternInput, PolicyEngine, PolicyInput, PythonAnalysisInput};
@@ -77,7 +77,7 @@ fn main() {
             println!("cmdguard {}", env!("CARGO_PKG_VERSION"));
         }
         Some(Commands::Hook { action }) => match action {
-            cli::HookAction::Run => run_hook(),
+            cli::HookAction::Run { policy_dir } => run_hook(policy_dir),
             other => hook::run(other),
         },
         Some(Commands::Base { action }) => match action {
@@ -693,6 +693,12 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             println!("Rule:       {}", rule);
         }
         println!("Explicit:   {}", result.explicit);
+        if result.decision == Decision::Defer {
+            println!(
+                "Note:       defer => no hook output in 'silent' mode; \
+                 Claude Code's normal permission flow decides."
+            );
+        }
 
         // Show all matching rules for debugging
         let all_rules = engine.evaluate_all_rules(&policy_input);
@@ -712,9 +718,13 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         }
     }
 
-    // Show final result
-    println!("\n=== Final Result (Short-Circuit) ===");
-    let final_output = evaluate_compound(
+    // Show final result. Evaluate in Silent mode first — that is the default
+    // the real hook uses, so eval should report the truth: a deferred command
+    // emits no hook output. We then also show the JSON that `defer_mode =
+    // "prompt"` would emit, so the debug surface stays informative without
+    // misrepresenting the default behavior.
+    println!("\n=== Final Result ===");
+    let silent_output = evaluate_compound(
         &parse_result.commands,
         parse_result.has_errors,
         cwd,
@@ -725,25 +735,56 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         &mut engine,
         &command_defs,
         &mut nickel_config,
+        DeferMode::Silent,
     );
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&final_output).unwrap_or_default()
-    );
+
+    if silent_output.is_silent() {
+        println!(
+            "(defer — no hook output in silent mode; Claude Code's normal \
+             permission flow decides)"
+        );
+        let prompt_output = evaluate_compound(
+            &parse_result.commands,
+            parse_result.has_errors,
+            cwd,
+            &cwd_path,
+            "eval",
+            &project_root_str,
+            project_root_detected.as_ref(),
+            &mut engine,
+            &command_defs,
+            &mut nickel_config,
+            DeferMode::Prompt,
+        );
+        println!("\nWith defer_mode = \"prompt\" this would instead emit:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&prompt_output).unwrap_or_default()
+        );
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&silent_output).unwrap_or_default()
+        );
+    }
 }
 
-fn run_hook() {
+fn run_hook(policy_dir: Option<PathBuf>) {
     let _guard = init_logging();
     let start = Instant::now();
 
-    let result = run_hook_inner();
+    let result = run_hook_inner(policy_dir);
 
     let elapsed = start.elapsed();
     debug!(total_ms = elapsed.as_secs_f64() * 1000.0, "Completed");
 
     match result {
         Ok(output) => {
-            println!("{}", output.to_json());
+            if !output.is_silent() {
+                println!("{}", output.to_json());
+            }
+            // Silent (defer) => print nothing, exit 0: Claude Code runs its
+            // normal permission flow / auto-mode classifier.
         }
         Err(e) => {
             error!("Error: {}", e);
@@ -752,7 +793,7 @@ fn run_hook() {
     }
 }
 
-/// Evaluate a compound command, short-circuiting on first non-allow
+/// Evaluate a compound command using most-restrictive resolution (deny short-circuits).
 // Bundling these into an EvaluationContext-style struct would be the
 // idiomatic fix; deferring it so this chore PR stays mechanical.
 #[allow(clippy::too_many_arguments)]
@@ -767,6 +808,7 @@ fn evaluate_compound(
     engine: &mut PolicyEngine,
     command_defs: &CommandDefinitions,
     nickel_config: &mut NickelConfig,
+    defer_mode: DeferMode,
 ) -> HookOutput {
     let mut evaluator = CommandEvaluator::new(engine, command_defs, nickel_config);
 
@@ -778,10 +820,10 @@ fn evaluate_compound(
         project_root_path: project_root_path.map(|p| p.as_path()),
     };
 
-    evaluator.evaluate_compound(parsed, has_parse_errors, &context)
+    evaluator.evaluate_compound(parsed, has_parse_errors, &context, defer_mode)
 }
 
-fn run_hook_inner() -> Result<HookOutput, String> {
+fn run_hook_inner(policy_dir: Option<PathBuf>) -> Result<HookOutput, String> {
     // Read input from stdin
     let mut input_str = String::new();
     io::stdin()
@@ -805,7 +847,11 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     let session_id = hook_input.session_id.clone().unwrap_or_default();
 
     // Load policy engine and Nickel config
-    let policy_dir = get_policy_dir(None);
+    let policy_dir = get_policy_dir(policy_dir);
+
+    if base_sync::base_is_stale(&policy_dir) {
+        eprintln!("cmdguard: base policies are out of date — run `cmdguard base sync` to update.");
+    }
 
     // Load Nickel config for custom wrappers and command definitions
     let mut nickel_config = NickelConfig::load(&policy_dir);
@@ -841,6 +887,9 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     load_all_policies(&mut engine, &policy_dir, project_root_detected.as_ref())
         .map_err(|e| format!("Failed to load policies: {}", e))?;
 
+    // Resolve how a winning defer should be rendered (env > config > default).
+    let defer_mode = DeferMode::resolve(nickel_config.defer_mode().as_deref());
+
     // Evaluate compound command
     Ok(evaluate_compound(
         &parse_result.commands,
@@ -853,5 +902,6 @@ fn run_hook_inner() -> Result<HookOutput, String> {
         &mut engine,
         &command_defs,
         &mut nickel_config,
+        defer_mode,
     ))
 }
