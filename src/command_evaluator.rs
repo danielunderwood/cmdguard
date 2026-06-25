@@ -59,6 +59,20 @@ pub fn most_restrictive(decisions: &[Decision]) -> Decision {
         .unwrap_or(Decision::Allow)
 }
 
+/// The resolved outcome of a compound command, before any wire rendering.
+///
+/// `reason` is the winning segment's raw policy reason (`None` for `Allow`, or
+/// when the matching rule supplied none). `position`/`chain_length` locate the
+/// winning segment so callers can build fallback messages like
+/// "command 2 of 3".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCompound {
+    pub decision: Decision,
+    pub reason: Option<String>,
+    pub position: usize,
+    pub chain_length: usize,
+}
+
 /// Context for evaluating commands - encapsulates shared dependencies
 pub struct CommandEvaluator<'a> {
     engine: &'a mut PolicyEngine,
@@ -230,12 +244,71 @@ fn extract_python_c_code(command: &[String]) -> Option<String> {
 }
 
 impl<'a> CommandEvaluator<'a> {
-    /// Evaluate a compound command using most-restrictive resolution.
+    /// Resolve a compound command to a single winning outcome using
+    /// most-restrictive semantics (Deny > Ask > Defer > Allow), with deny
+    /// short-circuiting. This is the shared core used by both the production
+    /// hook (`evaluate_compound`) and the policy test runner, so the two can
+    /// never drift on how a chain of decisions collapses. Callers handle parse
+    /// errors and wire rendering.
+    pub fn resolve_compound(
+        &mut self,
+        parsed: &[ParsedCommand],
+        context: &EvaluationContext,
+    ) -> ResolvedCompound {
+        let mut prev_operator: Option<String> = None;
+        let mut outcomes: Vec<(Decision, Option<String>, usize, usize)> = Vec::new();
+
+        for cmd in parsed {
+            let result = self.evaluate_single(cmd, context, prev_operator.clone());
+            prev_operator = cmd.next_operator.clone();
+
+            // Deny short-circuits: nothing can be more restrictive.
+            if result.decision == Decision::Deny {
+                return ResolvedCompound {
+                    decision: Decision::Deny,
+                    reason: result.reason,
+                    position: cmd.position,
+                    chain_length: cmd.chain_length,
+                };
+            }
+            outcomes.push((
+                result.decision,
+                result.reason,
+                cmd.position,
+                cmd.chain_length,
+            ));
+        }
+
+        let decisions: Vec<Decision> = outcomes.iter().map(|o| o.0).collect();
+        let winner = most_restrictive(&decisions);
+        if winner == Decision::Allow {
+            return ResolvedCompound {
+                decision: Decision::Allow,
+                reason: None,
+                position: 0,
+                chain_length: parsed.len(),
+            };
+        }
+
+        // First segment that produced the winning decision.
+        let (decision, reason, position, chain_length) = outcomes
+            .into_iter()
+            .find(|o| o.0 == winner)
+            .expect("winner is among the collected outcomes");
+        ResolvedCompound {
+            decision,
+            reason,
+            position,
+            chain_length,
+        }
+    }
+
+    /// Evaluate a compound command and render it to a `HookOutput`.
     ///
-    /// Scans all segments (deny still short-circuits for speed) and resolves
-    /// the winner via `most_restrictive` (Deny > Ask > Defer > Allow). A
-    /// winning `Defer` is rendered per `defer_mode`: silent (no output) or an
-    /// explicit `ask`. Parse failures stay an explicit `ask`, never defer.
+    /// Resolution is delegated to `resolve_compound` (Deny > Ask > Defer >
+    /// Allow, deny short-circuits). A winning `Defer` is rendered per
+    /// `defer_mode`: silent (no output) or an explicit `ask`. Parse failures
+    /// stay an explicit `ask`, never defer.
     pub fn evaluate_compound(
         &mut self,
         parsed: &[ParsedCommand],
@@ -248,57 +321,41 @@ impl<'a> CommandEvaluator<'a> {
             return HookOutput::ask_with_reason("Command contains unparseable constructs");
         }
 
-        let mut prev_operator: Option<String> = None;
-        let mut outcomes: Vec<(Decision, Option<String>, usize, usize)> = Vec::new();
-
-        for cmd in parsed {
-            let result = self.evaluate_single(cmd, context, prev_operator.clone());
-            prev_operator = cmd.next_operator.clone();
-
-            // Deny short-circuits: nothing can be more restrictive.
-            if result.decision == Decision::Deny {
-                let reason = result.reason.unwrap_or_else(|| {
+        let resolved = self.resolve_compound(parsed, context);
+        let fallback = |label: &str| {
+            format!(
+                "{} for command {} of {}",
+                label,
+                resolved.position + 1,
+                resolved.chain_length
+            )
+        };
+        match resolved.decision {
+            Decision::Allow => HookOutput::new(Decision::Allow, None),
+            Decision::Deny => {
+                let reason = resolved.reason.clone().unwrap_or_else(|| {
                     format!(
                         "Denied at command {} of {}",
-                        cmd.position + 1,
-                        cmd.chain_length
+                        resolved.position + 1,
+                        resolved.chain_length
                     )
                 });
-                return HookOutput::deny(&reason);
+                HookOutput::deny(&reason)
             }
-            outcomes.push((
-                result.decision,
-                result.reason,
-                cmd.position,
-                cmd.chain_length,
-            ));
-        }
-
-        let decisions: Vec<Decision> = outcomes.iter().map(|o| o.0).collect();
-        match most_restrictive(&decisions) {
-            Decision::Allow => HookOutput::new(Decision::Allow, None),
-            Decision::Deny => unreachable!("deny short-circuits above"),
             Decision::Ask => {
-                let (_, reason, pos, len) = outcomes
-                    .iter()
-                    .find(|o| o.0 == Decision::Ask)
-                    .cloned()
-                    .unwrap();
-                let reason = reason
-                    .unwrap_or_else(|| format!("Review needed for command {} of {}", pos + 1, len));
+                let reason = resolved
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| fallback("Review needed"));
                 HookOutput::ask_with_reason(&reason)
             }
             Decision::Defer => match defer_mode {
                 DeferMode::Silent => HookOutput::defer(),
                 DeferMode::Prompt => {
-                    let (_, reason, pos, len) = outcomes
-                        .iter()
-                        .find(|o| o.0 == Decision::Defer)
-                        .cloned()
-                        .unwrap();
-                    let reason = reason.unwrap_or_else(|| {
-                        format!("No policy decision for command {} of {}", pos + 1, len)
-                    });
+                    let reason = resolved
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| fallback("No policy decision"));
                     HookOutput::ask_with_reason(&reason)
                 }
             },

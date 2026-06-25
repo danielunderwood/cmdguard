@@ -1,5 +1,5 @@
 use crate::command_defs::CommandDefinitions;
-use crate::command_evaluator::{most_restrictive, CommandEvaluator, EvaluationContext};
+use crate::command_evaluator::{CommandEvaluator, EvaluationContext};
 use crate::nickel_config::NickelConfig;
 use crate::output::Decision;
 use crate::policy::PolicyEngine;
@@ -129,39 +129,13 @@ impl TestRunner {
             &mut self.nickel_config,
         );
 
-        // Resolve the compound command exactly like production
-        // `CommandEvaluator::evaluate_compound`: deny short-circuits, and the
-        // winner is the most-restrictive segment (deny > ask > defer > allow).
-        // Keeping this in lockstep means a passing policy test reflects what
-        // the real hook would do, including for chains that mix decisions.
-        let mut prev_operator: Option<String> = None;
-        let mut outcomes: Vec<(Decision, Option<String>)> = Vec::new();
-        for cmd in &parse_result.commands {
-            let result = evaluator.evaluate_single(cmd, &context, prev_operator.clone());
-            prev_operator = cmd.next_operator.clone();
-
-            // Deny short-circuits: nothing can be more restrictive.
-            if result.decision == Decision::Deny {
-                outcomes.clear();
-                outcomes.push((Decision::Deny, result.reason));
-                break;
-            }
-            outcomes.push((result.decision, result.reason));
-        }
-
-        let decisions: Vec<Decision> = outcomes.iter().map(|o| o.0).collect();
-        let winner = most_restrictive(&decisions);
-
-        // Reason of the first segment that produced the winning decision
-        // (matches production's reason selection). Allow carries no reason.
-        let winning_reason = if winner == Decision::Allow {
-            None
-        } else {
-            outcomes
-                .iter()
-                .find(|o| o.0 == winner)
-                .and_then(|o| o.1.clone())
-        };
+        // Resolve through the same path the production hook uses, so a passing
+        // policy test reflects what the real hook would do — including chains
+        // that mix decisions (deny > ask > defer > allow, deny short-circuits).
+        let resolved = evaluator.resolve_compound(&parse_result.commands, &context);
+        let winner = resolved.decision;
+        // Raw winning-segment reason (None for Allow) for `reason_contains`.
+        let winning_reason = resolved.reason;
 
         let decision_matches = test.expect.matches(winner);
         let reason_matches = match (&test.reason_contains, winner) {
