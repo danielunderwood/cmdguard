@@ -76,8 +76,10 @@ fn manifest_hex() -> String {
 }
 
 /// True iff the user is on the base layout and the on-disk base differs from
-/// (or predates) the embedded bundle. Never returns true on IO error or when
-/// there is no populated base/ directory.
+/// (or predates) the embedded bundle. A *missing* `.manifest` (a pre-manifest
+/// install) counts as stale. A flat/absent base layout is not stale, and other
+/// IO errors reading the manifest (permissions, transient) are treated as not
+/// stale so a degraded environment doesn't produce a spurious warning.
 pub fn base_is_stale(config_dir: &Path) -> bool {
     let base_dir = config_dir.join("base");
     let has_base_rego = std::fs::read_dir(&base_dir)
@@ -92,7 +94,10 @@ pub fn base_is_stale(config_dir: &Path) -> bool {
     }
     match std::fs::read_to_string(base_dir.join(".manifest")) {
         Ok(on_disk) => on_disk.trim() != manifest_hex(),
-        Err(_) => true, // base present but no manifest => old install => stale
+        // Missing manifest = pre-manifest install => stale (prompt a sync).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        // Other IO errors (permissions, transient): don't nag with a warning.
+        Err(_) => false,
     }
 }
 
@@ -282,6 +287,18 @@ mod tests {
     #[test]
     fn no_base_dir_is_not_stale() {
         let tmp = tempfile::TempDir::new().unwrap();
+        assert!(!base_is_stale(tmp.path()));
+    }
+
+    #[test]
+    fn other_io_error_reading_manifest_is_not_stale() {
+        // A non-NotFound error (here: `.manifest` is a directory, so
+        // read_to_string fails) must not raise a spurious staleness warning.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("stdlib.rego"), "package cmdguard\n").unwrap();
+        std::fs::create_dir_all(base.join(".manifest")).unwrap();
         assert!(!base_is_stale(tmp.path()));
     }
 
