@@ -135,9 +135,11 @@ tests:
     command: "wget https://example.com/file.zip"
     expect: ask
 
-  - name: "ask for unknown command"
+  # No rule matches: cmdguard has no opinion, so it defers to Claude Code's
+  # normal permission flow rather than forcing a prompt.
+  - name: "defer for unknown command"
     command: "some-random-command --with-args"
-    expect: ask
+    expect: defer
 
   # ==========================================================================
   # Compound Commands
@@ -197,9 +199,11 @@ tests:
     command: "cargo build && cargo test && cargo fmt"
     expect: allow
 
+  # cargo build/test allow, unknown-cmd defers; most-restrictive of
+  # {allow, defer, allow} is defer.
   - name: "three command chain with unknown"
     command: "cargo build && unknown-cmd && cargo test"
-    expect: ask
+    expect: defer
 
   # With redirects
   - name: "ask for shell output redirect"
@@ -254,9 +258,9 @@ tests:
     command: "cargo clean"
     expect: allow
 
-  - name: "unlisted subcommand falls through to ask"
+  - name: "unlisted subcommand falls through to defer"
     command: "cargo install some-crate"
-    expect: ask
+    expect: defer
 
   # ==========================================================================
   # Exclusion Tables
@@ -343,10 +347,11 @@ tests:
 
   # sed is no longer blanket-allowed: GNU sed can run shell commands via the
   # `e` script flag and write arbitrary files via `w`. With no matching
-  # rule, sed without -i falls through to ask.
-  - name: "ask sed without -i"
+  # rule, sed without -i falls through to defer (it prints to stdout and does
+  # not modify the file, so yielding to Claude Code's normal flow is safe).
+  - name: "defer sed without -i"
     command: "sed 's/foo/bar/' file.txt"
-    expect: ask
+    expect: defer
 
   - name: "ask sed -i"
     command: "sed -i 's/foo/bar/' file.txt"
@@ -357,10 +362,10 @@ tests:
     command: "cat file.txt | sed 's/foo/bar/'"
     expect: allow
 
-  # ...but still ask if it's the first command (no pipe in)
-  - name: "ask sed at chain start"
+  # ...but still defer if it's the first command (no pipe in)
+  - name: "defer sed at chain start"
     command: "sed 's/foo/bar/' file.txt | cat"
-    expect: ask
+    expect: defer
 
   # ==========================================================================
   # Find

@@ -1,5 +1,5 @@
 use crate::command_defs::CommandDefinitions;
-use crate::command_evaluator::{CommandEvaluator, EvaluationContext};
+use crate::command_evaluator::{most_restrictive, CommandEvaluator, EvaluationContext};
 use crate::nickel_config::NickelConfig;
 use crate::output::Decision;
 use crate::policy::PolicyEngine;
@@ -32,6 +32,7 @@ pub enum ExpectedDecision {
     Allow,
     Deny,
     Ask,
+    Defer,
 }
 
 impl ExpectedDecision {
@@ -41,6 +42,7 @@ impl ExpectedDecision {
             (ExpectedDecision::Allow, Decision::Allow)
                 | (ExpectedDecision::Deny, Decision::Deny)
                 | (ExpectedDecision::Ask, Decision::Ask)
+                | (ExpectedDecision::Defer, Decision::Defer)
         )
     }
 }
@@ -127,59 +129,72 @@ impl TestRunner {
             &mut self.nickel_config,
         );
 
-        // Evaluate each command, short-circuit on non-allow
+        // Resolve the compound command exactly like production
+        // `CommandEvaluator::evaluate_compound`: deny short-circuits, and the
+        // winner is the most-restrictive segment (deny > ask > defer > allow).
+        // Keeping this in lockstep means a passing policy test reflects what
+        // the real hook would do, including for chains that mix decisions.
         let mut prev_operator: Option<String> = None;
+        let mut outcomes: Vec<(Decision, Option<String>)> = Vec::new();
         for cmd in &parse_result.commands {
             let result = evaluator.evaluate_single(cmd, &context, prev_operator.clone());
             prev_operator = cmd.next_operator.clone();
 
-            // Short-circuit on non-allow
-            if result.decision != Decision::Allow {
-                let decision_matches = test.expect.matches(result.decision);
-                let reason_matches = test.reason_contains.as_ref().is_none_or(|expected| {
-                    result.reason.as_ref().is_some_and(|r| r.contains(expected))
-                });
-
-                let error = if !reason_matches {
-                    Some(format!(
-                        "Reason '{}' does not contain '{}'",
-                        result.reason.as_deref().unwrap_or("(none)"),
-                        test.reason_contains.as_deref().unwrap_or("")
-                    ))
-                } else {
-                    None
-                };
-
-                return TestResult {
-                    name: test.name.clone(),
-                    passed: decision_matches && reason_matches,
-                    expected: test.expect,
-                    actual: result.decision,
-                    reason: result.reason,
-                    error,
-                };
+            // Deny short-circuits: nothing can be more restrictive.
+            if result.decision == Decision::Deny {
+                outcomes.clear();
+                outcomes.push((Decision::Deny, result.reason));
+                break;
             }
+            outcomes.push((result.decision, result.reason));
         }
 
-        // All commands allowed
-        let decision_matches = test.expect.matches(Decision::Allow);
-        let reason_matches = test.reason_contains.as_ref().is_none_or(|_| false);
+        let decisions: Vec<Decision> = outcomes.iter().map(|o| o.0).collect();
+        let winner = most_restrictive(&decisions);
 
-        let error = if !reason_matches && test.reason_contains.is_some() {
-            Some(format!(
-                "Expected reason containing '{}' but all commands allowed (no reason)",
-                test.reason_contains.as_deref().unwrap_or("")
-            ))
+        // Reason of the first segment that produced the winning decision
+        // (matches production's reason selection). Allow carries no reason.
+        let winning_reason = if winner == Decision::Allow {
+            None
+        } else {
+            outcomes
+                .iter()
+                .find(|o| o.0 == winner)
+                .and_then(|o| o.1.clone())
+        };
+
+        let decision_matches = test.expect.matches(winner);
+        let reason_matches = match (&test.reason_contains, winner) {
+            (None, _) => true,
+            (Some(_), Decision::Allow) => false,
+            (Some(expected), _) => winning_reason
+                .as_ref()
+                .is_some_and(|r| r.contains(expected)),
+        };
+
+        let error = if !reason_matches {
+            Some(if winner == Decision::Allow {
+                format!(
+                    "Expected reason containing '{}' but all commands allowed (no reason)",
+                    test.reason_contains.as_deref().unwrap_or("")
+                )
+            } else {
+                format!(
+                    "Reason '{}' does not contain '{}'",
+                    winning_reason.as_deref().unwrap_or("(none)"),
+                    test.reason_contains.as_deref().unwrap_or("")
+                )
+            })
         } else {
             None
         };
 
         TestResult {
             name: test.name.clone(),
-            passed: decision_matches && (error.is_none()),
+            passed: decision_matches && reason_matches,
             expected: test.expect,
-            actual: Decision::Allow,
-            reason: None,
+            actual: winner,
+            reason: winning_reason,
             error,
         }
     }
@@ -263,5 +278,64 @@ tests:
             test_file.tests[1].reason_contains,
             Some("blocked".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_defer_expectation() {
+        let yaml = r#"
+tests:
+  - name: "defer unknown"
+    command: "some-random-command"
+    expect: defer
+"#;
+        let test_file: TestFile = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(test_file.tests[0].expect, ExpectedDecision::Defer);
+    }
+
+    fn config_runner() -> TestRunner {
+        let config = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        TestRunner::new(&config).expect("load repo config policies")
+    }
+
+    fn run_one(runner: &mut TestRunner, command: &str, expect: ExpectedDecision) -> TestResult {
+        let tc = TestCase {
+            name: command.to_string(),
+            command: command.to_string(),
+            cwd: default_cwd(),
+            expect,
+            reason_contains: None,
+        };
+        runner.run_single_test(&tc)
+    }
+
+    #[test]
+    fn unknown_command_defers() {
+        let mut runner = config_runner();
+        let r = run_one(
+            &mut runner,
+            "some-random-command --x",
+            ExpectedDecision::Defer,
+        );
+        assert_eq!(r.actual, Decision::Defer, "unknown command should defer");
+        assert!(r.passed);
+    }
+
+    /// A defer segment must never mask a later deny: the runner resolves the
+    /// chain most-restrictively (deny > ask > defer > allow), matching the
+    /// production hook rather than short-circuiting on the first non-allow.
+    #[test]
+    fn deny_after_defer_resolves_to_deny() {
+        let mut runner = config_runner();
+        let r = run_one(
+            &mut runner,
+            "some-random-command && rm --no-preserve-root /",
+            ExpectedDecision::Deny,
+        );
+        assert_eq!(
+            r.actual,
+            Decision::Deny,
+            "deny must win over an earlier defer segment"
+        );
+        assert!(r.passed);
     }
 }
