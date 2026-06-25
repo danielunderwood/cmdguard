@@ -144,6 +144,29 @@ mod permissions {
 /// process on a fatal failure (write error or directory creation); returns
 /// normally and exits with status 2 if the post-write read-only lockdown
 /// fails on any file. The exit-on-error pattern matches the rest of the CLI.
+/// Write `contents` to `path`, relaxing permissions first if it already exists
+/// (re-sync), then locking it back to read-only. A failed lockdown is recorded
+/// in `failures` rather than aborting, so we never claim success while leaving
+/// files writable; a failed *write* is fatal.
+fn write_locked_file(path: &Path, contents: &str, label: &str, failures: &mut Vec<String>) {
+    if path.exists() {
+        if let Err(e) = permissions::relax_file_for_rewrite(path) {
+            eprintln!(
+                "Warning: could not relax {} permissions for re-sync: {}",
+                label, e
+            );
+        }
+    }
+    std::fs::write(path, contents).unwrap_or_else(|e| {
+        eprintln!("Failed to write {}: {}", label, e);
+        std::process::exit(1);
+    });
+    if let Err(e) = permissions::lock_readonly_file(path) {
+        failures.push(format!("{}: {}", label, e));
+    }
+    println!("  {}", label);
+}
+
 pub fn run(config_dir: PathBuf) {
     let base_dir = config_dir.join("base");
 
@@ -170,37 +193,26 @@ pub fn run(config_dir: PathBuf) {
     println!("Syncing base policies to {}", base_dir.display());
     println!();
 
-    // Helper to write a file, relaxing permissions on re-sync, then locking
-    // it back to read-only. Tracks lockdown failures in the outer Vec so we
-    // don't claim success while leaving files writable.
-    let mut write_locked_file = |path: &Path, contents: &str, label: &str| {
-        if path.exists() {
-            if let Err(e) = permissions::relax_file_for_rewrite(path) {
-                eprintln!(
-                    "Warning: could not relax {} permissions for re-sync: {}",
-                    label, e
-                );
-            }
-        }
-        std::fs::write(path, contents).unwrap_or_else(|e| {
-            eprintln!("Failed to write {}: {}", label, e);
-            std::process::exit(1);
-        });
-        if let Err(e) = permissions::lock_readonly_file(path) {
-            lockdown_failures.push(format!("{}: {}", label, e));
-        }
-        println!("  {}", label);
-    };
-
     for (filename, contents) in embedded::BASE_FILES {
-        write_locked_file(&base_dir.join(filename), contents, filename);
+        write_locked_file(
+            &base_dir.join(filename),
+            contents,
+            filename,
+            &mut lockdown_failures,
+        );
     }
     write_locked_file(
         &base_dir.join("builtins.ncl"),
         embedded::BUILTINS_NCL,
         "builtins.ncl",
+        &mut lockdown_failures,
     );
-    write_locked_file(&base_dir.join(".manifest"), &manifest_hex(), ".manifest");
+    write_locked_file(
+        &base_dir.join(".manifest"),
+        &manifest_hex(),
+        ".manifest",
+        &mut lockdown_failures,
+    );
 
     if let Err(e) = permissions::lock_readonly_dir(&base_dir) {
         lockdown_failures.push(format!("base/: {}", e));
