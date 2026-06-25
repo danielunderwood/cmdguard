@@ -10,7 +10,7 @@ pub fn run(action: HookAction) {
         // The Run arm is handled directly in main.rs (it calls into the
         // stdin-reading hook handler that lives there). Reaching it here
         // means the dispatch in main is wrong.
-        HookAction::Run => unreachable!("HookAction::Run dispatched here"),
+        HookAction::Run { .. } => unreachable!("HookAction::Run dispatched here"),
     }
 }
 

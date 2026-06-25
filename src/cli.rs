@@ -114,7 +114,11 @@ pub enum HookAction {
     Status,
     /// Read a hook payload from stdin and emit a permission decision.
     /// Used by Claude Code's PreToolUse hook integration.
-    Run,
+    Run {
+        /// Policy directory (default: ~/.config/cmdguard)
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]

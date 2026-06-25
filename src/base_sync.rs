@@ -48,6 +48,59 @@ mod embedded {
     ];
 }
 
+/// FNV-1a 64-bit over the embedded base bundle. Content-based so identical
+/// policies across releases produce identical hashes (no spurious warnings).
+pub fn embedded_base_hash() -> u64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x00000100000001b3;
+    let mut hash = OFFSET;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(PRIME);
+        }
+    };
+    let mut entries: Vec<(&str, &str)> = embedded::BASE_FILES.to_vec();
+    entries.push(("builtins.ncl", embedded::BUILTINS_NCL));
+    for (name, contents) in entries {
+        feed(name.as_bytes());
+        feed(&[0]);
+        feed(contents.as_bytes());
+        feed(&[0]);
+    }
+    hash
+}
+
+fn manifest_hex() -> String {
+    format!("{:016x}", embedded_base_hash())
+}
+
+/// True iff the user is on the base layout and the on-disk base differs from
+/// (or predates) the embedded bundle. A *missing* `.manifest` (a pre-manifest
+/// install) counts as stale. A flat/absent base layout is not stale, and other
+/// IO errors reading the manifest (permissions, transient) are treated as not
+/// stale so a degraded environment doesn't produce a spurious warning.
+pub fn base_is_stale(config_dir: &Path) -> bool {
+    let base_dir = config_dir.join("base");
+    let has_base_rego = std::fs::read_dir(&base_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("rego"))
+        })
+        .unwrap_or(false);
+    if !has_base_rego {
+        return false; // flat-layout or not installed: not "stale"
+    }
+    match std::fs::read_to_string(base_dir.join(".manifest")) {
+        Ok(on_disk) => on_disk.trim() != manifest_hex(),
+        // Missing manifest = pre-manifest install => stale (prompt a sync).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        // Other IO errors (permissions, transient): don't nag with a warning.
+        Err(_) => false,
+    }
+}
+
 /// Cross-platform helpers for the `base sync` filesystem layout.
 /// On Unix the base/ directory and its contents are locked to read-only
 /// (0444 / 0555) after writing. On non-Unix these are no-ops — Windows
@@ -96,6 +149,29 @@ mod permissions {
 /// process on a fatal failure (write error or directory creation); returns
 /// normally and exits with status 2 if the post-write read-only lockdown
 /// fails on any file. The exit-on-error pattern matches the rest of the CLI.
+/// Write `contents` to `path`, relaxing permissions first if it already exists
+/// (re-sync), then locking it back to read-only. A failed lockdown is recorded
+/// in `failures` rather than aborting, so we never claim success while leaving
+/// files writable; a failed *write* is fatal.
+fn write_locked_file(path: &Path, contents: &str, label: &str, failures: &mut Vec<String>) {
+    if path.exists() {
+        if let Err(e) = permissions::relax_file_for_rewrite(path) {
+            eprintln!(
+                "Warning: could not relax {} permissions for re-sync: {}",
+                label, e
+            );
+        }
+    }
+    std::fs::write(path, contents).unwrap_or_else(|e| {
+        eprintln!("Failed to write {}: {}", label, e);
+        std::process::exit(1);
+    });
+    if let Err(e) = permissions::lock_readonly_file(path) {
+        failures.push(format!("{}: {}", label, e));
+    }
+    println!("  {}", label);
+}
+
 pub fn run(config_dir: PathBuf) {
     let base_dir = config_dir.join("base");
 
@@ -122,35 +198,25 @@ pub fn run(config_dir: PathBuf) {
     println!("Syncing base policies to {}", base_dir.display());
     println!();
 
-    // Helper to write a file, relaxing permissions on re-sync, then locking
-    // it back to read-only. Tracks lockdown failures in the outer Vec so we
-    // don't claim success while leaving files writable.
-    let mut write_locked_file = |path: &Path, contents: &str, label: &str| {
-        if path.exists() {
-            if let Err(e) = permissions::relax_file_for_rewrite(path) {
-                eprintln!(
-                    "Warning: could not relax {} permissions for re-sync: {}",
-                    label, e
-                );
-            }
-        }
-        std::fs::write(path, contents).unwrap_or_else(|e| {
-            eprintln!("Failed to write {}: {}", label, e);
-            std::process::exit(1);
-        });
-        if let Err(e) = permissions::lock_readonly_file(path) {
-            lockdown_failures.push(format!("{}: {}", label, e));
-        }
-        println!("  {}", label);
-    };
-
     for (filename, contents) in embedded::BASE_FILES {
-        write_locked_file(&base_dir.join(filename), contents, filename);
+        write_locked_file(
+            &base_dir.join(filename),
+            contents,
+            filename,
+            &mut lockdown_failures,
+        );
     }
     write_locked_file(
         &base_dir.join("builtins.ncl"),
         embedded::BUILTINS_NCL,
         "builtins.ncl",
+        &mut lockdown_failures,
+    );
+    write_locked_file(
+        &base_dir.join(".manifest"),
+        &manifest_hex(),
+        ".manifest",
+        &mut lockdown_failures,
     );
 
     if let Err(e) = permissions::lock_readonly_dir(&base_dir) {
@@ -186,5 +252,68 @@ pub fn run(config_dir: PathBuf) {
         eprintln!("Base files may be writable. The sandbox layer (filesystem ACLs/sandbox) is the");
         eprintln!("only thing protecting them from modification — review your environment.");
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_hash_is_stable_and_nonzero() {
+        let h1 = embedded_base_hash();
+        let h2 = embedded_base_hash();
+        assert_eq!(h1, h2);
+        assert_ne!(h1, 0);
+    }
+
+    #[test]
+    fn fresh_sync_is_not_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        run(tmp.path().to_path_buf()); // writes base/ + .manifest
+        assert!(!base_is_stale(tmp.path()));
+    }
+
+    #[test]
+    fn missing_manifest_with_base_is_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        // a base rego file exists, but no .manifest (old install)
+        std::fs::write(base.join("stdlib.rego"), "package cmdguard\n").unwrap();
+        assert!(base_is_stale(tmp.path()));
+    }
+
+    #[test]
+    fn no_base_dir_is_not_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(!base_is_stale(tmp.path()));
+    }
+
+    #[test]
+    fn other_io_error_reading_manifest_is_not_stale() {
+        // A non-NotFound error (here: `.manifest` is a directory, so
+        // read_to_string fails) must not raise a spurious staleness warning.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().join("base");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("stdlib.rego"), "package cmdguard\n").unwrap();
+        std::fs::create_dir_all(base.join(".manifest")).unwrap();
+        assert!(!base_is_stale(tmp.path()));
+    }
+
+    #[test]
+    fn wrong_manifest_hash_is_stale() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        run(tmp.path().to_path_buf());
+        let manifest = tmp.path().join("base").join(".manifest");
+        // .manifest is written read-only (0444) by sync; relax before overwrite.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        std::fs::write(&manifest, "deadbeefdeadbeef").unwrap();
+        assert!(base_is_stale(tmp.path()));
     }
 }

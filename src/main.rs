@@ -22,13 +22,13 @@ mod tokenizer;
 use clap::Parser;
 use cli::{Cli, Commands};
 use command_defs::CommandDefinitions;
-use command_evaluator::{CommandEvaluator, EvaluationContext};
+use command_evaluator::{CommandEvaluator, DeferMode, EvaluationContext};
 use extractor::extract_command;
 use flags::expand_flags;
 use input::parse_input;
 use logging::init_logging;
 use nickel_config::NickelConfig;
-use output::HookOutput;
+use output::{Decision, HookOutput};
 use parser::parse_command;
 use paths::detect_paths;
 use policy::{PatternInput, PolicyEngine, PolicyInput, PythonAnalysisInput};
@@ -77,7 +77,7 @@ fn main() {
             println!("cmdguard {}", env!("CARGO_PKG_VERSION"));
         }
         Some(Commands::Hook { action }) => match action {
-            cli::HookAction::Run => run_hook(),
+            cli::HookAction::Run { policy_dir } => run_hook(policy_dir),
             other => hook::run(other),
         },
         Some(Commands::Base { action }) => match action {
@@ -522,228 +522,320 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
     println!("=== Per-Command Evaluation ===");
     let mut prev_operator: Option<String> = None;
     for cmd in &parse_result.commands {
-        println!(
-            "\n--- Command {}/{}: {} ---",
-            cmd.position + 1,
-            cmd.chain_length,
-            cmd.text
-        );
         let this_prev_operator = prev_operator.clone();
         prev_operator = cmd.next_operator.clone();
 
-        let tokens = match tokenizer::tokenize(&cmd.text) {
-            Ok(t) => t,
-            Err(e) => {
-                println!("Tokenize error: {}", e);
-                continue;
-            }
-        };
-
-        if tokens.is_empty() {
-            println!("(empty command)");
-            continue;
-        }
-
-        let extracted = extract_command(&tokens, Some(&mut nickel_config));
-        let flags_expanded = expand_flags(&extracted.command);
-        let paths = detect_paths(&extracted.command, &cwd_path);
-
-        // Resolve the command binary and trust zone
-        let resolved = if !extracted.command.is_empty() {
-            resolve_command(&extracted.command[0], project_root_detected.as_deref())
-        } else {
-            resolve_command("", None)
-        };
-
-        println!("Command:    {:?}", extracted.command);
-        if !extracted.wrapper_chain.is_empty() {
-            println!("Wrappers:   {:?}", extracted.wrapper_chain);
-        }
-        if !flags_expanded.is_empty() {
-            println!("Flags:      {:?}", flags_expanded);
-        }
-        if !paths.is_empty() {
-            println!(
-                "Paths:      {:?}",
-                paths.iter().map(|p| &p.raw).collect::<Vec<_>>()
-            );
-        }
-        if !cmd.redirections.is_empty() {
-            println!("Redirects:  {:?}", cmd.redirections);
-        }
-        println!("Binary:     {}", resolved.binary_name);
-        if let Some(path) = &resolved.resolved_path {
-            println!("Resolved:   {}", path);
-        }
-        println!("Trust Zone: {:?}", resolved.resolved_trust_zone);
-        if resolved.is_symlink {
-            if let Some(source) = &resolved.symlink_source {
-                println!("Symlink:    {}", source);
-            }
-        }
-
-        // Parse command for structured flags and args
-        let parsed_cmd = if !extracted.command.is_empty() {
-            command_parser::parse_command(
-                &extracted.command,
-                &command_defs,
-                project_root_detected.as_deref(),
-            )
-        } else {
-            command_parser::ParsedCommand {
-                parsed_flags: std::collections::HashMap::new(),
-                positional_args: vec![],
-                subcommand: None,
-            }
-        };
-
-        // Display parsed structure
-        println!("Parsed:");
-
-        // Flags
-        println!("  Flags:");
-        if parsed_cmd.parsed_flags.is_empty() {
-            println!("    (none)");
-        } else {
-            for (name, value) in &parsed_cmd.parsed_flags {
-                match value {
-                    command_parser::FlagValue::Bool(b) => println!("    {}: {}", name, b),
-                    command_parser::FlagValue::String(s) => println!("    {}: \"{}\"", name, s),
-                    command_parser::FlagValue::Array(arr) => println!("    {}: {:?}", name, arr),
-                }
-            }
-        }
-
-        // Positional arguments
-        println!("  Positional:");
-        if parsed_cmd.positional_args.is_empty() {
-            println!("    (none)");
-        } else {
-            for arg in &parsed_cmd.positional_args {
-                println!("    {}:", arg.name);
-                for value in &arg.values {
-                    if let Some(zone) = &value.trust_zone {
-                        println!("      - {} ({}, {})", value.raw, value.value_type, zone);
-                    } else {
-                        println!("      - {} ({})", value.raw, value.value_type);
-                    }
-                }
-            }
-        }
-
-        // Subcommand
-        println!("  Subcommand:");
-        if let Some(subcommand) = &parsed_cmd.subcommand {
-            println!("    {}", subcommand);
-        } else {
-            println!("    (none)");
-        }
-
-        // Serialize to JSON for PolicyInput
-        let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
-        let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
-        let positional_map_json = serde_json::to_value(parsed_cmd.positional_as_map()).ok();
-
-        // Check for python -c and analyze inline code
-        let python_analysis =
-            analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
-
-        let policy_input = PolicyInput {
-            tool: "Bash".to_string(),
-            raw_command: cmd.text.clone(),
-            command: extracted.command,
-            wrapper_chain: extracted.wrapper_chain,
-            flags_expanded,
-            paths,
-            redirections: cmd.redirections.clone(),
-            cwd: cwd.to_string(),
-            project_root: project_root_str.clone(),
-            session_id: "eval".to_string(),
-            chain_position: Some(cmd.position),
-            chain_length: Some(cmd.chain_length),
-            chain_operator: cmd.next_operator.clone(),
-            prev_operator: this_prev_operator,
-            command_as_typed: Some(resolved.command_as_typed),
-            binary_name: Some(resolved.binary_name),
-            resolved_path: resolved.resolved_path,
-            resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
-            is_symlink: Some(resolved.is_symlink),
-            symlink_source: resolved.symlink_source,
-            parsed_flags: parsed_flags_json,
-            positional_args: positional_args_json,
-            positional: positional_map_json,
-            subcommand: parsed_cmd.subcommand,
-            python_analysis,
-        };
-
-        // Show Rego input if requested
-        if show_input {
-            println!("Rego Input:");
-            if let Ok(json) = serde_json::to_string_pretty(&policy_input) {
-                println!("{}", json);
-            }
-        }
-
-        let result = engine.evaluate(&policy_input);
-        println!("Decision:   {:?}", result.decision);
-        if let Some(reason) = &result.reason {
-            println!("Reason:     {}", reason);
-        }
-        if let Some(rule) = &result.rule {
-            println!("Rule:       {}", rule);
-        }
-        println!("Explicit:   {}", result.explicit);
-
-        // Show all matching rules for debugging
-        let all_rules = engine.evaluate_all_rules(&policy_input);
-        if all_rules.len() > 1 {
-            println!();
-            println!("Also matched:");
-            for other_rule in &all_rules {
-                // Skip the winning rule (already displayed)
-                if other_rule.rule == result.rule {
-                    continue;
-                }
-
-                if let (Some(rule_name), Some(reason)) = (&other_rule.rule, &other_rule.reason) {
-                    println!("  {} ({:?}) — {}", rule_name, other_rule.decision, reason);
-                }
-            }
-        }
+        print_command_evaluation(
+            cmd,
+            this_prev_operator,
+            &mut engine,
+            &mut nickel_config,
+            &command_defs,
+            cwd,
+            &cwd_path,
+            &project_root_str,
+            project_root_detected.as_deref(),
+            show_input,
+        );
     }
 
-    // Show final result
-    println!("\n=== Final Result (Short-Circuit) ===");
-    let final_output = evaluate_compound(
+    print_final_result(
         &parse_result.commands,
         parse_result.has_errors,
         cwd,
         &cwd_path,
-        "eval",
         &project_root_str,
         project_root_detected.as_ref(),
         &mut engine,
         &command_defs,
         &mut nickel_config,
     );
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&final_output).unwrap_or_default()
-    );
 }
 
-fn run_hook() {
+/// Print the full per-command debug breakdown for a single segment of an
+/// `eval` chain: parsing, flags, paths, trust zone, the Rego input (when
+/// requested), and the winning decision plus any other matching rules.
+#[allow(clippy::too_many_arguments)]
+fn print_command_evaluation(
+    cmd: &parser::ParsedCommand,
+    this_prev_operator: Option<String>,
+    engine: &mut PolicyEngine,
+    nickel_config: &mut NickelConfig,
+    command_defs: &CommandDefinitions,
+    cwd: &str,
+    cwd_path: &Path,
+    project_root_str: &str,
+    project_root_detected: Option<&Path>,
+    show_input: bool,
+) {
+    println!(
+        "\n--- Command {}/{}: {} ---",
+        cmd.position + 1,
+        cmd.chain_length,
+        cmd.text
+    );
+
+    let tokens = match tokenizer::tokenize(&cmd.text) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Tokenize error: {}", e);
+            return;
+        }
+    };
+
+    if tokens.is_empty() {
+        println!("(empty command)");
+        return;
+    }
+
+    let extracted = extract_command(&tokens, Some(nickel_config));
+    let flags_expanded = expand_flags(&extracted.command);
+    let paths = detect_paths(&extracted.command, cwd_path);
+
+    // Resolve the command binary and trust zone
+    let resolved = if !extracted.command.is_empty() {
+        resolve_command(&extracted.command[0], project_root_detected)
+    } else {
+        resolve_command("", None)
+    };
+
+    println!("Command:    {:?}", extracted.command);
+    if !extracted.wrapper_chain.is_empty() {
+        println!("Wrappers:   {:?}", extracted.wrapper_chain);
+    }
+    if !flags_expanded.is_empty() {
+        println!("Flags:      {:?}", flags_expanded);
+    }
+    if !paths.is_empty() {
+        println!(
+            "Paths:      {:?}",
+            paths.iter().map(|p| &p.raw).collect::<Vec<_>>()
+        );
+    }
+    if !cmd.redirections.is_empty() {
+        println!("Redirects:  {:?}", cmd.redirections);
+    }
+    println!("Binary:     {}", resolved.binary_name);
+    if let Some(path) = &resolved.resolved_path {
+        println!("Resolved:   {}", path);
+    }
+    println!("Trust Zone: {:?}", resolved.resolved_trust_zone);
+    if resolved.is_symlink {
+        if let Some(source) = &resolved.symlink_source {
+            println!("Symlink:    {}", source);
+        }
+    }
+
+    // Parse command for structured flags and args
+    let parsed_cmd = if !extracted.command.is_empty() {
+        command_parser::parse_command(&extracted.command, command_defs, project_root_detected)
+    } else {
+        command_parser::ParsedCommand {
+            parsed_flags: std::collections::HashMap::new(),
+            positional_args: vec![],
+            subcommand: None,
+        }
+    };
+
+    // Display parsed structure
+    println!("Parsed:");
+
+    // Flags
+    println!("  Flags:");
+    if parsed_cmd.parsed_flags.is_empty() {
+        println!("    (none)");
+    } else {
+        for (name, value) in &parsed_cmd.parsed_flags {
+            match value {
+                command_parser::FlagValue::Bool(b) => println!("    {}: {}", name, b),
+                command_parser::FlagValue::String(s) => println!("    {}: \"{}\"", name, s),
+                command_parser::FlagValue::Array(arr) => println!("    {}: {:?}", name, arr),
+            }
+        }
+    }
+
+    // Positional arguments
+    println!("  Positional:");
+    if parsed_cmd.positional_args.is_empty() {
+        println!("    (none)");
+    } else {
+        for arg in &parsed_cmd.positional_args {
+            println!("    {}:", arg.name);
+            for value in &arg.values {
+                if let Some(zone) = &value.trust_zone {
+                    println!("      - {} ({}, {})", value.raw, value.value_type, zone);
+                } else {
+                    println!("      - {} ({})", value.raw, value.value_type);
+                }
+            }
+        }
+    }
+
+    // Subcommand
+    println!("  Subcommand:");
+    if let Some(subcommand) = &parsed_cmd.subcommand {
+        println!("    {}", subcommand);
+    } else {
+        println!("    (none)");
+    }
+
+    // Serialize to JSON for PolicyInput
+    let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
+    let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
+    let positional_map_json = serde_json::to_value(parsed_cmd.positional_as_map()).ok();
+
+    // Check for python -c and analyze inline code
+    let python_analysis = analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
+
+    let policy_input = PolicyInput {
+        tool: "Bash".to_string(),
+        raw_command: cmd.text.clone(),
+        command: extracted.command,
+        wrapper_chain: extracted.wrapper_chain,
+        flags_expanded,
+        paths,
+        redirections: cmd.redirections.clone(),
+        cwd: cwd.to_string(),
+        project_root: project_root_str.to_string(),
+        session_id: "eval".to_string(),
+        chain_position: Some(cmd.position),
+        chain_length: Some(cmd.chain_length),
+        chain_operator: cmd.next_operator.clone(),
+        prev_operator: this_prev_operator,
+        command_as_typed: Some(resolved.command_as_typed),
+        binary_name: Some(resolved.binary_name),
+        resolved_path: resolved.resolved_path,
+        resolved_trust_zone: Some(format!("{:?}", resolved.resolved_trust_zone).to_lowercase()),
+        is_symlink: Some(resolved.is_symlink),
+        symlink_source: resolved.symlink_source,
+        parsed_flags: parsed_flags_json,
+        positional_args: positional_args_json,
+        positional: positional_map_json,
+        subcommand: parsed_cmd.subcommand,
+        python_analysis,
+    };
+
+    // Show Rego input if requested
+    if show_input {
+        println!("Rego Input:");
+        if let Ok(json) = serde_json::to_string_pretty(&policy_input) {
+            println!("{}", json);
+        }
+    }
+
+    let result = engine.evaluate(&policy_input);
+    println!("Decision:   {:?}", result.decision);
+    if let Some(reason) = &result.reason {
+        println!("Reason:     {}", reason);
+    }
+    if let Some(rule) = &result.rule {
+        println!("Rule:       {}", rule);
+    }
+    println!("Explicit:   {}", result.explicit);
+    if result.decision == Decision::Defer {
+        println!(
+            "Note:       defer => no hook output in 'silent' mode; \
+             Claude Code's normal permission flow decides."
+        );
+    }
+
+    // Show all matching rules for debugging
+    let all_rules = engine.evaluate_all_rules(&policy_input);
+    if all_rules.len() > 1 {
+        println!();
+        println!("Also matched:");
+        for other_rule in &all_rules {
+            // Skip the winning rule (already displayed)
+            if other_rule.rule == result.rule {
+                continue;
+            }
+
+            if let (Some(rule_name), Some(reason)) = (&other_rule.rule, &other_rule.reason) {
+                println!("  {} ({:?}) — {}", rule_name, other_rule.decision, reason);
+            }
+        }
+    }
+}
+
+/// Print the chain's final hook decision. Evaluates in Silent mode first —
+/// the default the real hook uses — so eval reports the truth: a deferred
+/// command emits no hook output. When that happens we also render the JSON
+/// `defer_mode = "prompt"` would emit, keeping the debug surface informative
+/// without misrepresenting the default behavior.
+#[allow(clippy::too_many_arguments)]
+fn print_final_result(
+    commands: &[parser::ParsedCommand],
+    has_errors: bool,
+    cwd: &str,
+    cwd_path: &PathBuf,
+    project_root_str: &str,
+    project_root_detected: Option<&PathBuf>,
+    engine: &mut PolicyEngine,
+    command_defs: &CommandDefinitions,
+    nickel_config: &mut NickelConfig,
+) {
+    println!("\n=== Final Result ===");
+    let silent_output = evaluate_compound(
+        commands,
+        has_errors,
+        cwd,
+        cwd_path,
+        "eval",
+        project_root_str,
+        project_root_detected,
+        engine,
+        command_defs,
+        nickel_config,
+        DeferMode::Silent,
+    );
+
+    if silent_output.is_silent() {
+        println!(
+            "(defer — no hook output in silent mode; Claude Code's normal \
+             permission flow decides)"
+        );
+        let prompt_output = evaluate_compound(
+            commands,
+            has_errors,
+            cwd,
+            cwd_path,
+            "eval",
+            project_root_str,
+            project_root_detected,
+            engine,
+            command_defs,
+            nickel_config,
+            DeferMode::Prompt,
+        );
+        println!("\nWith defer_mode = \"prompt\" this would instead emit:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&prompt_output).unwrap_or_default()
+        );
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&silent_output).unwrap_or_default()
+        );
+    }
+}
+
+fn run_hook(policy_dir: Option<PathBuf>) {
     let _guard = init_logging();
     let start = Instant::now();
 
-    let result = run_hook_inner();
+    let result = run_hook_inner(policy_dir);
 
     let elapsed = start.elapsed();
     debug!(total_ms = elapsed.as_secs_f64() * 1000.0, "Completed");
 
     match result {
         Ok(output) => {
-            println!("{}", output.to_json());
+            if !output.is_silent() {
+                println!("{}", output.to_json());
+            }
+            // Silent (defer) => print nothing, exit 0: Claude Code runs its
+            // normal permission flow / auto-mode classifier.
         }
         Err(e) => {
             error!("Error: {}", e);
@@ -752,7 +844,7 @@ fn run_hook() {
     }
 }
 
-/// Evaluate a compound command, short-circuiting on first non-allow
+/// Evaluate a compound command using most-restrictive resolution (deny short-circuits).
 // Bundling these into an EvaluationContext-style struct would be the
 // idiomatic fix; deferring it so this chore PR stays mechanical.
 #[allow(clippy::too_many_arguments)]
@@ -767,6 +859,7 @@ fn evaluate_compound(
     engine: &mut PolicyEngine,
     command_defs: &CommandDefinitions,
     nickel_config: &mut NickelConfig,
+    defer_mode: DeferMode,
 ) -> HookOutput {
     let mut evaluator = CommandEvaluator::new(engine, command_defs, nickel_config);
 
@@ -778,10 +871,10 @@ fn evaluate_compound(
         project_root_path: project_root_path.map(|p| p.as_path()),
     };
 
-    evaluator.evaluate_compound(parsed, has_parse_errors, &context)
+    evaluator.evaluate_compound(parsed, has_parse_errors, &context, defer_mode)
 }
 
-fn run_hook_inner() -> Result<HookOutput, String> {
+fn run_hook_inner(policy_dir: Option<PathBuf>) -> Result<HookOutput, String> {
     // Read input from stdin
     let mut input_str = String::new();
     io::stdin()
@@ -805,7 +898,11 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     let session_id = hook_input.session_id.clone().unwrap_or_default();
 
     // Load policy engine and Nickel config
-    let policy_dir = get_policy_dir(None);
+    let policy_dir = get_policy_dir(policy_dir);
+
+    if base_sync::base_is_stale(&policy_dir) {
+        eprintln!("cmdguard: base policies are out of date — run `cmdguard base sync` to update.");
+    }
 
     // Load Nickel config for custom wrappers and command definitions
     let mut nickel_config = NickelConfig::load(&policy_dir);
@@ -841,6 +938,9 @@ fn run_hook_inner() -> Result<HookOutput, String> {
     load_all_policies(&mut engine, &policy_dir, project_root_detected.as_ref())
         .map_err(|e| format!("Failed to load policies: {}", e))?;
 
+    // Resolve how a winning defer should be rendered (env > config > default).
+    let defer_mode = DeferMode::resolve(nickel_config.defer_mode().as_deref());
+
     // Evaluate compound command
     Ok(evaluate_compound(
         &parse_result.commands,
@@ -853,5 +953,6 @@ fn run_hook_inner() -> Result<HookOutput, String> {
         &mut engine,
         &command_defs,
         &mut nickel_config,
+        defer_mode,
     ))
 }

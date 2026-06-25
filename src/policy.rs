@@ -224,6 +224,7 @@ impl PolicyEngine {
                     .map(|s| match s.as_ref() {
                         "allow" => Decision::Allow,
                         "deny" => Decision::Deny,
+                        "defer" => Decision::Defer,
                         _ => Decision::Ask,
                     })
                     .unwrap_or(Decision::Ask);
@@ -310,6 +311,7 @@ impl PolicyEngine {
                         .map(|s| match s.as_ref() {
                             "allow" => Decision::Allow,
                             "deny" => Decision::Deny,
+                            "defer" => Decision::Defer,
                             _ => Decision::Ask,
                         })
                         .unwrap_or(Decision::Ask);
@@ -488,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ask_for_unknown() {
+    fn test_defer_for_unknown() {
         let mut engine = PolicyEngine::new();
 
         let policy_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("policies");
@@ -496,7 +498,7 @@ mod tests {
 
         let input = make_input(vec!["curl", "https://example.com"]);
         let result = engine.evaluate(&input);
-        assert_eq!(result.decision, Decision::Ask);
+        assert_eq!(result.decision, Decision::Defer);
     }
 
     #[test]
@@ -523,7 +525,7 @@ mod tests {
         let input = make_input(vec!["curl", "https://example.com"]);
         let result = engine.evaluate(&input);
 
-        assert_eq!(result.decision, Decision::Ask);
+        assert_eq!(result.decision, Decision::Defer);
         assert!(!result.explicit);
     }
 
@@ -646,5 +648,22 @@ denied_with_args["mytool"] := {"bar"}
             Decision::Allow,
             "denied_with_args must suppress the allow from allowed_with_args"
         );
+    }
+
+    #[test]
+    fn test_eval_maps_defer_string_to_defer_decision() {
+        // Minimal policy whose result is a defer decision.
+        let policy = r#"
+package cmdguard
+result := {"decision": "defer", "reason": "no opinion", "rule": "x", "explicit": false}
+"#;
+        let mut engine = PolicyEngine::new();
+        engine
+            .engine
+            .add_policy("test.rego".into(), policy.into())
+            .expect("load policy");
+        let input = make_input(vec!["somecmd"]);
+        let result = engine.evaluate(&input);
+        assert_eq!(result.decision, Decision::Defer);
     }
 }

@@ -338,6 +338,19 @@ impl NickelConfig {
         self.wrapper_names.contains(&name.to_string())
     }
 
+    /// Read the optional top-level `defer_mode` string from the user config.
+    /// Returns None if unset or not a string. Valid values ("silent" |
+    /// "prompt") are validated by the caller, not here.
+    pub fn defer_mode(&self) -> Option<String> {
+        let source = self.user_source.as_ref()?;
+        let mut context = nickel_lang::Context::new();
+        let expr = context.eval_deep(source).ok()?;
+        let record = expr.as_record()?;
+        record
+            .value_by_name("defer_mode")
+            .and_then(|e| e.to_serde::<String>().ok())
+    }
+
     /// Call a wrapper's extract function
     ///
     /// Returns Some(result) if extraction succeeded, None if:
@@ -1285,5 +1298,25 @@ mod tests {
         assert!(combined.contains_key("my_tool"));
 
         drop(dir);
+    }
+
+    #[test]
+    fn test_defer_mode_reads_user_config() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("commands.ncl"),
+            r#"{ defer_mode = "prompt" }"#,
+        )
+        .unwrap();
+        let config = NickelConfig::load(dir.path());
+        assert_eq!(config.defer_mode().as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn test_defer_mode_absent_is_none() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("commands.ncl"), r#"{ }"#).unwrap();
+        let config = NickelConfig::load(dir.path());
+        assert_eq!(config.defer_mode(), None);
     }
 }

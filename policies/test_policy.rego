@@ -25,7 +25,7 @@ rules["force_push_blocked"] := {
 
 # Aggregation: collect all matching rules, pick highest priority
 default result := {
-    "decision": "ask",
+    "decision": "defer",
     "reason": "No rule matched",
     "rule": "default",
     "explicit": false,

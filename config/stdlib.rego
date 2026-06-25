@@ -34,11 +34,13 @@ no_paths if {
 allow(reason) := {"decision": "allow", "reason": reason, "priority": 25}
 deny(reason) := {"decision": "deny", "reason": reason, "priority": 100}
 ask(reason) := {"decision": "ask", "reason": reason, "priority": 50}
+defer(reason) := {"decision": "defer", "reason": reason, "priority": 10}
 
 # Custom-priority variants
 allow_at(reason, priority) := {"decision": "allow", "reason": reason, "priority": priority}
 deny_at(reason, priority) := {"decision": "deny", "reason": reason, "priority": priority}
 ask_at(reason, priority) := {"decision": "ask", "reason": reason, "priority": priority}
+defer_at(reason, priority) := {"decision": "defer", "reason": reason, "priority": priority}
 
 # Declarative subcommand allowlist
 # Policy files contribute entries via partial object rules:
@@ -94,7 +96,7 @@ rules[rule_name] := allow(reason) if {
 all_rules := rules
 
 default result := {
-	"decision": "ask",
+	"decision": "defer",
 	"reason": "No rule matched",
 	"rule": "default",
 	"explicit": false,
@@ -103,10 +105,11 @@ default result := {
 # Find the maximum priority among matching rules
 _max_priority := max({rule.priority | some name; rule := rules[name]})
 
-# Decision weight for tie-breaking: deny > ask > allow
-_decision_weight("deny") := 3
-_decision_weight("ask") := 2
-_decision_weight("allow") := 1
+# Decision weight for tie-breaking: deny > ask > allow > defer
+_decision_weight("deny") := 4
+_decision_weight("ask") := 3
+_decision_weight("allow") := 2
+_decision_weight("defer") := 1
 
 # Among rules at max priority, find the heaviest decision weight
 _max_decision_weight := max({_decision_weight(rule.decision) |

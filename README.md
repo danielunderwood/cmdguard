@@ -6,7 +6,7 @@ Policy-driven permission control for AI coding agents. cmdguard evaluates shell 
 
 ## Features
 
-- **Automatic decisions**: Safe commands pass silently; dangerous ones are blocked or prompt the user
+- **Automatic decisions**: Safe commands pass silently; dangerous ones are blocked; recognized risky ones prompt; unrecognized commands defer to Claude Code's own permission flow.
 - **Compound command parsing**: Handles `&&`, `||`, `;`, `|` chains -- every segment is evaluated
 - **Wrapper extraction**: Sees through `nix develop`, `docker run`, `sudo`, inline env vars
 - **Trust zones**: Classifies binaries as system, user, project, or unknown by path
@@ -15,7 +15,7 @@ Policy-driven permission control for AI coding agents. cmdguard evaluates shell 
 - **Exclusion tables**: Surgically block specific subcommands without rewriting allow rules
 - **Base + user separation**: Shipped policies update cleanly; your customizations are never overwritten
 - **Project-local rules**: Per-project policies in `.cmdguard/`
-- **Fail-safe**: Defaults to `ask` on any error
+- **Fail-safe**: Commands cmdguard cannot parse or that error during evaluation default to `ask`.
 
 ## Quick Start
 
@@ -75,6 +75,14 @@ cmdguard eval "rm --no-preserve-root /"  # -> deny
 cmdguard eval "curl example.com"         # -> ask
 ```
 
+### Upgrading
+
+After upgrading the `cmdguard` binary, re-run `cmdguard base sync` to refresh
+the shipped base policies in `~/.config/cmdguard/base/`. cmdguard warns on
+stderr when the on-disk base policies differ from the binary's embedded
+bundle; the warning clears once you sync. Releases that don't change base
+policies won't warn.
+
 ## Directory Structure
 
 ```
@@ -118,7 +126,7 @@ cmdguard receives the command string from the agent hook, then:
 3. **Resolves** the binary path and classifies its trust zone
 4. **Parses** flags and positional arguments using command schemas
 5. **Evaluates** all Rego policies; each matching rule returns a decision with priority
-6. **Returns** the highest-priority decision: deny (100) > ask (50) > allow (25)
+6. **Returns** the highest-priority decision: deny (100) > ask (50) > allow (25) > defer (10)
 
 ### Decisions
 
@@ -127,6 +135,14 @@ cmdguard receives the command string from the agent hook, then:
 | `deny`   | 100      | Block the command, agent sees the reason |
 | `ask`    | 50       | Prompt the user for confirmation |
 | `allow`  | 25       | Silent pass, no prompt |
+| `defer`  | 10       | No decision: cmdguard emits nothing and lets Claude Code's normal permission flow (including auto-mode classifier) decide. This is the default for commands no rule matches. |
+
+By default, a command no rule matches **defers** — cmdguard stays silent
+and Claude Code applies its own permission flow. Set `defer_mode = "prompt"`
+in `~/.config/cmdguard/commands.ncl` (or `CMDGUARD_DEFER_MODE=prompt`) to
+instead force a user prompt for unmatched commands — useful when stacking
+cmdguard with other PreToolUse hooks and you want cmdguard to remain a
+backstop. Commands cmdguard cannot parse still prompt (`ask`) regardless.
 
 When multiple rules match, the highest priority wins. Override with explicit `"priority": N`.
 
@@ -215,18 +231,22 @@ The `allow()`, `deny()`, and `ask()` helpers from stdlib set the default priorit
 
 ### Claude Code Auto Mode
 
-cmdguard installs as a Claude Code Bash `PreToolUse` hook. It can allow,
-deny, or ask before a Bash command runs. Claude Code auto mode is a
-separate classifier layer with its own rules for actions such as direct
-pushes to default branches, irreversible local writes, production
-changes, and data exfiltration.
+cmdguard runs as a Bash `PreToolUse` hook and returns `allow`, `deny`, or
+`ask` before a command runs. For commands no policy matches, cmdguard
+returns **no decision** (emits nothing, exit 0), which hands the command to
+Claude Code's normal permission flow. In auto mode, that means Claude
+Code's classifier — which can see the full session context cmdguard cannot
+— gets to decide, instead of cmdguard forcing a prompt.
 
-The base policy is intentionally conservative where cmdguard cannot infer
-Claude's session context. For example, `git push` prompts by default
-because the command string alone does not prove whether the target is a
-non-default working branch. `PermissionDenied` hooks are useful for
-observing auto-mode classifier denials, but they cannot reverse those
-denials.
+This is the key interaction: cmdguard's *absence of an opinion* is no
+longer expressed as a forced "ask." A cmdguard `deny` still blocks
+unconditionally (hooks fire before permission-mode checks). A cmdguard
+`ask` still prompts. Only the no-rule-matched fallthrough defers.
+
+Set `defer_mode = "prompt"` to restore the old behavior (unmatched
+commands prompt). This is mainly useful when other PreToolUse hooks run
+alongside cmdguard and you want cmdguard to act as a prompt-forcing
+backstop rather than yielding to a co-hook's `allow`.
 
 ### Priority System
 

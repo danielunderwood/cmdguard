@@ -18,6 +18,61 @@ use crate::tokenizer;
 use std::path::Path;
 use tracing::debug;
 
+/// How a winning `Defer` decision is rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferMode {
+    /// Emit nothing (exit 0): hand the command to Claude Code's normal flow.
+    Silent,
+    /// Render a winning defer as an explicit `ask` (multi-hook backstop).
+    Prompt,
+}
+
+impl DeferMode {
+    /// Resolve from env (`CMDGUARD_DEFER_MODE`) over config over default.
+    /// Unknown values fall back to Silent.
+    pub fn resolve(config: Option<&str>) -> DeferMode {
+        let raw = std::env::var("CMDGUARD_DEFER_MODE")
+            .ok()
+            .or_else(|| config.map(|s| s.to_string()));
+        match raw.as_deref() {
+            Some("prompt") => DeferMode::Prompt,
+            _ => DeferMode::Silent,
+        }
+    }
+}
+
+/// Pick the most-restrictive decision across compound segments.
+/// Order: Deny > Ask > Defer > Allow.
+pub fn most_restrictive(decisions: &[Decision]) -> Decision {
+    fn weight(d: Decision) -> u8 {
+        match d {
+            Decision::Deny => 4,
+            Decision::Ask => 3,
+            Decision::Defer => 2,
+            Decision::Allow => 1,
+        }
+    }
+    decisions
+        .iter()
+        .copied()
+        .max_by_key(|d| weight(*d))
+        .unwrap_or(Decision::Allow)
+}
+
+/// The resolved outcome of a compound command, before any wire rendering.
+///
+/// `reason` is the winning segment's raw policy reason (`None` for `Allow`, or
+/// when the matching rule supplied none). `position`/`chain_length` locate the
+/// winning segment so callers can build fallback messages like
+/// "command 2 of 3".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCompound {
+    pub decision: Decision,
+    pub reason: Option<String>,
+    pub position: usize,
+    pub chain_length: usize,
+}
+
 /// Context for evaluating commands - encapsulates shared dependencies
 pub struct CommandEvaluator<'a> {
     engine: &'a mut PolicyEngine,
@@ -189,51 +244,122 @@ fn extract_python_c_code(command: &[String]) -> Option<String> {
 }
 
 impl<'a> CommandEvaluator<'a> {
-    /// Evaluate a compound command with short-circuit logic
+    /// Resolve a compound command to a single winning outcome using
+    /// most-restrictive semantics (Deny > Ask > Defer > Allow), with deny
+    /// short-circuiting. This is the shared core used by both the production
+    /// hook (`evaluate_compound`) and the policy test runner, so the two can
+    /// never drift on how a chain of decisions collapses. Callers handle parse
+    /// errors and wire rendering.
+    pub fn resolve_compound(
+        &mut self,
+        parsed: &[ParsedCommand],
+        context: &EvaluationContext,
+    ) -> ResolvedCompound {
+        let mut prev_operator: Option<String> = None;
+        let mut outcomes: Vec<(Decision, Option<String>, usize, usize)> = Vec::new();
+
+        for cmd in parsed {
+            let result = self.evaluate_single(cmd, context, prev_operator.clone());
+            prev_operator = cmd.next_operator.clone();
+
+            // Deny short-circuits: nothing can be more restrictive.
+            if result.decision == Decision::Deny {
+                return ResolvedCompound {
+                    decision: Decision::Deny,
+                    reason: result.reason,
+                    position: cmd.position,
+                    chain_length: cmd.chain_length,
+                };
+            }
+            outcomes.push((
+                result.decision,
+                result.reason,
+                cmd.position,
+                cmd.chain_length,
+            ));
+        }
+
+        let decisions: Vec<Decision> = outcomes.iter().map(|o| o.0).collect();
+        let winner = most_restrictive(&decisions);
+        if winner == Decision::Allow {
+            return ResolvedCompound {
+                decision: Decision::Allow,
+                reason: None,
+                position: 0,
+                chain_length: parsed.len(),
+            };
+        }
+
+        // First segment that produced the winning decision.
+        let (decision, reason, position, chain_length) = outcomes
+            .into_iter()
+            .find(|o| o.0 == winner)
+            .expect("winner is among the collected outcomes");
+        ResolvedCompound {
+            decision,
+            reason,
+            position,
+            chain_length,
+        }
+    }
+
+    /// Evaluate a compound command and render it to a `HookOutput`.
+    ///
+    /// Resolution is delegated to `resolve_compound` (Deny > Ask > Defer >
+    /// Allow, deny short-circuits). A winning `Defer` is rendered per
+    /// `defer_mode`: silent (no output) or an explicit `ask`. Parse failures
+    /// stay an explicit `ask`, never defer.
     pub fn evaluate_compound(
         &mut self,
         parsed: &[ParsedCommand],
         has_parse_errors: bool,
         context: &EvaluationContext,
+        defer_mode: DeferMode,
     ) -> HookOutput {
-        // If parsing had errors, be conservative
         if has_parse_errors {
+            // Blind, not abstaining: keep prompting.
             return HookOutput::ask_with_reason("Command contains unparseable constructs");
         }
 
-        // Evaluate each command, short-circuit on non-allow
-        let mut prev_operator: Option<String> = None;
-        for cmd in parsed {
-            let result = self.evaluate_single(cmd, context, prev_operator.clone());
-            prev_operator = cmd.next_operator.clone();
-
-            match result.decision {
-                Decision::Allow => continue,
-                Decision::Deny => {
-                    let reason = result.reason.unwrap_or_else(|| {
-                        format!(
-                            "Denied at command {} of {}",
-                            cmd.position + 1,
-                            cmd.chain_length
-                        )
-                    });
-                    return HookOutput::deny(&reason);
-                }
-                Decision::Ask => {
-                    let reason = result.reason.unwrap_or_else(|| {
-                        format!(
-                            "Review needed for command {} of {}",
-                            cmd.position + 1,
-                            cmd.chain_length
-                        )
-                    });
-                    return HookOutput::ask_with_reason(&reason);
-                }
+        let resolved = self.resolve_compound(parsed, context);
+        let fallback = |label: &str| {
+            format!(
+                "{} for command {} of {}",
+                label,
+                resolved.position + 1,
+                resolved.chain_length
+            )
+        };
+        match resolved.decision {
+            Decision::Allow => HookOutput::new(Decision::Allow, None),
+            Decision::Deny => {
+                let reason = resolved.reason.clone().unwrap_or_else(|| {
+                    format!(
+                        "Denied at command {} of {}",
+                        resolved.position + 1,
+                        resolved.chain_length
+                    )
+                });
+                HookOutput::deny(&reason)
             }
+            Decision::Ask => {
+                let reason = resolved
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| fallback("Review needed"));
+                HookOutput::ask_with_reason(&reason)
+            }
+            Decision::Defer => match defer_mode {
+                DeferMode::Silent => HookOutput::defer(),
+                DeferMode::Prompt => {
+                    let reason = resolved
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| fallback("No policy decision"));
+                    HookOutput::ask_with_reason(&reason)
+                }
+            },
         }
-
-        // All commands allowed
-        HookOutput::new(Decision::Allow, None)
     }
 }
 
@@ -294,8 +420,73 @@ mod tests {
         let cwd_path = PathBuf::from(cwd);
         let context = create_test_context(cwd, &cwd_path);
 
-        let result = evaluator.evaluate_compound(&[], true, &context);
+        let result = evaluator.evaluate_compound(&[], true, &context, DeferMode::Prompt);
         assert_eq!(result.decision(), Decision::Ask);
+    }
+
+    #[test]
+    fn test_defer_mode_resolution_default_is_silent() {
+        // No env, no config -> Silent
+        // (CMDGUARD_DEFER_MODE must not be set in the test environment.)
+        std::env::remove_var("CMDGUARD_DEFER_MODE");
+        assert_eq!(DeferMode::resolve(None), DeferMode::Silent);
+    }
+
+    #[test]
+    fn test_defer_mode_resolution_config_prompt() {
+        std::env::remove_var("CMDGUARD_DEFER_MODE");
+        assert_eq!(DeferMode::resolve(Some("prompt")), DeferMode::Prompt);
+    }
+
+    #[test]
+    fn test_defer_mode_unknown_value_falls_back_to_silent() {
+        std::env::remove_var("CMDGUARD_DEFER_MODE");
+        assert_eq!(DeferMode::resolve(Some("banana")), DeferMode::Silent);
+    }
+
+    #[test]
+    fn test_most_restrictive_ordering() {
+        // Deny > Ask > Defer > Allow
+        assert_eq!(
+            most_restrictive(&[Decision::Defer, Decision::Deny]),
+            Decision::Deny
+        );
+        assert_eq!(
+            most_restrictive(&[Decision::Deny, Decision::Defer]),
+            Decision::Deny
+        );
+        assert_eq!(
+            most_restrictive(&[Decision::Allow, Decision::Defer]),
+            Decision::Defer
+        );
+        assert_eq!(
+            most_restrictive(&[Decision::Defer, Decision::Ask]),
+            Decision::Ask
+        );
+        assert_eq!(
+            most_restrictive(&[Decision::Allow, Decision::Allow]),
+            Decision::Allow
+        );
+        assert_eq!(most_restrictive(&[]), Decision::Allow);
+    }
+
+    #[test]
+    fn test_compound_deny_beats_defer_regardless_of_order() {
+        // A defer segment combined with a deny segment must resolve to deny,
+        // not short-circuit to defer. With no policies loaded, an unmatched
+        // command defers; `rm --no-preserve-root /` denies via builtin policy.
+        std::env::remove_var("CMDGUARD_DEFER_MODE");
+
+        // `most_restrictive` is the lighter, policy-independent test of the
+        // core resolution invariant.
+        assert_eq!(
+            most_restrictive(&[Decision::Defer, Decision::Deny]),
+            Decision::Deny
+        );
+        assert_eq!(
+            most_restrictive(&[Decision::Deny, Decision::Defer]),
+            Decision::Deny
+        );
     }
 
     #[test]
@@ -312,10 +503,16 @@ mod tests {
         let context = create_test_context(cwd, &cwd_path);
 
         let parse_result = parse_command("echo hello");
-        let result =
-            evaluator.evaluate_compound(&parse_result.commands, parse_result.has_errors, &context);
+        // With no policies, an unmatched command defers; under Prompt mode
+        // that surfaces as an explicit Ask.
+        let result = evaluator.evaluate_compound(
+            &parse_result.commands,
+            parse_result.has_errors,
+            &context,
+            DeferMode::Prompt,
+        );
 
-        // With no policies, should return Ask (no rule matched)
+        // With no policies + Prompt mode, should return Ask (no rule matched)
         assert_eq!(result.decision(), Decision::Ask);
     }
 }

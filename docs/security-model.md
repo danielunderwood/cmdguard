@@ -116,6 +116,14 @@ as proof that auto mode considers the action safe. `PermissionDenied`
 hooks are useful for logging auto-mode classifier denials, but they do
 not reverse a denial.
 
+For commands no policy matches, cmdguard now returns a **defer** decision:
+it emits no output and exits 0, so Claude Code's normal permission flow —
+including the auto-mode classifier — decides. Previously this fallthrough
+forced a prompt, short-circuiting the classifier. A cmdguard `deny` or
+`ask` is unchanged: deny blocks, ask prompts. Set `defer_mode = "prompt"`
+to make unmatched commands prompt again (a backstop for multi-hook setups).
+Commands cmdguard cannot parse remain `ask`, not defer.
+
 The base policy stays conservative for cases where the shell command
 does not include enough context. For example, `git push` prompts because
 the command string alone does not prove whether the push targets a
@@ -130,6 +138,7 @@ non-default working branch or a default branch such as `main` or
 | Agent runs `git push --force` | Yes | Prompts by default |
 | Agent runs `git push origin main` | Yes | Prompts by default |
 | Agent installs unknown packages | Partially | `npm install`, `pip install` trigger ask |
+| Agent runs a command no rule matches | Defers | cmdguard stays silent; Claude Code's normal flow / auto-mode classifier decides (configurable via `defer_mode`) |
 | Agent edits Makefile, then runs `make` | No | Build file content is opaque |
 | Agent exfiltrates data via curl | Partially | curl triggers ask, but can be bypassed via pipes |
 | Agent modifies shell config | No | Requires file-level permissions |
