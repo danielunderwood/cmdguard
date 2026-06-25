@@ -141,17 +141,20 @@ tests:
     expect: deny
 
   # ==========================================================================
-  # Ask (Unknown Commands)
+  # Defer (Unmatched Commands)
   # ==========================================================================
+  # This minimal example bundle has no network rules, so curl/wget and any
+  # unknown command match no rule and defer to Claude Code's normal flow.
+  # (The shipped config/ bundle has explicit ask rules for curl/wget.)
 
-  - name: "ask for curl"
+  - name: "defer for curl"
     command: "curl https://example.com"
-    expect: ask
+    expect: defer
 
-  - name: "ask for wget"
+  - name: "defer for wget"
     command: "wget https://example.com/file.zip"
-    expect: ask
+    expect: defer
 
-  - name: "ask for unknown command"
+  - name: "defer for unknown command"
     command: "some-random-command --with-args"
-    expect: ask
+    expect: defer
