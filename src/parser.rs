@@ -454,7 +454,7 @@ mod tests {
         // Subshells should be extracted but marked if we can't fully parse them
         let result = parse_command("(cd /tmp && ls)");
         // For now, we treat this as needing review
-        assert!(result.commands.len() >= 1);
+        assert!(!result.commands.is_empty());
     }
 
     // Integration tests for real-world compound command scenarios
