@@ -539,13 +539,17 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         );
     }
 
+    let context = EvaluationContext {
+        cwd,
+        cwd_path: &cwd_path,
+        session_id: "eval",
+        project_root_str: &project_root_str,
+        project_root_path: project_root_detected.as_deref(),
+    };
     print_final_result(
         &parse_result.commands,
         parse_result.has_errors,
-        cwd,
-        &cwd_path,
-        &project_root_str,
-        project_root_detected.as_ref(),
+        &context,
         &mut engine,
         &command_defs,
         &mut nickel_config,
@@ -762,14 +766,10 @@ fn print_command_evaluation(
 /// command emits no hook output. When that happens we also render the JSON
 /// `defer_mode = "prompt"` would emit, keeping the debug surface informative
 /// without misrepresenting the default behavior.
-#[allow(clippy::too_many_arguments)]
 fn print_final_result(
     commands: &[parser::ParsedCommand],
     has_errors: bool,
-    cwd: &str,
-    cwd_path: &PathBuf,
-    project_root_str: &str,
-    project_root_detected: Option<&PathBuf>,
+    context: &EvaluationContext,
     engine: &mut PolicyEngine,
     command_defs: &CommandDefinitions,
     nickel_config: &mut NickelConfig,
@@ -778,11 +778,7 @@ fn print_final_result(
     let silent_output = evaluate_compound(
         commands,
         has_errors,
-        cwd,
-        cwd_path,
-        "eval",
-        project_root_str,
-        project_root_detected,
+        context,
         engine,
         command_defs,
         nickel_config,
@@ -797,11 +793,7 @@ fn print_final_result(
         let prompt_output = evaluate_compound(
             commands,
             has_errors,
-            cwd,
-            cwd_path,
-            "eval",
-            project_root_str,
-            project_root_detected,
+            context,
             engine,
             command_defs,
             nickel_config,
@@ -845,33 +837,17 @@ fn run_hook(policy_dir: Option<PathBuf>) {
 }
 
 /// Evaluate a compound command using most-restrictive resolution (deny short-circuits).
-// Bundling these into an EvaluationContext-style struct would be the
-// idiomatic fix; deferring it so this chore PR stays mechanical.
-#[allow(clippy::too_many_arguments)]
 fn evaluate_compound(
     parsed: &[parser::ParsedCommand],
     has_parse_errors: bool,
-    cwd: &str,
-    cwd_path: &PathBuf,
-    session_id: &str,
-    project_root: &str,
-    project_root_path: Option<&PathBuf>,
+    context: &EvaluationContext,
     engine: &mut PolicyEngine,
     command_defs: &CommandDefinitions,
     nickel_config: &mut NickelConfig,
     defer_mode: DeferMode,
 ) -> HookOutput {
     let mut evaluator = CommandEvaluator::new(engine, command_defs, nickel_config);
-
-    let context = EvaluationContext {
-        cwd,
-        cwd_path,
-        session_id,
-        project_root_str: project_root,
-        project_root_path: project_root_path.map(|p| p.as_path()),
-    };
-
-    evaluator.evaluate_compound(parsed, has_parse_errors, &context, defer_mode)
+    evaluator.evaluate_compound(parsed, has_parse_errors, context, defer_mode)
 }
 
 fn run_hook_inner(policy_dir: Option<PathBuf>) -> Result<HookOutput, String> {
@@ -942,14 +918,17 @@ fn run_hook_inner(policy_dir: Option<PathBuf>) -> Result<HookOutput, String> {
     let defer_mode = DeferMode::resolve(nickel_config.defer_mode().as_deref());
 
     // Evaluate compound command
+    let context = EvaluationContext {
+        cwd: &cwd,
+        cwd_path: &cwd_path,
+        session_id: &session_id,
+        project_root_str: &project_root_str,
+        project_root_path: project_root_detected.as_deref(),
+    };
     Ok(evaluate_compound(
         &parse_result.commands,
         parse_result.has_errors,
-        &cwd,
-        &cwd_path,
-        &session_id,
-        &project_root_str,
-        project_root_detected.as_ref(),
+        &context,
         &mut engine,
         &command_defs,
         &mut nickel_config,
