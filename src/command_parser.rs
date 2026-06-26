@@ -1139,7 +1139,7 @@ mod tests {
         let result = parse_command(&to_tokens("rm -- -rf"), &defs, None);
 
         // -rf should be treated as a filename, not flags
-        assert!(result.parsed_flags.get("recursive").is_none());
+        assert!(!result.parsed_flags.contains_key("recursive"));
         assert!(!result.positional_args.is_empty());
         assert_eq!(result.positional_args[0].values.len(), 1);
         assert_eq!(result.positional_args[0].values[0].raw, "-rf");
@@ -1498,7 +1498,7 @@ mod tests {
         let defs = CommandDefinitions::from_map(commands);
 
         // Test -30 gets parsed as lines: "30"
-        let result = parse_command(&vec!["tail".to_string(), "-30".to_string()], &defs, None);
+        let result = parse_command(&["tail".to_string(), "-30".to_string()], &defs, None);
         assert_eq!(
             result.parsed_flags.get("lines"),
             Some(&FlagValue::String("30".to_string()))
@@ -1506,7 +1506,7 @@ mod tests {
 
         // Test -n 50 still works normally
         let result2 = parse_command(
-            &vec!["tail".to_string(), "-n".to_string(), "50".to_string()],
+            &["tail".to_string(), "-n".to_string(), "50".to_string()],
             &defs,
             None,
         );

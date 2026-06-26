@@ -259,7 +259,7 @@ mod tests {
             .cloned()
             .unwrap_or_default();
 
-        if pre_tool_use.iter().any(|e| is_our_entry(e)) {
+        if pre_tool_use.iter().any(is_our_entry) {
             return;
         }
 
@@ -310,7 +310,7 @@ mod tests {
             .get("hooks")
             .and_then(|h| h.get("PreToolUse"))
             .and_then(|p| p.as_array())
-            .map(|arr| arr.iter().any(|e| is_our_entry(e)))
+            .map(|arr| arr.iter().any(is_our_entry))
             .unwrap_or(false)
     }
 

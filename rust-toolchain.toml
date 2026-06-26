@@ -1,0 +1,5 @@
+[toolchain]
+# Pin to match the nix dev shell (flake.nix provides Rust 1.92), so local and CI
+# clippy agree and we avoid "clean in CI, errors locally" drift.
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]

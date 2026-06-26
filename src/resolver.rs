@@ -387,8 +387,7 @@ mod tests {
         // These commands should exist on most Unix systems
         let git = find_in_path("git");
         // git might not be installed, so just check the logic works
-        if git.is_some() {
-            let git_path = git.unwrap();
+        if let Some(git_path) = git {
             assert!(git_path.exists());
             assert!(git_path.to_string_lossy().contains("git"));
         }
