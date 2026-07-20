@@ -20,7 +20,7 @@ mod test_runner;
 mod tokenizer;
 
 use clap::Parser;
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, HookTarget};
 use command_defs::CommandDefinitions;
 use command_evaluator::{CommandEvaluator, DeferMode, EvaluationContext};
 use extractor::extract_command;
@@ -28,7 +28,7 @@ use flags::expand_flags;
 use input::parse_input;
 use logging::init_logging;
 use nickel_config::NickelConfig;
-use output::{Decision, HookOutput};
+use output::{Decision, HookEvent, HookOutput};
 use parser::parse_command;
 use paths::detect_paths;
 use policy::{PatternInput, PolicyEngine, PolicyInput, PythonAnalysisInput};
@@ -77,7 +77,7 @@ fn main() {
             println!("cmdguard {}", env!("CARGO_PKG_VERSION"));
         }
         Some(Commands::Hook { action }) => match action {
-            cli::HookAction::Run { policy_dir } => run_hook(policy_dir),
+            cli::HookAction::Run { policy_dir, target } => run_hook(policy_dir, target),
             other => hook::run(other),
         },
         Some(Commands::Base { action }) => match action {
@@ -802,36 +802,46 @@ fn print_final_result(
         println!("\nWith defer_mode = \"prompt\" this would instead emit:");
         println!(
             "{}",
-            serde_json::to_string_pretty(&prompt_output).unwrap_or_default()
+            prompt_output.render_claude_pretty().unwrap_or_default()
         );
     } else {
         println!(
             "{}",
-            serde_json::to_string_pretty(&silent_output).unwrap_or_default()
+            silent_output.render_claude_pretty().unwrap_or_default()
         );
     }
 }
 
-fn run_hook(policy_dir: Option<PathBuf>) {
+fn run_hook(policy_dir: Option<PathBuf>, target: HookTarget) {
     let _guard = init_logging();
     let start = Instant::now();
 
-    let result = run_hook_inner(policy_dir);
+    let result = run_hook_inner(policy_dir, target);
 
     let elapsed = start.elapsed();
     debug!(total_ms = elapsed.as_secs_f64() * 1000.0, "Completed");
 
     match result {
-        Ok(output) => {
-            if !output.is_silent() {
-                println!("{}", output.to_json());
+        Ok((output, event)) => {
+            let rendered = match target {
+                HookTarget::Claude => output.render_claude(),
+                HookTarget::Codex => output.render_codex(event),
+            };
+            if let Some(json) = rendered {
+                println!("{}", json);
             }
-            // Silent (defer) => print nothing, exit 0: Claude Code runs its
-            // normal permission flow / auto-mode classifier.
         }
         Err(e) => {
             error!("Error: {}", e);
-            println!("{}", HookOutput::ask_with_reason(&e).to_json());
+            if target == HookTarget::Codex {
+                // Codex treats exit 2 plus stderr as an event-specific block
+                // for both PreToolUse and PermissionRequest.
+                eprintln!("{}", e);
+                std::process::exit(2);
+            }
+            if let Some(json) = HookOutput::ask_with_reason(&e).render_claude() {
+                println!("{}", json);
+            }
         }
     }
 }
@@ -850,7 +860,10 @@ fn evaluate_compound(
     evaluator.evaluate_compound(parsed, has_parse_errors, context, defer_mode)
 }
 
-fn run_hook_inner(policy_dir: Option<PathBuf>) -> Result<HookOutput, String> {
+fn run_hook_inner(
+    policy_dir: Option<PathBuf>,
+    target: HookTarget,
+) -> Result<(HookOutput, HookEvent), String> {
     // Read input from stdin
     let mut input_str = String::new();
     io::stdin()
@@ -863,9 +876,18 @@ fn run_hook_inner(policy_dir: Option<PathBuf>) -> Result<HookOutput, String> {
     let hook_input =
         parse_input(&input_str).map_err(|e| format!("Failed to parse input: {}", e))?;
 
+    let event = match target {
+        HookTarget::Claude => HookEvent::PreToolUse,
+        HookTarget::Codex => hook_input
+            .hook_event_name
+            .as_deref()
+            .and_then(HookEvent::from_name)
+            .ok_or_else(|| "Unsupported or missing Codex hook_event_name".to_string())?,
+    };
+
     // Only handle Bash tool
     if hook_input.tool_name != "Bash" {
-        return Ok(HookOutput::ask_with_reason("Not a Bash command"));
+        return Ok((HookOutput::ask_with_reason("Not a Bash command"), event));
     }
 
     let raw_command = &hook_input.tool_input.command;
@@ -925,13 +947,16 @@ fn run_hook_inner(policy_dir: Option<PathBuf>) -> Result<HookOutput, String> {
         project_root_str: &project_root_str,
         project_root_path: project_root_detected.as_deref(),
     };
-    Ok(evaluate_compound(
-        &parse_result.commands,
-        parse_result.has_errors,
-        &context,
-        &mut engine,
-        &command_defs,
-        &mut nickel_config,
-        defer_mode,
+    Ok((
+        evaluate_compound(
+            &parse_result.commands,
+            parse_result.has_errors,
+            &context,
+            &mut engine,
+            &command_defs,
+            &mut nickel_config,
+            defer_mode,
+        ),
+        event,
     ))
 }

@@ -1,12 +1,14 @@
-use crate::cli::HookAction;
+use crate::cli::{Cli, Commands, HookAction, HookTarget};
+use clap::Parser;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 pub fn run(action: HookAction) {
     match action {
-        HookAction::Install => install(),
-        HookAction::Uninstall => uninstall(),
-        HookAction::Status => status(),
+        HookAction::Install { target } => install(target),
+        HookAction::Uninstall { target } => uninstall(target),
+        HookAction::Status { target } => status(target),
         // The Run arm is handled directly in main.rs (it calls into the
         // stdin-reading hook handler that lives there). Reaching it here
         // means the dispatch in main is wrong.
@@ -14,10 +16,12 @@ pub fn run(action: HookAction) {
     }
 }
 
-fn settings_path() -> PathBuf {
-    dirs::home_dir()
-        .expect("Could not determine home directory")
-        .join(".claude/settings.json")
+fn settings_path(target: HookTarget) -> PathBuf {
+    let home = dirs::home_dir().expect("Could not determine home directory");
+    match target {
+        HookTarget::Claude => home.join(".claude/settings.json"),
+        HookTarget::Codex => home.join(".codex/hooks.json"),
+    }
 }
 
 fn binary_path() -> String {
@@ -27,41 +31,38 @@ fn binary_path() -> String {
         .to_string()
 }
 
-fn read_settings(path: &PathBuf) -> Value {
+fn read_settings(path: &Path) -> Result<Value, String> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
             let trimmed = content.trim();
-            if trimmed.is_empty() {
+            let settings = if trimmed.is_empty() {
                 json!({})
             } else {
-                serde_json::from_str(trimmed).unwrap_or_else(|e| {
-                    eprintln!("Warning: could not parse {}: {}", path.display(), e);
-                    eprintln!("Creating backup and starting fresh.");
-                    let backup = path.with_extension("json.bak");
-                    let _ = std::fs::copy(path, &backup);
-                    json!({})
-                })
+                serde_json::from_str(trimmed)
+                    .map_err(|e| format!("Could not parse {}: {}", path.display(), e))?
+            };
+            if settings.is_object() {
+                Ok(settings)
+            } else {
+                Err(format!("{} must contain a JSON object", path.display()))
             }
         }
-        Err(_) => json!({}),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(json!({})),
+        Err(e) => Err(format!("Could not read {}: {}", path.display(), e)),
     }
 }
 
-fn write_settings(path: &PathBuf, settings: &Value) {
+fn write_settings(path: &Path, settings: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-            eprintln!("Failed to create directory {}: {}", parent.display(), e);
-            std::process::exit(1);
-        });
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
     }
     let content = serde_json::to_string_pretty(settings).expect("Failed to serialize settings");
-    std::fs::write(path, format!("{}\n", content)).unwrap_or_else(|e| {
-        eprintln!("Failed to write {}: {}", path.display(), e);
-        std::process::exit(1);
-    });
+    std::fs::write(path, format!("{}\n", content))
+        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
 }
 
-fn make_hook_entry(bin_path: &str) -> Value {
+fn make_hook_entry(bin_path: &str, target: HookTarget, event: &str) -> Value {
     // Shell-quote the binary path so install paths with spaces or shell
     // metacharacters are emitted as a single shell token. Without this,
     // a path like `/Users/foo bar/cmdguard` would be split by Claude
@@ -72,15 +73,29 @@ fn make_hook_entry(bin_path: &str) -> Value {
     let quoted_bin = shlex::try_quote(bin_path)
         .map(|c| c.into_owned())
         .unwrap_or_else(|_| bin_path.to_string());
-    json!({
-        "matcher": "Bash",
-        "hooks": [
-            {
+    match target {
+        HookTarget::Claude => json!({
+            "matcher": "Bash",
+            "hooks": [{
                 "type": "command",
                 "command": format!("{} hook run", quoted_bin)
-            }
-        ]
-    })
+            }]
+        }),
+        HookTarget::Codex => {
+            let status_message = match event {
+                "PermissionRequest" => "Checking approval request with cmdguard",
+                _ => "Checking Bash command with cmdguard",
+            };
+            json!({
+                "matcher": "^Bash$",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} hook run --target codex", quoted_bin),
+                    "statusMessage": status_message
+                }]
+            })
+        }
+    }
 }
 
 /// Returns `true` if `command` invokes our binary — that is, after shell
@@ -91,20 +106,29 @@ fn make_hook_entry(bin_path: &str) -> Value {
 /// contain "cmdguard" (e.g. `mycmdguard`, `acme-cmdguard`) don't get
 /// misidentified as ours.
 fn is_our_command(command: &str) -> bool {
-    let tokens = match shlex::split(command) {
-        Some(t) => t,
-        None => return false,
-    };
+    command_args(command).is_some()
+}
+
+fn command_args(command: &str) -> Option<Vec<String>> {
+    let tokens = shlex::split(command)?;
     // Skip leading env assignments like `RUST_LOG=debug`, which the shell
     // treats as variable bindings for the command, not the command itself.
-    let bin_token = match tokens.iter().find(|t| !is_env_assignment(t)) {
-        Some(t) => t,
-        None => return false,
-    };
+    let bin_index = tokens.iter().position(|token| !is_env_assignment(token))?;
+    let bin_token = &tokens[bin_index];
     let basename = std::path::Path::new(bin_token)
         .file_name()
         .and_then(|n| n.to_str());
-    basename == Some("cmdguard")
+    (basename == Some("cmdguard")).then(|| tokens[bin_index..].to_vec())
+}
+
+fn command_target(command: &str) -> Option<HookTarget> {
+    let cli = Cli::try_parse_from(command_args(command)?).ok()?;
+    match cli.command {
+        Some(Commands::Hook {
+            action: HookAction::Run { target, .. },
+        }) => Some(target),
+        _ => None,
+    }
 }
 
 fn is_env_assignment(token: &str) -> bool {
@@ -118,6 +142,7 @@ fn is_env_assignment(token: &str) -> bool {
     }
 }
 
+#[cfg(test)]
 fn is_our_entry(entry: &Value) -> bool {
     entry
         .get("hooks")
@@ -133,105 +158,309 @@ fn is_our_entry(entry: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn install() {
-    let path = settings_path();
-    let bin = binary_path();
-    let mut settings = read_settings(&path);
+fn is_target_entry(entry: &Value, target: HookTarget) -> bool {
+    entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|command| command_target(command) == Some(target))
+            })
+        })
+}
 
-    // Ensure hooks.PreToolUse exists as an array
+fn strip_our_hooks(mut entry: Value) -> (Option<Value>, usize) {
+    let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+        return (Some(entry), 0);
+    };
+    let original_len = hooks.len();
+    hooks.retain(|hook| {
+        !hook
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(is_our_command)
+    });
+    let removed = original_len - hooks.len();
+    if removed > 0 && hooks.is_empty() {
+        (None, removed)
+    } else {
+        (Some(entry), removed)
+    }
+}
+
+fn remove_our_hooks(entries: Vec<Value>) -> (Vec<Value>, usize) {
+    let mut kept = Vec::with_capacity(entries.len());
+    let mut removed = 0;
+    for entry in entries {
+        let (entry, entry_removed) = strip_our_hooks(entry);
+        removed += entry_removed;
+        if let Some(entry) = entry {
+            kept.push(entry);
+        }
+    }
+    (kept, removed)
+}
+
+fn target_events(target: HookTarget) -> &'static [&'static str] {
+    match target {
+        HookTarget::Claude => &["PreToolUse"],
+        HookTarget::Codex => &["PreToolUse", "PermissionRequest"],
+    }
+}
+
+fn install_to(path: &Path, bin: &str, target: HookTarget) -> Result<usize, String> {
+    let mut settings = read_settings(path)?;
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
-    }
-    if settings["hooks"].get("PreToolUse").is_none() {
-        settings["hooks"]["PreToolUse"] = json!([]);
-    }
-
-    let pre_tool_use = settings["hooks"]["PreToolUse"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-
-    // Check if already registered
-    if pre_tool_use.iter().any(is_our_entry) {
-        println!("Hook already registered in {}", path.display());
-        return;
+    } else if !settings["hooks"].is_object() {
+        return Err(format!(
+            "{} contains a non-object `hooks` value",
+            path.display()
+        ));
     }
 
-    // Append our entry
-    let mut entries = pre_tool_use;
-    entries.push(make_hook_entry(&bin));
-    settings["hooks"]["PreToolUse"] = Value::Array(entries);
+    let mut changed = 0;
+    for event in target_events(target) {
+        let entries = match settings["hooks"].get(*event) {
+            Some(value) => value.as_array().cloned().ok_or_else(|| {
+                format!(
+                    "{} contains a non-array `hooks.{}` value",
+                    path.display(),
+                    event
+                )
+            })?,
+            None => Vec::new(),
+        };
+        if entries.iter().any(|entry| is_target_entry(entry, target)) {
+            continue;
+        }
 
-    write_settings(&path, &settings);
-    println!("Hook registered in {}", path.display());
+        // Replace stale cmdguard entries that use another target's wire
+        // protocol; leaving both active could emit invalid decisions.
+        let (mut entries, _) = remove_our_hooks(entries);
+        entries.push(make_hook_entry(bin, target, event));
+        settings["hooks"][*event] = Value::Array(entries);
+        changed += 1;
+    }
+
+    if changed > 0 {
+        write_settings(path, &settings)?;
+    }
+    Ok(changed)
 }
 
-fn uninstall() {
-    let path = settings_path();
-
+fn uninstall_from(path: &Path, target: HookTarget) -> Result<usize, String> {
     if !path.exists() {
-        println!("No settings file found at {}", path.display());
+        return Ok(0);
+    }
+
+    let mut settings = read_settings(path)?;
+    if settings
+        .get("hooks")
+        .is_some_and(|hooks| !hooks.is_object())
+    {
+        return Err(format!(
+            "{} contains a non-object `hooks` value",
+            path.display()
+        ));
+    }
+    let mut removed = 0;
+    for event in target_events(target) {
+        let entries = match settings.get("hooks").and_then(|h| h.get(*event)) {
+            Some(value) => value.as_array().cloned().ok_or_else(|| {
+                format!(
+                    "{} contains a non-array `hooks.{}` value",
+                    path.display(),
+                    event
+                )
+            })?,
+            None => continue,
+        };
+
+        let (filtered, event_removed) = remove_our_hooks(entries);
+        removed += event_removed;
+        settings["hooks"][*event] = Value::Array(filtered);
+    }
+
+    if removed > 0 {
+        write_settings(path, &settings)?;
+    }
+    Ok(removed)
+}
+
+fn registered_events(path: &Path, target: HookTarget) -> Result<Vec<&'static str>, String> {
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    let settings = read_settings(path)?;
+    if settings
+        .get("hooks")
+        .is_some_and(|hooks| !hooks.is_object())
+    {
+        return Err(format!(
+            "{} contains a non-object `hooks` value",
+            path.display()
+        ));
+    }
+
+    let mut registered = Vec::new();
+    for event in target_events(target) {
+        let Some(value) = settings.get("hooks").and_then(|hooks| hooks.get(*event)) else {
+            continue;
+        };
+        let entries = value.as_array().ok_or_else(|| {
+            format!(
+                "{} contains a non-array `hooks.{}` value",
+                path.display(),
+                event
+            )
+        })?;
+        if entries.iter().any(|entry| is_target_entry(entry, target)) {
+            registered.push(*event);
+        }
+    }
+    Ok(registered)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RegistrationStatus {
+    Registered,
+    NotRegistered,
+    Partial { missing: Vec<&'static str> },
+}
+
+fn registration_status(path: &Path, target: HookTarget) -> Result<RegistrationStatus, String> {
+    let registered = registered_events(path, target)?;
+    let expected = target_events(target);
+
+    if registered.len() == expected.len() {
+        Ok(RegistrationStatus::Registered)
+    } else if registered.is_empty() {
+        Ok(RegistrationStatus::NotRegistered)
+    } else {
+        let missing = expected
+            .iter()
+            .copied()
+            .filter(|event| !registered.contains(event))
+            .collect();
+        Ok(RegistrationStatus::Partial { missing })
+    }
+}
+
+fn target_label(target: HookTarget) -> &'static str {
+    match target {
+        HookTarget::Claude => "Claude Code",
+        HookTarget::Codex => "Codex",
+    }
+}
+
+fn overview_is_healthy(statuses: &[Result<RegistrationStatus, String>]) -> bool {
+    statuses
+        .iter()
+        .any(|status| status == &Ok(RegistrationStatus::Registered))
+        && statuses.iter().all(|status| {
+            matches!(
+                status,
+                Ok(RegistrationStatus::Registered | RegistrationStatus::NotRegistered)
+            )
+        })
+}
+
+fn install(target: HookTarget) {
+    let path = settings_path(target);
+    let added = install_to(&path, &binary_path(), target).unwrap_or_else(|e| {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    });
+    if added == 0 {
+        println!("Hooks already registered in {}", path.display());
+    } else {
+        println!("Hooks registered in {}", path.display());
+    }
+}
+
+fn uninstall(target: HookTarget) {
+    let path = settings_path(target);
+    if !path.exists() {
+        println!("No hook file found at {}", path.display());
         return;
     }
 
-    let mut settings = read_settings(&path);
+    let removed = uninstall_from(&path, target).unwrap_or_else(|e| {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    });
+    if removed == 0 {
+        println!("Hooks not registered (nothing to remove)");
+    } else {
+        println!("Hooks removed from {}", path.display());
+    }
+}
 
-    let pre_tool_use = match settings
-        .get("hooks")
-        .and_then(|h| h.get("PreToolUse"))
-        .and_then(|p| p.as_array())
-    {
-        Some(arr) => arr.clone(),
-        None => {
-            println!("Hook not registered (no PreToolUse hooks found)");
+fn status(target: Option<HookTarget>) {
+    if let Some(target) = target {
+        status_one(target);
+        return;
+    }
+
+    let statuses: Vec<(HookTarget, PathBuf, Result<RegistrationStatus, String>)> =
+        [HookTarget::Claude, HookTarget::Codex]
+            .into_iter()
+            .map(|target| {
+                let path = settings_path(target);
+                let status = registration_status(&path, target);
+                (target, path, status)
+            })
+            .collect();
+
+    for (target, path, status) in &statuses {
+        match status {
+            Ok(RegistrationStatus::Registered) => {
+                println!(
+                    "{}: registered in {}",
+                    target_label(*target),
+                    path.display()
+                )
+            }
+            Ok(RegistrationStatus::NotRegistered) => {
+                println!("{}: not registered", target_label(*target))
+            }
+            Ok(RegistrationStatus::Partial { missing }) => println!(
+                "{}: partially registered in {} (missing: {})",
+                target_label(*target),
+                path.display(),
+                missing.join(", ")
+            ),
+            Err(error) => println!("{}: error ({})", target_label(*target), error),
+        }
+    }
+
+    let states: Vec<Result<RegistrationStatus, String>> =
+        statuses.into_iter().map(|(_, _, status)| status).collect();
+    if !overview_is_healthy(&states) {
+        std::process::exit(1);
+    }
+}
+
+fn status_one(target: HookTarget) {
+    let path = settings_path(target);
+    match registration_status(&path, target).unwrap_or_else(|e| {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }) {
+        RegistrationStatus::Registered => {
+            println!("Registered in {}", path.display());
             return;
         }
-    };
-
-    let filtered: Vec<Value> = pre_tool_use
-        .into_iter()
-        .filter(|e| !is_our_entry(e))
-        .collect();
-
-    let removed = settings["hooks"]["PreToolUse"]
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(0)
-        != filtered.len();
-
-    if !removed {
-        println!("Hook not registered (nothing to remove)");
-        return;
+        RegistrationStatus::NotRegistered => println!("Not registered"),
+        RegistrationStatus::Partial { missing } => {
+            println!("Partially registered; missing: {}", missing.join(", "))
+        }
     }
-
-    settings["hooks"]["PreToolUse"] = Value::Array(filtered);
-    write_settings(&path, &settings);
-    println!("Hook removed from {}", path.display());
-}
-
-fn status() {
-    let path = settings_path();
-
-    if !path.exists() {
-        println!("Not registered (no settings file)");
-        std::process::exit(1);
-    }
-
-    let settings = read_settings(&path);
-
-    let registered = settings
-        .get("hooks")
-        .and_then(|h| h.get("PreToolUse"))
-        .and_then(|p| p.as_array())
-        .map(|arr| arr.iter().any(is_our_entry))
-        .unwrap_or(false);
-
-    if registered {
-        println!("Registered in {}", path.display());
-    } else {
-        println!("Not registered");
-        std::process::exit(1);
-    }
+    std::process::exit(1);
 }
 
 #[cfg(test)]
@@ -240,78 +469,22 @@ mod tests {
     use tempfile::TempDir;
 
     fn setup_env(tmp: &TempDir) -> PathBuf {
-        let settings_path = tmp.path().join(".claude/settings.json");
-        settings_path
+        tmp.path().join(".claude/settings.json")
     }
 
-    fn install_to(path: &PathBuf, bin: &str) {
-        let mut settings = read_settings(path);
-
-        if settings.get("hooks").is_none() {
-            settings["hooks"] = json!({});
-        }
-        if settings["hooks"].get("PreToolUse").is_none() {
-            settings["hooks"]["PreToolUse"] = json!([]);
-        }
-
-        let pre_tool_use = settings["hooks"]["PreToolUse"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-
-        if pre_tool_use.iter().any(is_our_entry) {
-            return;
-        }
-
-        let mut entries = pre_tool_use;
-        entries.push(make_hook_entry(bin));
-        settings["hooks"]["PreToolUse"] = Value::Array(entries);
-
-        write_settings(path, &settings);
+    fn install_to(path: &Path, bin: &str) {
+        super::install_to(path, bin, HookTarget::Claude).unwrap();
     }
 
-    fn uninstall_from(path: &PathBuf) -> bool {
-        if !path.exists() {
-            return false;
-        }
-
-        let mut settings = read_settings(path);
-
-        let pre_tool_use = match settings
-            .get("hooks")
-            .and_then(|h| h.get("PreToolUse"))
-            .and_then(|p| p.as_array())
-        {
-            Some(arr) => arr.clone(),
-            None => return false,
-        };
-
-        let original_len = pre_tool_use.len();
-        let filtered: Vec<Value> = pre_tool_use
-            .into_iter()
-            .filter(|e| !is_our_entry(e))
-            .collect();
-
-        if filtered.len() == original_len {
-            return false;
-        }
-
-        settings["hooks"]["PreToolUse"] = Value::Array(filtered);
-        write_settings(path, &settings);
-        true
+    fn uninstall_from(path: &Path) -> bool {
+        super::uninstall_from(path, HookTarget::Claude).unwrap() > 0
     }
 
-    fn is_registered(path: &PathBuf) -> bool {
-        if !path.exists() {
-            return false;
-        }
-        let settings = read_settings(path);
-        settings
-            .get("hooks")
-            .and_then(|h| h.get("PreToolUse"))
-            .and_then(|p| p.as_array())
-            .map(|arr| arr.iter().any(is_our_entry))
-            .unwrap_or(false)
+    fn is_registered(path: &Path) -> bool {
+        super::registered_events(path, HookTarget::Claude)
+            .unwrap()
+            .len()
+            == 1
     }
 
     #[test]
@@ -364,6 +537,30 @@ mod tests {
     }
 
     #[test]
+    fn test_command_target_defaults_to_claude_and_reads_codex_flag() {
+        assert_eq!(
+            command_target("/usr/local/bin/cmdguard hook run"),
+            Some(HookTarget::Claude)
+        );
+        assert_eq!(
+            command_target("/usr/local/bin/cmdguard hook run --target codex"),
+            Some(HookTarget::Codex)
+        );
+        assert_eq!(
+            command_target("/usr/local/bin/cmdguard hook run --target=codex"),
+            Some(HookTarget::Codex)
+        );
+        assert_eq!(
+            command_target("/usr/local/bin/cmdguard hook status --target codex"),
+            None
+        );
+        assert_eq!(
+            command_target("/usr/local/bin/cmdguard eval --target codex"),
+            None
+        );
+    }
+
+    #[test]
     fn test_is_our_entry_quoted_path_with_spaces() {
         // Path containing a space, properly quoted: must still match.
         assert!(is_our_entry(&entry(
@@ -410,7 +607,11 @@ mod tests {
         // command must shell-quote so Claude Code parses it as a single
         // token; otherwise the leading slice would be invoked as the
         // binary and the rest passed as args.
-        let entry = make_hook_entry("/Users/Some User/bin/cmdguard");
+        let entry = make_hook_entry(
+            "/Users/Some User/bin/cmdguard",
+            HookTarget::Claude,
+            "PreToolUse",
+        );
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
         // Round-trip: the entry we just generated must be detectable as
         // ours, which proves shlex parses it back to a single bin token.
@@ -469,6 +670,36 @@ mod tests {
     }
 
     #[test]
+    fn test_install_rejects_malformed_settings_without_overwriting() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "{ this is not valid json\n";
+        std::fs::write(&path, original).unwrap();
+
+        let error =
+            super::install_to(&path, "/usr/local/bin/cmdguard", HookTarget::Claude).unwrap_err();
+
+        assert!(error.contains("Could not parse"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn test_install_rejects_non_array_event_without_overwriting() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = r#"{"hooks":{"PreToolUse":{"matcher":"Bash"}}}"#;
+        std::fs::write(&path, original).unwrap();
+
+        let error =
+            super::install_to(&path, "/usr/local/bin/cmdguard", HookTarget::Claude).unwrap_err();
+
+        assert!(error.contains("non-array `hooks.PreToolUse`"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
     fn test_uninstall_removes_entry() {
         let tmp = TempDir::new().unwrap();
         let path = setup_env(&tmp);
@@ -515,6 +746,33 @@ mod tests {
     }
 
     #[test]
+    fn test_uninstall_preserves_sibling_handler_in_same_matcher_group() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let existing = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [
+                        {"type": "command", "command": "/usr/local/bin/cmdguard hook run"},
+                        {"type": "command", "command": "/usr/bin/other-hook"}
+                    ]
+                }]
+            }
+        });
+        write_settings(&path, &existing).unwrap();
+
+        assert!(uninstall_from(&path));
+
+        let settings = read_settings(&path).unwrap();
+        let groups = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["hooks"].as_array().unwrap().len(), 1);
+        assert_eq!(groups[0]["hooks"][0]["command"], "/usr/bin/other-hook");
+    }
+
+    #[test]
     fn test_uninstall_nonexistent_file() {
         let tmp = TempDir::new().unwrap();
         let path = setup_env(&tmp);
@@ -525,7 +783,10 @@ mod tests {
     fn test_status_not_registered() {
         let tmp = TempDir::new().unwrap();
         let path = setup_env(&tmp);
-        assert!(!is_registered(&path));
+        assert_eq!(
+            registration_status(&path, HookTarget::Claude),
+            Ok(RegistrationStatus::NotRegistered)
+        );
     }
 
     #[test]
@@ -535,6 +796,142 @@ mod tests {
         let bin = "/usr/local/bin/cmdguard";
 
         install_to(&path, bin);
-        assert!(is_registered(&path));
+        assert_eq!(
+            registration_status(&path, HookTarget::Claude),
+            Ok(RegistrationStatus::Registered)
+        );
+    }
+
+    #[test]
+    fn test_codex_status_reports_missing_event() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".codex/hooks.json");
+        let bin = "/usr/local/bin/cmdguard";
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [make_hook_entry(bin, HookTarget::Codex, "PreToolUse")]
+            }
+        });
+        write_settings(&path, &settings).unwrap();
+
+        assert_eq!(
+            registration_status(&path, HookTarget::Codex),
+            Ok(RegistrationStatus::Partial {
+                missing: vec!["PermissionRequest"]
+            })
+        );
+    }
+
+    #[test]
+    fn test_overview_health_requires_one_registration_and_no_partial_state() {
+        assert!(!overview_is_healthy(&[
+            Ok(RegistrationStatus::NotRegistered),
+            Ok(RegistrationStatus::NotRegistered),
+        ]));
+        assert!(overview_is_healthy(&[
+            Ok(RegistrationStatus::Registered),
+            Ok(RegistrationStatus::NotRegistered),
+        ]));
+        assert!(overview_is_healthy(&[
+            Ok(RegistrationStatus::Registered),
+            Ok(RegistrationStatus::Registered),
+        ]));
+        assert!(!overview_is_healthy(&[
+            Ok(RegistrationStatus::Registered),
+            Ok(RegistrationStatus::Partial {
+                missing: vec!["PermissionRequest"]
+            }),
+        ]));
+        assert!(!overview_is_healthy(&[
+            Ok(RegistrationStatus::Registered),
+            Err("malformed config".to_string()),
+        ]));
+    }
+
+    #[test]
+    fn test_codex_install_registers_both_events() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".codex/hooks.json");
+        let bin = "/usr/local/bin/cmdguard";
+
+        assert_eq!(super::install_to(&path, bin, HookTarget::Codex), Ok(2));
+        assert_eq!(
+            super::registered_events(&path, HookTarget::Codex),
+            Ok(vec!["PreToolUse", "PermissionRequest"])
+        );
+
+        let settings = read_settings(&path).unwrap();
+        for event in ["PreToolUse", "PermissionRequest"] {
+            let entry = &settings["hooks"][event][0];
+            assert_eq!(entry["matcher"], "^Bash$");
+            assert_eq!(
+                entry["hooks"][0]["command"],
+                format!("{} hook run --target codex", bin)
+            );
+        }
+    }
+
+    #[test]
+    fn test_codex_install_repairs_partial_registration() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".codex/hooks.json");
+        let bin = "/usr/local/bin/cmdguard";
+
+        let mut settings = json!({"hooks": {}});
+        settings["hooks"]["PreToolUse"] =
+            json!([make_hook_entry(bin, HookTarget::Codex, "PreToolUse")]);
+        write_settings(&path, &settings).unwrap();
+
+        assert_eq!(super::install_to(&path, bin, HookTarget::Codex), Ok(1));
+        assert_eq!(
+            super::registered_events(&path, HookTarget::Codex),
+            Ok(vec!["PreToolUse", "PermissionRequest"])
+        );
+    }
+
+    #[test]
+    fn test_codex_install_replaces_wrong_target_entry() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".codex/hooks.json");
+        let bin = "/usr/local/bin/cmdguard";
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [make_hook_entry(bin, HookTarget::Claude, "PreToolUse")]
+            }
+        });
+        write_settings(&path, &settings).unwrap();
+
+        assert_eq!(super::install_to(&path, bin, HookTarget::Codex), Ok(2));
+        let settings = read_settings(&path).unwrap();
+        let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(is_target_entry(&entries[0], HookTarget::Codex));
+    }
+
+    #[test]
+    fn test_codex_uninstall_removes_both_events_and_preserves_others() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".codex/hooks.json");
+        let bin = "/usr/local/bin/cmdguard";
+        super::install_to(&path, bin, HookTarget::Codex).unwrap();
+
+        let mut settings = read_settings(&path).unwrap();
+        settings["hooks"]["PreToolUse"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, entry("/usr/bin/other-hook"));
+        write_settings(&path, &settings).unwrap();
+
+        assert_eq!(super::uninstall_from(&path, HookTarget::Codex), Ok(2));
+        let settings = read_settings(&path).unwrap();
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "/usr/bin/other-hook"
+        );
+        assert!(settings["hooks"]["PermissionRequest"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 }

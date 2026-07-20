@@ -389,16 +389,15 @@ cmdguard status
 
 ---
 
-## Deferring to Claude Code instead of prompting
+## Deferring to the agent instead of prompting
 
 Use `defer(reason)` when cmdguard recognizes a command but you'd rather let
-Claude Code's own permission flow (or auto-mode classifier) decide than
-hard-prompt:
+the agent's own permission flow decide than hard-prompt:
 
 ```rego
-# Let the classifier weigh terraform apply in context instead of always
+# Let the agent weigh terraform apply in context instead of always
 # prompting. In silent defer_mode this emits no hook output.
-rules["defer_terraform_apply"] := defer("terraform apply deferred to Claude Code") if {
+rules["defer_terraform_apply"] := defer("terraform apply deferred to agent") if {
     input.binary_name == "terraform"
     input.subcommand == "apply"
 }
@@ -407,3 +406,8 @@ rules["defer_terraform_apply"] := defer("terraform apply deferred to Claude Code
 `defer` has the lowest priority (10), so any matching `allow`/`ask`/`deny`
 rule wins over it. In a compound command, the most-restrictive segment
 decides: `deny > ask > defer > allow`.
+
+In Claude Code, `defer_mode = "prompt"` turns a winning defer into an explicit
+prompt. Codex `PreToolUse` cannot force an approval prompt, so the same setting
+produces no hook decision unless Codex independently raises a
+`PermissionRequest`.

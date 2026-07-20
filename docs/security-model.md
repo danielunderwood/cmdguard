@@ -15,7 +15,8 @@ This is a practical tradeoff. A full sandbox (seccomp, containers, VMs) provides
 - Resolves binary paths and classifies them into trust zones
 - Parses flags and positional arguments using command schemas
 - Evaluates Rego policies against the parsed command structure
-- Returns allow, deny, or ask based on priority-weighted rule matching
+- Resolves allow, deny, ask, or defer based on priority-weighted rule matching
+- Renders that decision through the selected Claude Code or Codex hook protocol
 
 ## What cmdguard Does Not Do
 
@@ -130,6 +131,31 @@ the command string alone does not prove whether the push targets a
 non-default working branch or a default branch such as `main` or
 `master`.
 
+## Codex Hooks, Approvals, and Sandbox
+
+The Codex integration installs two Bash hooks in `~/.codex/hooks.json`:
+
+- `PreToolUse` evaluates every supported Bash call cmdguard receives. A policy
+  `deny` blocks the call. `allow`, `ask`, and `defer` emit no decision here.
+- `PermissionRequest` runs only when Codex is already about to ask for
+  approval. A policy `allow` approves without prompting, `deny` rejects the
+  request, and `ask`/`defer` leave the normal prompt unchanged.
+- Adapter and policy-loading failures use Codex's blocking hook exit path
+  rather than silently allowing the tool call to continue.
+
+This division matters because Codex does not currently support
+`permissionDecision: "ask"` from `PreToolUse`. A cmdguard `ask` therefore
+cannot force Codex to prompt for a command that its sandbox and approval policy
+would otherwise run. It means "do not pre-approve this request; preserve the
+Codex approval path if there is one." `defer_mode = "prompt"` has the same
+limitation under Codex.
+
+Codex's sandbox remains the technical execution boundary. cmdguard hooks do
+not grant filesystem or network access, and an allow from `PermissionRequest`
+only answers the approval request Codex created. Hooks operate at Codex
+lifecycle boundaries, not as a syscall boundary, so use the Codex sandbox and
+managed permission configuration for hard constraints.
+
 ## Threat Model Summary
 
 | Threat | cmdguard helps? | Notes |
@@ -138,7 +164,7 @@ non-default working branch or a default branch such as `main` or
 | Agent runs `git push --force` | Yes | Prompts by default |
 | Agent runs `git push origin main` | Yes | Prompts by default |
 | Agent installs unknown packages | Partially | `npm install`, `pip install` trigger ask |
-| Agent runs a command no rule matches | Defers | cmdguard stays silent; Claude Code's normal flow / auto-mode classifier decides (configurable via `defer_mode`) |
+| Agent runs a command no rule matches | Defers | cmdguard stays silent; the agent's normal permission flow decides (configurable via `defer_mode`, subject to the Codex `ask` limitation) |
 | Agent edits Makefile, then runs `make` | No | Build file content is opaque |
 | Agent exfiltrates data via curl | Partially | curl triggers ask, but can be bypassed via pipes |
 | Agent modifies shell config | No | Requires file-level permissions |
