@@ -1,12 +1,12 @@
 # cmdguard
 
-Policy-driven permission control for AI coding agents. cmdguard evaluates shell commands against [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/) policies as a PreToolUse hook, silently allowing safe commands and blocking dangerous ones.
+Policy-driven permission control for AI coding agents. cmdguard evaluates shell commands against [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/) policies and integrates with Claude Code and Codex lifecycle hooks.
 
 **See also:** [Security Model](docs/security-model.md) | [Common Rules Recipes](docs/common-rules.md)
 
 ## Features
 
-- **Automatic decisions**: Safe commands pass silently; dangerous ones are blocked; recognized risky ones prompt; unrecognized commands defer to Claude Code's own permission flow.
+- **Automatic decisions**: Safe commands pass silently; dangerous ones are blocked; recognized risky ones request review; unrecognized commands defer to the agent's own permission flow.
 - **Compound command parsing**: Handles `&&`, `||`, `;`, `|` chains -- every segment is evaluated
 - **Wrapper extraction**: Sees through `nix develop`, `docker run`, `sudo`, inline env vars
 - **Trust zones**: Classifies binaries as system, user, project, or unknown by path
@@ -15,7 +15,7 @@ Policy-driven permission control for AI coding agents. cmdguard evaluates shell 
 - **Exclusion tables**: Surgically block specific subcommands without rewriting allow rules
 - **Base + user separation**: Shipped policies update cleanly; your customizations are never overwritten
 - **Project-local rules**: Per-project policies in `.cmdguard/`
-- **Fail-safe**: Commands cmdguard cannot parse or that error during evaluation default to `ask`.
+- **Conservative evaluation**: Commands cmdguard cannot parse default to `ask`; each agent adapter maps that result to the capabilities of its hook protocol.
 
 ## Quick Start
 
@@ -36,7 +36,8 @@ curl -L -o /tmp/cmdguard.tar.gz \
 mkdir -p ~/.local/bin
 tar xzf /tmp/cmdguard.tar.gz -C ~/.local/bin
 cmdguard base sync       # populate ~/.config/cmdguard/{base,policies}/
-cmdguard hook install    # register in ~/.claude/settings.json
+cmdguard hook install    # Claude Code: ~/.claude/settings.json
+# Or: cmdguard hook install --target codex  # Codex: ~/.codex/hooks.json
 ```
 
 For other platforms (e.g. Linux aarch64), build from source.
@@ -62,7 +63,8 @@ Or via cargo directly:
 ```bash
 cargo install --git https://github.com/danielunderwood/cmdguard
 cmdguard base sync
-cmdguard hook install
+cmdguard hook install                  # Claude Code (default)
+# Or: cmdguard hook install --target codex
 ```
 
 [releases]: https://github.com/danielunderwood/cmdguard/releases
@@ -130,19 +132,20 @@ cmdguard receives the command string from the agent hook, then:
 
 ### Decisions
 
-| Decision | Priority | Behavior |
-|----------|----------|----------|
-| `deny`   | 100      | Block the command, agent sees the reason |
-| `ask`    | 50       | Prompt the user for confirmation |
-| `allow`  | 25       | Silent pass, no prompt |
-| `defer`  | 10       | No decision: cmdguard emits nothing and lets Claude Code's normal permission flow (including auto-mode classifier) decide. This is the default for commands no rule matches. |
+| Decision | Priority | Claude Code | Codex |
+|----------|----------|-------------|-------|
+| `deny`   | 100      | Block in `PreToolUse` | Block in `PreToolUse` or `PermissionRequest` |
+| `ask`    | 50       | Prompt from `PreToolUse` | No hook decision; preserve a normal Codex approval prompt if one occurs |
+| `allow`  | 25       | Allow from `PreToolUse` | Fall through in `PreToolUse`; allow an actual `PermissionRequest` |
+| `defer`  | 10       | No hook output; use Claude Code's normal permission flow | No hook decision; use Codex's sandbox and approval policy |
 
-By default, a command no rule matches **defers** — cmdguard stays silent
-and Claude Code applies its own permission flow. Set `defer_mode = "prompt"`
+By default, a command no rule matches **defers** -- cmdguard stays silent
+and the agent applies its own permission flow. Set `defer_mode = "prompt"`
 in `~/.config/cmdguard/commands.ncl` (or `CMDGUARD_DEFER_MODE=prompt`) to
-instead force a user prompt for unmatched commands — useful when stacking
-cmdguard with other PreToolUse hooks and you want cmdguard to remain a
-backstop. Commands cmdguard cannot parse still prompt (`ask`) regardless.
+instead produce an `ask` policy result for unmatched commands. This forces a
+Claude Code prompt, but Codex `PreToolUse` cannot force a prompt and therefore
+still falls through unless Codex independently raises `PermissionRequest`.
+Commands cmdguard cannot parse also produce `ask`.
 
 When multiple rules match, the highest priority wins. Override with explicit `"priority": N`.
 
@@ -228,6 +231,27 @@ rules["ask_force_push"] := ask("Force push requires confirmation") if {
 ```
 
 The `allow()`, `deny()`, and `ask()` helpers from stdlib set the default priorities. Use `allow_at(reason, priority)`, `deny_at()`, and `ask_at()` to set custom priorities.
+
+### Codex Hooks and Sandboxing
+
+Install the Codex integration with:
+
+```bash
+cmdguard hook install --target codex
+```
+
+This registers Bash matchers for both `PreToolUse` and `PermissionRequest` in
+`~/.codex/hooks.json`. `PreToolUse` blocks cmdguard `deny` decisions before the
+tool call. Other decisions emit nothing at this stage, so Codex still applies
+its configured sandbox and approval policy. If Codex is about to request
+approval, `PermissionRequest` lets cmdguard allow a policy `allow`, deny a
+policy `deny`, or leave `ask`/`defer` to the normal prompt.
+
+Codex does not currently support `permissionDecision: "ask"` from
+`PreToolUse`. Consequently, a cmdguard `ask` cannot create a prompt for a
+command Codex would otherwise run without approval; it preserves a prompt only
+when Codex's own permission flow raises one. See the [security model](docs/security-model.md)
+for the resulting trust boundary.
 
 ### Claude Code Auto Mode
 
@@ -355,7 +379,11 @@ cmdguard status
 # Manage hook registration
 cmdguard hook install                          # Register in ~/.claude/settings.json
 cmdguard hook uninstall
-cmdguard hook status
+cmdguard hook status                           # Show Claude Code and Codex status
+cmdguard hook status --target claude           # Check only Claude Code
+cmdguard hook install --target codex           # Register both hooks in ~/.codex/hooks.json
+cmdguard hook uninstall --target codex
+cmdguard hook status --target codex            # Check only Codex
 
 # Validate Nickel configuration
 cmdguard validate

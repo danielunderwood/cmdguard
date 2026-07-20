@@ -2,11 +2,11 @@
 name = "cmdguard"
 version = "1.2.2"
 edition = "2021"
-description = "Policy-driven permission control for AI coding agents (Claude Code PreToolUse hook)"
+description = "Policy-driven shell command control for Claude Code and Codex hooks"
 license = "MIT"
 repository = "https://github.com/danielunderwood/cmdguard"
 readme = "README.md"
-keywords = ["claude", "agent", "policy", "rego", "security"]
+keywords = ["claude", "codex", "agent", "policy", "rego"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]

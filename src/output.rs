@@ -19,40 +19,88 @@ impl Decision {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookEvent {
+    PreToolUse,
+    PermissionRequest,
+}
+
+impl HookEvent {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "PreToolUse" => Some(Self::PreToolUse),
+            "PermissionRequest" => Some(Self::PermissionRequest),
+            _ => None,
+        }
+    }
+}
+
+/// A policy outcome before it is rendered for a specific agent hook protocol.
+#[derive(Debug)]
 pub struct HookOutput {
-    pub hook_specific_output: HookSpecificOutput,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_message: Option<String>,
-    // When true, the hook should emit NOTHING on stdout (exit 0) so Claude
-    // Code's normal permission flow / auto-mode classifier decides. Not
-    // serialized — it controls whether we serialize at all.
-    #[serde(skip)]
-    pub silent: bool,
+    decision: Decision,
+    reason: Option<String>,
+    // A winning defer can explicitly request no output in Claude's protocol.
+    // Codex rendering decides fallthrough from the decision and event instead.
+    silent: bool,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookSpecificOutput {
-    pub hook_event_name: String,
-    pub permission_decision: String,
+struct ClaudeWireOutput<'a> {
+    hook_specific_output: ClaudePreToolUseOutput<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_decision_reason: Option<String>,
+    system_message: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudePreToolUseOutput<'a> {
+    hook_event_name: &'static str,
+    permission_decision: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_input: Option<serde_json::Value>,
+    permission_decision_reason: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPreToolUseWireOutput<'a> {
+    hook_specific_output: CodexPreToolUseOutput<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPreToolUseOutput<'a> {
+    hook_event_name: &'static str,
+    permission_decision: &'static str,
+    permission_decision_reason: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPermissionRequestWireOutput<'a> {
+    hook_specific_output: CodexPermissionRequestOutput<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPermissionRequestOutput<'a> {
+    hook_event_name: &'static str,
+    decision: CodexPermissionDecision<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct CodexPermissionDecision<'a> {
+    behavior: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<&'a str>,
 }
 
 impl HookOutput {
     pub fn new(decision: Decision, reason: Option<String>) -> Self {
-        HookOutput {
-            hook_specific_output: HookSpecificOutput {
-                hook_event_name: "PreToolUse".to_string(),
-                permission_decision: decision.as_str().to_string(),
-                permission_decision_reason: reason.clone(),
-                updated_input: None,
-            },
-            system_message: reason,
+        Self {
+            decision,
+            reason,
             silent: false,
         }
     }
@@ -75,8 +123,8 @@ impl HookOutput {
         Self::new(Decision::Ask, Some(reason.to_string()))
     }
 
-    /// A "no decision" output: emits nothing on stdout (exit 0) so Claude
-    /// Code's normal permission flow handles the command.
+    /// A no-decision outcome for Claude: emit nothing so its normal
+    /// permission flow handles the command.
     pub fn defer() -> Self {
         let mut out = Self::new(Decision::Defer, None);
         out.silent = true;
@@ -87,21 +135,84 @@ impl HookOutput {
         self.silent
     }
 
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| {
-            r#"{"hookSpecificOutput":{"permissionDecision":"ask"}}"#.to_string()
+    /// Render the existing Claude Code PreToolUse protocol.
+    pub fn render_claude(&self) -> Option<String> {
+        if self.silent {
+            return None;
+        }
+
+        let output = ClaudeWireOutput {
+            hook_specific_output: ClaudePreToolUseOutput {
+                hook_event_name: "PreToolUse",
+                permission_decision: self.decision.as_str(),
+                permission_decision_reason: self.reason.as_deref(),
+            },
+            system_message: self.reason.as_deref(),
+        };
+        Some(serde_json::to_string(&output).expect("Claude hook output is serializable"))
+    }
+
+    pub fn render_claude_pretty(&self) -> Option<String> {
+        self.render_claude().map(|json| {
+            let value: serde_json::Value =
+                serde_json::from_str(&json).expect("rendered Claude output is valid JSON");
+            serde_json::to_string_pretty(&value).expect("Claude hook output is serializable")
         })
     }
 
-    /// Get the decision from this output
+    /// Render Codex's event-specific hook protocol.
+    ///
+    /// PreToolUse only receives an explicit deny. Allow, ask, and defer all
+    /// fall through so Codex can apply its sandbox and approval policy.
+    /// PermissionRequest receives allow/deny decisions; ask and defer leave
+    /// the normal approval prompt in place.
+    pub fn render_codex(&self, event: HookEvent) -> Option<String> {
+        match (event, self.decision) {
+            (HookEvent::PreToolUse, Decision::Deny) => {
+                let reason = self
+                    .reason
+                    .as_deref()
+                    .unwrap_or("Blocked by cmdguard policy");
+                let output = CodexPreToolUseWireOutput {
+                    hook_specific_output: CodexPreToolUseOutput {
+                        hook_event_name: "PreToolUse",
+                        permission_decision: "deny",
+                        permission_decision_reason: reason,
+                    },
+                };
+                Some(serde_json::to_string(&output).expect("Codex hook output is serializable"))
+            }
+            (HookEvent::PermissionRequest, Decision::Allow) => {
+                let output = CodexPermissionRequestWireOutput {
+                    hook_specific_output: CodexPermissionRequestOutput {
+                        hook_event_name: "PermissionRequest",
+                        decision: CodexPermissionDecision {
+                            behavior: "allow",
+                            message: None,
+                        },
+                    },
+                };
+                Some(serde_json::to_string(&output).expect("Codex hook output is serializable"))
+            }
+            (HookEvent::PermissionRequest, Decision::Deny) => {
+                let output = CodexPermissionRequestWireOutput {
+                    hook_specific_output: CodexPermissionRequestOutput {
+                        hook_event_name: "PermissionRequest",
+                        decision: CodexPermissionDecision {
+                            behavior: "deny",
+                            message: self.reason.as_deref(),
+                        },
+                    },
+                };
+                Some(serde_json::to_string(&output).expect("Codex hook output is serializable"))
+            }
+            _ => None,
+        }
+    }
+
     #[cfg(test)]
     pub fn decision(&self) -> Decision {
-        match self.hook_specific_output.permission_decision.as_str() {
-            "allow" => Decision::Allow,
-            "deny" => Decision::Deny,
-            "defer" => Decision::Defer,
-            _ => Decision::Ask,
-        }
+        self.decision
     }
 }
 
@@ -110,43 +221,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_allow_output() {
-        let output = HookOutput::allow();
-        let json = output.to_json();
+    fn claude_allow_output() {
+        let json = HookOutput::allow().render_claude().unwrap();
         assert!(json.contains(r#""permissionDecision":"allow""#));
         assert!(!json.contains("systemMessage"));
     }
 
     #[test]
-    fn test_deny_output() {
-        let output = HookOutput::deny("blocked by policy");
-        let json = output.to_json();
+    fn claude_deny_output() {
+        let json = HookOutput::deny("blocked by policy")
+            .render_claude()
+            .unwrap();
         assert!(json.contains(r#""permissionDecision":"deny""#));
         assert!(json.contains(r#""systemMessage":"blocked by policy""#));
     }
 
     #[test]
-    fn test_ask_output() {
-        let output = HookOutput::ask();
-        let json = output.to_json();
+    fn claude_ask_output() {
+        let json = HookOutput::ask().render_claude().unwrap();
         assert!(json.contains(r#""permissionDecision":"ask""#));
     }
 
     #[test]
-    fn test_decision_defer_as_str() {
-        assert_eq!(Decision::Defer.as_str(), "defer");
+    fn claude_defer_is_silent() {
+        assert!(HookOutput::defer().render_claude().is_none());
     }
 
     #[test]
-    fn test_defer_output_is_silent() {
-        let output = HookOutput::defer();
-        assert!(output.is_silent());
+    fn codex_pre_tool_use_only_emits_deny() {
+        assert!(HookOutput::allow()
+            .render_codex(HookEvent::PreToolUse)
+            .is_none());
+        assert!(HookOutput::ask()
+            .render_codex(HookEvent::PreToolUse)
+            .is_none());
+        assert!(HookOutput::defer()
+            .render_codex(HookEvent::PreToolUse)
+            .is_none());
+
+        let json = HookOutput::deny("blocked")
+            .render_codex(HookEvent::PreToolUse)
+            .unwrap();
+        assert!(json.contains(r#""hookEventName":"PreToolUse""#));
+        assert!(json.contains(r#""permissionDecision":"deny""#));
     }
 
     #[test]
-    fn test_non_defer_output_is_not_silent() {
-        assert!(!HookOutput::deny("x").is_silent());
-        assert!(!HookOutput::allow().is_silent());
-        assert!(!HookOutput::ask().is_silent());
+    fn codex_permission_request_emits_allow_and_deny() {
+        let allow = HookOutput::allow()
+            .render_codex(HookEvent::PermissionRequest)
+            .unwrap();
+        assert!(allow.contains(r#""behavior":"allow""#));
+
+        let deny = HookOutput::deny("blocked")
+            .render_codex(HookEvent::PermissionRequest)
+            .unwrap();
+        assert!(deny.contains(r#""behavior":"deny""#));
+        assert!(deny.contains(r#""message":"blocked""#));
+
+        assert!(HookOutput::ask()
+            .render_codex(HookEvent::PermissionRequest)
+            .is_none());
+        assert!(HookOutput::defer()
+            .render_codex(HookEvent::PermissionRequest)
+            .is_none());
     }
 }

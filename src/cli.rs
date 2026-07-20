@@ -1,9 +1,9 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "cmdguard")]
-#[command(about = "Policy-driven permission control for Claude Code")]
+#[command(about = "Policy-driven permission control for AI coding agents")]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]
@@ -84,7 +84,7 @@ pub enum Commands {
     /// Print version information
     Version,
 
-    /// Manage Claude Code hook registration
+    /// Manage coding-agent hook registration
     Hook {
         #[command(subcommand)]
         action: HookAction,
@@ -106,23 +106,71 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum HookAction {
-    /// Register cmdguard as a PreToolUse hook
-    Install,
+    /// Register cmdguard in the selected agent's hook configuration
+    Install {
+        /// Agent hook protocol to install
+        #[arg(long, value_enum, default_value_t = HookTarget::Claude)]
+        target: HookTarget,
+    },
     /// Remove cmdguard from hooks
-    Uninstall,
-    /// Check if the hook is registered
-    Status,
+    Uninstall {
+        /// Agent hook protocol to uninstall
+        #[arg(long, value_enum, default_value_t = HookTarget::Claude)]
+        target: HookTarget,
+    },
+    /// Show hook registration status
+    Status {
+        /// Agent hook protocol to inspect (omit to show all targets)
+        #[arg(long, value_enum)]
+        target: Option<HookTarget>,
+    },
     /// Read a hook payload from stdin and emit a permission decision.
-    /// Used by Claude Code's PreToolUse hook integration.
     Run {
         /// Policy directory (default: ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
+
+        /// Agent hook protocol that supplied the payload
+        #[arg(long, value_enum, default_value_t = HookTarget::Claude)]
+        target: HookTarget,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HookTarget {
+    Claude,
+    Codex,
 }
 
 #[derive(Subcommand)]
 pub enum BaseAction {
     /// Write embedded base policies to ~/.config/cmdguard/base/
     Sync,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hook_status_without_target_requests_overview() {
+        let cli = Cli::try_parse_from(["cmdguard", "hook", "status"]).unwrap();
+        match cli.command {
+            Some(Commands::Hook {
+                action: HookAction::Status { target },
+            }) => assert_eq!(target, None),
+            _ => panic!("expected hook status command"),
+        }
+    }
+
+    #[test]
+    fn hook_status_accepts_specific_target() {
+        let cli = Cli::try_parse_from(["cmdguard", "hook", "status", "--target", "codex"]).unwrap();
+        match cli.command {
+            Some(Commands::Hook {
+                action: HookAction::Status { target },
+            }) => assert_eq!(target, Some(HookTarget::Codex)),
+            _ => panic!("expected hook status command"),
+        }
+    }
 }
