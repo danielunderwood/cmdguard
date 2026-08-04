@@ -368,6 +368,7 @@ impl<'a> CommandEvaluator<'a> {
 mod tests {
     use super::*;
     use crate::parser::parse_command;
+    use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -515,5 +516,128 @@ mod tests {
 
         // With no policies + Prompt mode, should return Ask (no rule matched)
         assert_eq!(result.decision(), Decision::Ask);
+    }
+
+    #[test]
+    fn test_multiline_curl_policy_rejects_extra_urls_and_indirection() {
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let policy_dir = TempDir::new().unwrap();
+        let policy_path = policy_dir.path().join("localhost-curl.rego");
+        fs::write(
+            &policy_path,
+            r#"
+package cmdguard
+
+import rego.v1
+
+curl_has_url if {
+	some url in object.get(input.positional, "url", [])
+}
+
+curl_has_url if {
+	some url in object.get(input.parsed_flags, "url", [])
+}
+
+curl_urls_allowed if {
+	every url in object.get(input.positional, "url", []) {
+		regex.match(`^http://localhost:3000($|/)`, url.raw)
+	}
+	every url in object.get(input.parsed_flags, "url", []) {
+		regex.match(`^http://localhost:3000($|/)`, url)
+	}
+}
+
+curl_uses_destination_indirection if {
+	some flag in {
+		"location",
+		"location_trusted",
+		"config",
+		"connect_to",
+		"resolve",
+		"proxy",
+		"preproxy",
+		"unix_socket",
+		"abstract_unix_socket",
+	}
+	object.get(input.parsed_flags, flag, false) != false
+}
+
+rules["allow_localhost_curl"] := allow_at("Allow localhost curl", 30) if {
+	input.binary_name == "curl"
+	curl_has_url
+	curl_urls_allowed
+	not curl_uses_destination_indirection
+}
+"#,
+        )
+        .unwrap();
+
+        let mut engine = PolicyEngine::new();
+        engine.load_policies_with_layout(&config_dir).unwrap();
+        engine.load_policy_file(&policy_path).unwrap();
+
+        let mut nickel_config = NickelConfig::load(&config_dir);
+        let mut command_defs = CommandDefinitions::builtin();
+        command_defs.merge(nickel_config.get_command_definitions());
+
+        let cwd = "/tmp";
+        let cwd_path = PathBuf::from(cwd);
+        let context = create_test_context(cwd, &cwd_path);
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
+
+        let cases = [
+            (
+                "cd /tmp && curl -s -X POST \\\n  http://localhost:3000/file_intents \\\n  -H 'Content-Type: application/json' \\\n  -d '{}' | jq -r '.error // \"declared\"'",
+                Decision::Allow,
+            ),
+            (
+                "curl http://localhost:3000/allowed https://external.example",
+                Decision::Ask,
+            ),
+            (
+                "curl --url http://localhost:3000/allowed --next --url https://external.example",
+                Decision::Ask,
+            ),
+            (
+                "curl http://localhost:3000/allowed --url https://external.example",
+                Decision::Ask,
+            ),
+            (
+                "curl --url http://localhost:3000/allowed",
+                Decision::Allow,
+            ),
+            (
+                "curl --url --next http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --url -external http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --config=/tmp/evil.curlrc http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -K/tmp/evil.curlrc http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --connect-to=localhost:3000:external.example:80 http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -L http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            ("curl -s -X POST", Decision::Ask),
+        ];
+
+        for (command, expected) in cases {
+            let parsed = parse_command(command);
+            assert!(!parsed.has_errors, "unexpected parse error for {command}");
+            let result = evaluator.resolve_compound(&parsed.commands, &context);
+            assert_eq!(result.decision, expected, "unexpected result for {command}");
+        }
     }
 }

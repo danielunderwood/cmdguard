@@ -941,6 +941,152 @@ mod tests {
     }
 
     #[test]
+    fn test_builtin_curl_models_multiline_and_multiple_urls() {
+        use crate::command_defs::{CommandDefinitions, FlagType};
+        use crate::command_parser::{self, FlagValue};
+        use crate::tokenizer::tokenize;
+
+        let config_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let config = NickelConfig::load(&config_path);
+        let mut definitions = CommandDefinitions::builtin();
+        definitions.merge(config.get_command_definitions());
+
+        let curl = definitions.get("curl").expect("curl builtin definition");
+        assert_eq!(curl.positional.len(), 1);
+        assert_eq!(curl.positional[0].name, "url");
+        assert!(curl.positional[0].variadic);
+        assert!(!curl.positional[0].last);
+        assert_eq!(curl.flags["url"].flag_type, FlagType::Repeatable);
+        assert_eq!(curl.flags["next"].flag_type, FlagType::Boolean);
+        assert!(curl.flags["next"].short.contains(&"-:".to_string()));
+
+        let tokens = tokenize(
+            "curl -s -X POST https://one.example \\\n  -H 'Content-Type: application/json' \\\n  -d '{}' https://two.example",
+        )
+        .unwrap();
+        assert!(!tokens.iter().any(String::is_empty));
+
+        let parsed = command_parser::parse_command(&tokens, &definitions, None);
+        let urls = parsed
+            .positional_args
+            .iter()
+            .find(|arg| arg.name == "url")
+            .expect("bare curl URLs");
+        assert_eq!(
+            urls.values
+                .iter()
+                .map(|value| value.raw.as_str())
+                .collect::<Vec<_>>(),
+            vec!["https://one.example", "https://two.example"]
+        );
+        assert!(parsed.positional_args.iter().all(|arg| arg.name != "args"));
+        assert_eq!(
+            parsed.parsed_flags.get("header"),
+            Some(&FlagValue::Array(vec![
+                "Content-Type: application/json".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_builtin_curl_models_repeated_url_and_next() {
+        use crate::command_defs::CommandDefinitions;
+        use crate::command_parser::{self, FlagValue};
+        use crate::tokenizer::tokenize;
+
+        let config_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let config = NickelConfig::load(&config_path);
+        let mut definitions = CommandDefinitions::builtin();
+        definitions.merge(config.get_command_definitions());
+
+        let tokens = tokenize(
+            "curl --url https://one.example -: --url https://two.example https://three.example",
+        )
+        .unwrap();
+        let parsed = command_parser::parse_command(&tokens, &definitions, None);
+
+        assert_eq!(
+            parsed.parsed_flags.get("url"),
+            Some(&FlagValue::Array(vec![
+                "https://one.example".to_string(),
+                "https://two.example".to_string()
+            ]))
+        );
+        assert_eq!(
+            parsed.parsed_flags.get("next"),
+            Some(&FlagValue::Bool(true))
+        );
+        let bare_urls = parsed
+            .positional_args
+            .iter()
+            .find(|arg| arg.name == "url")
+            .expect("bare curl URLs");
+        assert_eq!(bare_urls.values.len(), 1);
+        assert_eq!(bare_urls.values[0].raw, "https://three.example");
+    }
+
+    #[test]
+    fn test_builtin_curl_required_values_can_start_with_dash() {
+        use crate::command_defs::CommandDefinitions;
+        use crate::command_parser::{self, FlagValue};
+        use crate::tokenizer::tokenize;
+
+        let config_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let config = NickelConfig::load(&config_path);
+        let mut definitions = CommandDefinitions::builtin();
+        definitions.merge(config.get_command_definitions());
+
+        let parsed = command_parser::parse_command(
+            &tokenize("curl --url --next http://localhost:3000/allowed").unwrap(),
+            &definitions,
+            None,
+        );
+        assert_eq!(
+            parsed.parsed_flags.get("url"),
+            Some(&FlagValue::Array(vec!["--next".to_string()]))
+        );
+        assert!(!parsed.parsed_flags.contains_key("next"));
+
+        let parsed = command_parser::parse_command(
+            &tokenize("curl --url -external http://localhost:3000/allowed").unwrap(),
+            &definitions,
+            None,
+        );
+        assert_eq!(
+            parsed.parsed_flags.get("url"),
+            Some(&FlagValue::Array(vec!["-external".to_string()]))
+        );
+
+        let parsed = command_parser::parse_command(
+            &tokenize("curl -X -GET http://localhost:3000/allowed").unwrap(),
+            &definitions,
+            None,
+        );
+        assert_eq!(
+            parsed.parsed_flags.get("request"),
+            Some(&FlagValue::String("-GET".to_string()))
+        );
+
+        let parsed = command_parser::parse_command(
+            &tokenize("curl -sXPOST -K/tmp/curl.conf http://localhost:3000/allowed").unwrap(),
+            &definitions,
+            None,
+        );
+        assert_eq!(
+            parsed.parsed_flags.get("request"),
+            Some(&FlagValue::String("POST".to_string()))
+        );
+        assert_eq!(
+            parsed.parsed_flags.get("config"),
+            Some(&FlagValue::Array(vec!["/tmp/curl.conf".to_string()]))
+        );
+        assert_eq!(
+            parsed.parsed_flags.get("silent"),
+            Some(&FlagValue::Bool(true))
+        );
+    }
+
+    #[test]
     fn test_get_command_definitions_with_subcommands() {
         let content = r#"
 {

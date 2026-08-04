@@ -52,6 +52,67 @@ rules["deny_psql_drop"] := deny("DROP statements blocked in psql") if {
 
 ---
 
+## Curl URLs
+
+Allow curl only when every URL written on the command line targets a local
+service. Bare URLs are records in `input.positional.url`; values supplied with
+repeatable `--url` flags are strings in `input.parsed_flags.url`.
+
+```rego
+package cmdguard
+
+import rego.v1
+
+curl_has_url if {
+    some url in object.get(input.positional, "url", [])
+}
+
+curl_has_url if {
+    some url in object.get(input.parsed_flags, "url", [])
+}
+
+curl_urls_allowed if {
+    every url in object.get(input.positional, "url", []) {
+        regex.match(`^http://localhost:3000($|/)`, url.raw)
+    }
+    every url in object.get(input.parsed_flags, "url", []) {
+        regex.match(`^http://localhost:3000($|/)`, url)
+    }
+}
+
+curl_uses_destination_indirection if {
+    some flag in {
+        "location",
+        "location_trusted",
+        "config",
+        "connect_to",
+        "resolve",
+        "proxy",
+        "preproxy",
+        "unix_socket",
+        "abstract_unix_socket",
+    }
+    object.get(input.parsed_flags, flag, false) != false
+}
+
+rules["allow_localhost_curl"] := allow_at("Allow localhost curl", 30) if {
+    input.binary_name == "curl"
+    curl_has_url
+    curl_urls_allowed
+    not curl_uses_destination_indirection
+}
+```
+
+The explicit `curl_has_url` check prevents an empty `every` expression from
+allowing curl without a URL. Validate both URL collections so a second bare URL
+or repeated `--url` cannot bypass the rule. This checks URLs present in the
+command only. The recipe rejects the common options that redirect or remap the
+destination, but curl can also load `~/.curlrc` implicitly. Requiring `-q` or
+`--disable` as the first curl option disables that file when the policy must
+constrain the runtime connection rather than only the declared URLs.
+
+---
+
 ## Jira CLI
 
 Allow read-only Jira operations. The [go-jira](https://github.com/ankitpokhrel/jira-cli) CLI uses positional subcommands.
