@@ -519,10 +519,11 @@ mod tests {
     }
 
     #[test]
-    fn test_multiline_curl_policy_rejects_extra_urls_and_indirection() {
+    fn test_allowed_curl_patterns_reject_extra_urls_and_indirection() {
         let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
         let policy_dir = TempDir::new().unwrap();
         let policy_path = policy_dir.path().join("localhost-curl.rego");
+        let second_policy_path = policy_dir.path().join("loopback-curl.rego");
         fs::write(
             &policy_path,
             r#"
@@ -530,44 +531,18 @@ package cmdguard
 
 import rego.v1
 
-curl_has_url if {
-	some url in object.get(input.positional, "url", [])
-}
+allowed_curl_patterns contains `^http://localhost:3000($|/)`
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &second_policy_path,
+            r#"
+package cmdguard
 
-curl_has_url if {
-	some url in object.get(input.parsed_flags, "url", [])
-}
+import rego.v1
 
-curl_urls_allowed if {
-	every url in object.get(input.positional, "url", []) {
-		regex.match(`^http://localhost:3000($|/)`, url.raw)
-	}
-	every url in object.get(input.parsed_flags, "url", []) {
-		regex.match(`^http://localhost:3000($|/)`, url)
-	}
-}
-
-curl_uses_destination_indirection if {
-	some flag in {
-		"location",
-		"location_trusted",
-		"config",
-		"connect_to",
-		"resolve",
-		"proxy",
-		"preproxy",
-		"unix_socket",
-		"abstract_unix_socket",
-	}
-	object.get(input.parsed_flags, flag, false) != false
-}
-
-rules["allow_localhost_curl"] := allow_at("Allow localhost curl", 30) if {
-	input.binary_name == "curl"
-	curl_has_url
-	curl_urls_allowed
-	not curl_uses_destination_indirection
-}
+allowed_curl_patterns contains `^http://127\.0\.0\.1:3000($|/)`
 "#,
         )
         .unwrap();
@@ -575,6 +550,7 @@ rules["allow_localhost_curl"] := allow_at("Allow localhost curl", 30) if {
         let mut engine = PolicyEngine::new();
         engine.load_policies_with_layout(&config_dir).unwrap();
         engine.load_policy_file(&policy_path).unwrap();
+        engine.load_policy_file(&second_policy_path).unwrap();
 
         let mut nickel_config = NickelConfig::load(&config_dir);
         let mut command_defs = CommandDefinitions::builtin();
@@ -606,6 +582,11 @@ rules["allow_localhost_curl"] := allow_at("Allow localhost curl", 30) if {
                 "curl --url http://localhost:3000/allowed",
                 Decision::Allow,
             ),
+            ("curl http://127.0.0.1:3000/allowed", Decision::Allow),
+            (
+                "curl http://localhost:3000.evil.example/blocked",
+                Decision::Ask,
+            ),
             (
                 "curl --url --next http://localhost:3000/allowed",
                 Decision::Ask,
@@ -628,6 +609,10 @@ rules["allow_localhost_curl"] := allow_at("Allow localhost curl", 30) if {
             ),
             (
                 "curl -L http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl http://localhost:3000/allowed > /tmp/curl-output",
                 Decision::Ask,
             ),
             ("curl -s -X POST", Decision::Ask),

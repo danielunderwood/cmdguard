@@ -16,6 +16,9 @@ import rego.v1
 # matching ask rules:
 #   allowed_redirect_targets["/dev/null"] := true
 #
+# Allow curl when every declared URL matches an anchored regular expression:
+#   allowed_curl_patterns contains `^http://localhost:3000($|/)`
+#
 # Add a conditional rule:
 #   rules["my_rule"] := ask("Please confirm") if {
 #       input.binary_name == "dangerous-tool"

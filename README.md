@@ -191,7 +191,19 @@ import rego.v1
 allowed_with_args["make"] := {"build", "test", "clean", "lint"}
 ```
 
-These are automatically dispatched by stdlib. No rule body needed.
+For curl, contribute anchored regular expressions to an incremental set:
+
+```rego
+allowed_curl_patterns contains `^http://localhost:3000($|/)`
+```
+
+Curl is allowed only when every bare URL and every `--url` value matches a
+pattern. Destination-changing options such as `-L`, `--config`,
+`--connect-to`, proxies, and Unix sockets continue to ask. Other safety asks,
+including shell output redirection, also retain precedence.
+
+These are automatically dispatched by the base policies. No rule body or
+custom priority is needed.
 
 ### Exclusion Tables
 
