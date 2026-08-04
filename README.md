@@ -163,6 +163,12 @@ each invocation, so the next command will use the updated rules. To
 sanity-check, run `cmdguard eval "<some command>"` (or
 `cmdguard test path/to/tests.yaml`) before relying on the rule.
 
+Prefer this order when tuning base policy behavior:
+
+1. Use extension/exclusion tables for supported base-policy knobs.
+2. Add custom rules for local logic.
+3. Use custom priorities only as an expert escape hatch.
+
 ### Declarative Tables (Simplest)
 
 For commands with subcommands (git, cargo, docker, etc.), add entries to the allow-list table:
@@ -206,6 +212,22 @@ Similarly for first-argument patterns:
 denied_with_args["npx"] := {"some-dangerous-tool"}
 ```
 
+### Extension Tables
+
+Some base ask rules expose scoped extension tables so you can tune one
+concern without writing a higher-priority allow that suppresses unrelated
+rules. For example, allow shell output redirects to `/dev/null` while
+still asking for other file-writing redirects and preserving other ask
+rules:
+
+```rego
+package cmdguard
+
+import rego.v1
+
+allowed_redirect_targets["/dev/null"] := true
+```
+
 ### Custom Rules
 
 For conditional logic, write named rules:
@@ -230,7 +252,7 @@ rules["ask_force_push"] := ask("Force push requires confirmation") if {
 }
 ```
 
-The `allow()`, `deny()`, and `ask()` helpers from stdlib set the default priorities. Use `allow_at(reason, priority)`, `deny_at()`, and `ask_at()` to set custom priorities.
+The `allow()`, `deny()`, and `ask()` helpers from stdlib set the default priorities. Use `allow_at(reason, priority)`, `deny_at()`, and `ask_at()` only when you intentionally need custom priority behavior. A high-priority `allow` can suppress unrelated base `ask` rules, so prefer extension tables when one exists. Run `cmdguard lint` after writing custom-priority rules.
 
 ### Codex Hooks and Sandboxing
 
@@ -376,6 +398,10 @@ cmdguard base sync                             # Write/update base policies
 
 # Show loaded policies and tables
 cmdguard status
+
+# Check policies for stale base files and sharp edges
+cmdguard lint
+cmdguard lint --fail-on warning
 
 # Manage hook registration
 cmdguard hook install                          # Register in ~/.claude/settings.json

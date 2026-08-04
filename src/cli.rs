@@ -52,6 +52,17 @@ pub enum Commands {
         policy_dir: Option<PathBuf>,
     },
 
+    /// Check policy configuration for sharp edges
+    Lint {
+        /// Policy directory (default: ~/.config/cmdguard)
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
+
+        /// Minimum severity that should make lint exit non-zero
+        #[arg(long, value_enum, default_value_t = LintFailOn::Error)]
+        fail_on: LintFailOn,
+    },
+
     /// Analyze Python code for dangerous patterns (for debugging)
     AnalyzePython {
         /// Python code to analyze
@@ -102,6 +113,12 @@ pub enum Commands {
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LintFailOn {
+    Error,
+    Warning,
 }
 
 #[derive(Subcommand)]

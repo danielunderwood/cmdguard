@@ -354,12 +354,9 @@ impl PolicyEngine {
         }
     }
 
-    /// Query allowed_subcommands table from policy
-    pub fn query_allowed_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
-        match self
-            .engine
-            .eval_rule("data.cmdguard.allowed_subcommands".to_string())
-        {
+    pub fn query_string_set_table(&mut self, table_name: &str) -> Vec<(String, Vec<String>)> {
+        let rule_name = format!("data.cmdguard.{}", table_name);
+        match self.engine.eval_rule(rule_name) {
             Ok(value) => {
                 let obj = match value.as_object() {
                     Ok(o) => o,
@@ -394,12 +391,9 @@ impl PolicyEngine {
         }
     }
 
-    /// Query denied_subcommands table from policy
-    pub fn query_denied_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
-        match self
-            .engine
-            .eval_rule("data.cmdguard.denied_subcommands".to_string())
-        {
+    pub fn query_boolean_key_table(&mut self, table_name: &str) -> Vec<String> {
+        let rule_name = format!("data.cmdguard.{}", table_name);
+        match self.engine.eval_rule(rule_name) {
             Ok(value) => {
                 let obj = match value.as_object() {
                     Ok(o) => o,
@@ -407,31 +401,30 @@ impl PolicyEngine {
                 };
 
                 let mut result = vec![];
-                for (binary_val, subcmds_val) in obj.iter() {
-                    if let Ok(binary) = binary_val.as_string() {
-                        let mut subcmds = vec![];
-
-                        // Try to parse as set
-                        if let Ok(set) = subcmds_val.as_set() {
-                            for item in set.iter() {
-                                if let Ok(s) = item.as_string() {
-                                    subcmds.push(s.to_string());
-                                }
-                            }
-                        }
-
-                        if !subcmds.is_empty() {
-                            subcmds.sort();
-                            result.push((binary.to_string(), subcmds));
+                for (key_val, enabled_val) in obj.iter() {
+                    let enabled = enabled_val.as_bool().ok().copied().unwrap_or(false);
+                    if enabled {
+                        if let Ok(key) = key_val.as_string() {
+                            result.push(key.to_string());
                         }
                     }
                 }
 
-                result.sort_by(|a, b| a.0.cmp(&b.0));
+                result.sort();
                 result
             }
             Err(_) => vec![],
         }
+    }
+
+    /// Query allowed_subcommands table from policy
+    pub fn query_allowed_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
+        self.query_string_set_table("allowed_subcommands")
+    }
+
+    /// Query denied_subcommands table from policy
+    pub fn query_denied_subcommands(&mut self) -> Vec<(String, Vec<String>)> {
+        self.query_string_set_table("denied_subcommands")
     }
 }
 
@@ -658,6 +651,87 @@ denied_with_args["mytool"] := {"bar"}
             Decision::Allow,
             "denied_with_args must suppress the allow from allowed_with_args"
         );
+    }
+
+    #[test]
+    fn test_allowed_redirect_targets_suppresses_only_redirect_ask() {
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let stdlib =
+            std::fs::read_to_string(config_dir.join("stdlib.rego")).expect("read stdlib.rego");
+        let file_ops =
+            std::fs::read_to_string(config_dir.join("file-ops.rego")).expect("read file-ops.rego");
+        let user_policy = r#"
+package cmdguard
+import rego.v1
+
+allowed_redirect_targets["/dev/null"] := true
+
+rules["ask_other_reason"] := ask("Other ask still wins") if {
+	input.binary_name == "dangerous"
+}
+
+rules["allow_echo"] := allow("Echo allowed") if {
+	input.binary_name == "echo"
+}
+
+rules["allow_dangerous"] := allow("Dangerous allowed") if {
+	input.binary_name == "dangerous"
+}
+"#;
+
+        let mut engine = PolicyEngine::new();
+        engine
+            .engine
+            .add_policy("stdlib.rego".into(), stdlib)
+            .unwrap();
+        engine
+            .engine
+            .add_policy("file-ops.rego".into(), file_ops)
+            .unwrap();
+        engine
+            .engine
+            .add_policy("user.rego".into(), user_policy.into())
+            .unwrap();
+
+        let null_redirect = crate::parser::ShellRedirect {
+            raw: "> /dev/null".to_string(),
+            operator: ">".to_string(),
+            fd: None,
+            target: Some("/dev/null".to_string()),
+            kind: crate::parser::ShellRedirectKind::Write,
+            writes_to_file: true,
+        };
+
+        let mut allowed_input = make_input(vec!["echo", "hi"]);
+        allowed_input.binary_name = Some("echo".to_string());
+        allowed_input.redirections = vec![null_redirect.clone()];
+
+        let result = engine.evaluate(&allowed_input);
+        assert_eq!(result.decision, Decision::Allow);
+        assert_eq!(result.rule.as_deref(), Some("allow_echo"));
+
+        let mut other_ask_input = make_input(vec!["dangerous"]);
+        other_ask_input.binary_name = Some("dangerous".to_string());
+        other_ask_input.redirections = vec![null_redirect];
+
+        let result = engine.evaluate(&other_ask_input);
+        assert_eq!(result.decision, Decision::Ask);
+        assert_eq!(result.rule.as_deref(), Some("ask_other_reason"));
+
+        let mut file_redirect_input = make_input(vec!["echo", "hi"]);
+        file_redirect_input.binary_name = Some("echo".to_string());
+        file_redirect_input.redirections = vec![crate::parser::ShellRedirect {
+            raw: "> out.txt".to_string(),
+            operator: ">".to_string(),
+            fd: None,
+            target: Some("out.txt".to_string()),
+            kind: crate::parser::ShellRedirectKind::Write,
+            writes_to_file: true,
+        }];
+
+        let result = engine.evaluate(&file_redirect_input);
+        assert_eq!(result.decision, Decision::Ask);
+        assert_eq!(result.rule.as_deref(), Some("ask_shell_output_redirection"));
     }
 
     #[test]

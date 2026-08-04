@@ -2,9 +2,16 @@ package cmdguard
 
 import rego.v1
 
+default allowed_redirect_targets := {}
+
+redirect_target_allowed(target) if {
+	allowed_redirect_targets[target]
+}
+
 rules["ask_shell_output_redirection"] := ask("Shell output redirection writes to file - confirm target") if {
 	some redirect in input.redirections
 	redirect.writes_to_file
+	not redirect_target_allowed(redirect.target)
 }
 
 path_record_in_project(path) if {

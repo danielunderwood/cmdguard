@@ -12,6 +12,10 @@ import rego.v1
 # Add an allow rule for a tool not in base:
 #   allowed_with_args["make"] := {"build", "test", "clean"}
 #
+# Allow shell output redirects to specific targets without suppressing other
+# matching ask rules:
+#   allowed_redirect_targets["/dev/null"] := true
+#
 # Add a conditional rule:
 #   rules["my_rule"] := ask("Please confirm") if {
 #       input.binary_name == "dangerous-tool"
