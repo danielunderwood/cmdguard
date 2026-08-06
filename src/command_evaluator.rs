@@ -188,6 +188,7 @@ impl<'a> CommandEvaluator<'a> {
             positional_args: positional_args_json,
             positional: positional_map_json,
             subcommand: parsed_cmd.subcommand,
+            unknown_flags: parsed_cmd.unknown_flags,
             python_analysis,
         };
 

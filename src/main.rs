@@ -638,6 +638,7 @@ fn print_command_evaluation(
             parsed_flags: std::collections::HashMap::new(),
             positional_args: vec![],
             subcommand: None,
+            unknown_flags: vec![],
         }
     };
 
@@ -716,6 +717,7 @@ fn print_command_evaluation(
         positional_args: positional_args_json,
         positional: positional_map_json,
         subcommand: parsed_cmd.subcommand,
+        unknown_flags: parsed_cmd.unknown_flags.clone(),
         python_analysis,
     };
 

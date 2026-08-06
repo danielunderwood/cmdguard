@@ -202,7 +202,10 @@ in
 
     sed = {
       flags = {
-        in_place = { type = "with_optional_arg", short = ["-i"], long = null },
+        # GNU sed accepts --in-place[=SUFFIX]. Leaving the long form undeclared
+        # meant `sed --in-place=.bak f` set no in_place flag, so ask_sed_inplace
+        # never fired and allow_sed_in_pipe treated it as stdout-only.
+        in_place = { type = "with_optional_arg", short = ["-i"], long = "--in-place" },
         expression = arg_flag "-e" null,
         quiet = bool_flag "-n" null,
       },

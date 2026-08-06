@@ -45,6 +45,15 @@ pub struct ParsedCommand {
     pub positional_args: Vec<PositionalArg>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subcommand: Option<String>,
+    /// Flag tokens that matched no entry in the command's definition.
+    ///
+    /// Only populated for commands cmdguard has a definition for; for unknown
+    /// binaries every flag is trivially unrecognized, which is not useful
+    /// signal. Policies that grant a command extra latitude should refuse to do
+    /// so when this is non-empty -- a flag we could not model is a flag whose
+    /// effect we cannot reason about.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_flags: Vec<String>,
 }
 
 impl ParsedCommand {
@@ -69,6 +78,7 @@ pub fn parse_command(
             parsed_flags: HashMap::new(),
             positional_args: vec![],
             subcommand: None,
+            unknown_flags: vec![],
         };
     }
 
@@ -107,6 +117,7 @@ pub fn parse_command(
                 parsed_flags: result.parsed_flags,
                 positional_args: result.positional_args,
                 subcommand,
+                unknown_flags: result.unknown_flags,
             };
         }
     }
@@ -249,6 +260,7 @@ fn parse_with_definition_skip_token(
 ) -> ParsedCommand {
     let mut parsed_flags: HashMap<String, FlagValue> = HashMap::new();
     let mut positional: Vec<String> = vec![];
+    let mut unknown_flags: Vec<String> = vec![];
     let mut i = 0;
     let mut flags_ended = false;
 
@@ -280,8 +292,13 @@ fn parse_with_definition_skip_token(
         if arg.starts_with("--") {
             let (consumed, flag_name, value, is_repeatable) =
                 parse_long_flag(arg, &args[i + 1..], flags);
-            if let Some(name) = flag_name {
-                insert_flag(&mut parsed_flags, name, value, is_repeatable);
+            match flag_name {
+                Some(name) => insert_flag(&mut parsed_flags, name, value, is_repeatable),
+                // The token looked like a flag but matched no definition. Record
+                // it rather than dropping it: `--opt=value` in particular used to
+                // vanish entirely, hiding destination- and file-changing options
+                // from every policy that inspects parsed_flags.
+                None => unknown_flags.push(arg.clone()),
             }
             i += consumed;
             continue;
@@ -304,8 +321,9 @@ fn parse_with_definition_skip_token(
 
             let (consumed, flag_name, value, is_repeatable) =
                 parse_short_flag(short, remaining, flags);
-            if let Some(name) = flag_name {
-                insert_flag(&mut parsed_flags, name, value, is_repeatable);
+            match flag_name {
+                Some(name) => insert_flag(&mut parsed_flags, name, value, is_repeatable),
+                None => unknown_flags.push(short.clone()),
             }
             if consumed > 0 {
                 extra_consumed = consumed;
@@ -314,10 +332,14 @@ fn parse_with_definition_skip_token(
         i += 1 + extra_consumed;
     }
 
+    unknown_flags.sort();
+    unknown_flags.dedup();
+
     ParsedCommand {
         parsed_flags,
         positional_args: process_positional_args(positional, positional_defs, project_root),
         subcommand: None,
+        unknown_flags,
     }
 }
 
@@ -879,6 +901,9 @@ fn parse_without_definition(
             }]
         },
         subcommand,
+        // No definition for this binary, so "unrecognized" carries no signal --
+        // every flag would be listed. Policies key off the command being known.
+        unknown_flags: vec![],
     }
 }
 
@@ -1237,6 +1262,66 @@ mod tests {
             Some(&FlagValue::Bool(true))
         );
         assert_eq!(result.positional_args[0].values[0].raw, "HEAD~1");
+    }
+
+    #[test]
+    fn test_unrecognized_equals_flag_is_recorded_not_dropped() {
+        // Regression: `--opt=value` on a *known* command used to be consumed and
+        // silently discarded -- neither a flag nor a positional. Policies that
+        // granted latitude based on parsed_flags were therefore blind to any
+        // option cmdguard had not modelled, including ones that redirect a
+        // request or write a file.
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("rm --no-preserve-root=yes /"), &defs, None);
+
+        assert_eq!(result.unknown_flags, vec!["--no-preserve-root=yes"]);
+        assert!(!result.parsed_flags.contains_key("no-preserve-root"));
+    }
+
+    #[test]
+    fn test_unrecognized_space_form_flag_is_recorded() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("rm --bogus /tmp/x"), &defs, None);
+
+        assert_eq!(result.unknown_flags, vec!["--bogus"]);
+    }
+
+    #[test]
+    fn test_unrecognized_short_flag_is_recorded() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("rm -q /tmp/x"), &defs, None);
+
+        assert_eq!(result.unknown_flags, vec!["-q"]);
+    }
+
+    #[test]
+    fn test_recognized_flags_leave_unknown_flags_empty() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("rm -rf /tmp/x"), &defs, None);
+
+        assert!(
+            result.unknown_flags.is_empty(),
+            "expected no unknown flags, got {:?}",
+            result.unknown_flags
+        );
+        assert_eq!(
+            result.parsed_flags.get("recursive"),
+            Some(&FlagValue::Bool(true))
+        );
+        assert_eq!(
+            result.parsed_flags.get("force"),
+            Some(&FlagValue::Bool(true))
+        );
+    }
+
+    #[test]
+    fn test_unknown_binary_reports_no_unknown_flags() {
+        // For a binary with no definition every flag is trivially unrecognized,
+        // which is noise rather than signal -- policies key off known commands.
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("myapp --whatever=1 -z"), &defs, None);
+
+        assert!(result.unknown_flags.is_empty());
     }
 
     #[test]

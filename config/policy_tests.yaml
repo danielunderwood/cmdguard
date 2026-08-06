@@ -357,6 +357,22 @@ tests:
     command: "sed -i 's/foo/bar/' file.txt"
     expect: ask
 
+  # The long form must be recognized too. While --in-place was undeclared it
+  # parsed as an unknown flag, so ask_sed_inplace never fired.
+  - name: "ask sed --in-place"
+    command: "sed --in-place 's/foo/bar/' file.txt"
+    expect: ask
+
+  - name: "ask sed --in-place with suffix"
+    command: "sed --in-place=.bak 's/foo/bar/' file.txt"
+    expect: ask
+
+  # ...and an in-place edit inside a pipe must not be mistaken for the
+  # stdin -> stdout pattern that allow_sed_in_pipe exists to permit.
+  - name: "ask sed --in-place in a pipe"
+    command: "cat file.txt | sed --in-place=.bak 's/foo/bar/' file.txt"
+    expect: ask
+
   # sed in a pipe just transforms stdin -> stdout; allow without prompting.
   - name: "allow sed in a pipe"
     command: "cat file.txt | sed 's/foo/bar/'"
