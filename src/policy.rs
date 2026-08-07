@@ -3,7 +3,7 @@ use crate::paths::DetectedPath;
 use crate::python_analyzer;
 use regorus::Engine;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
 /// Python code analysis results for PolicyInput
@@ -54,8 +54,7 @@ pub struct PolicyInput {
     /// command in a compound shell expression.
     pub cwd: String,
     /// Nominal cwd candidates derived for this command from shell control flow.
-    pub effective_cwds: Vec<String>,
-    pub effective_cwd_resolution: crate::parser::ResolutionStatus,
+    pub effective_cwd: crate::parser::Resolution<PathBuf>,
     pub project_root: String,
     pub session_id: String,
     // New fields for compound commands
@@ -460,8 +459,7 @@ mod tests {
             paths: vec![],
             redirections: vec![],
             cwd: "/home/user/project".to_string(),
-            effective_cwds: vec!["/home/user/project".to_string()],
-            effective_cwd_resolution: crate::parser::ResolutionStatus::Known,
+            effective_cwd: crate::parser::Resolution::known(PathBuf::from("/home/user/project")),
             project_root: "/home/user/project".to_string(),
             session_id: "test".to_string(),
             chain_position: None,
@@ -720,8 +718,7 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("/dev/null".to_string()),
-            resolved_targets: vec!["/dev/null".to_string()],
-            target_resolution: crate::parser::ResolutionStatus::Known,
+            target_resolution: crate::parser::Resolution::known(PathBuf::from("/dev/null")),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         };
@@ -749,8 +746,9 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("out.txt".to_string()),
-            resolved_targets: vec!["/workspace/not-allowed.txt".to_string()],
-            target_resolution: crate::parser::ResolutionStatus::Known,
+            target_resolution: crate::parser::Resolution::known(PathBuf::from(
+                "/workspace/not-allowed.txt",
+            )),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];
@@ -766,8 +764,12 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("out.txt".to_string()),
-            resolved_targets: vec!["/tmp/out.txt".to_string(), "/workspace/out.txt".to_string()],
-            target_resolution: crate::parser::ResolutionStatus::Ambiguous,
+            target_resolution: crate::parser::Resolution::from_candidates(
+                std::collections::BTreeSet::from([
+                    PathBuf::from("/tmp/out.txt"),
+                    PathBuf::from("/workspace/out.txt"),
+                ]),
+            ),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];
@@ -783,8 +785,12 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("out.txt".to_string()),
-            resolved_targets: vec!["/tmp/out.txt".to_string(), "/other/out.txt".to_string()],
-            target_resolution: crate::parser::ResolutionStatus::Ambiguous,
+            target_resolution: crate::parser::Resolution::from_candidates(
+                std::collections::BTreeSet::from([
+                    PathBuf::from("/tmp/out.txt"),
+                    PathBuf::from("/other/out.txt"),
+                ]),
+            ),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];
@@ -797,8 +803,7 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("$TARGET".to_string()),
-            resolved_targets: vec![],
-            target_resolution: crate::parser::ResolutionStatus::Unknown,
+            target_resolution: crate::parser::Resolution::unknown(),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];

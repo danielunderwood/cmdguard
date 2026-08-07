@@ -6,7 +6,8 @@
 //! - `cmd1 ; cmd2` (sequential)
 //! - `cmd1 | cmd2` (pipeline)
 
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use tree_sitter::{Node, Parser};
@@ -19,6 +20,91 @@ pub enum ResolutionStatus {
     Known,
     Ambiguous,
     Unknown,
+}
+
+/// A value that is exactly known, has a complete set of possible values, or
+/// cannot be resolved safely. The private representation and normalizing
+/// constructors prevent contradictory status/candidate combinations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolution<T: Ord>(ResolutionState<T>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolutionState<T: Ord> {
+    Known(T),
+    Ambiguous(BTreeSet<T>),
+    Unknown,
+}
+
+impl<T: Ord> Resolution<T> {
+    pub fn known(value: T) -> Self {
+        Self(ResolutionState::Known(value))
+    }
+
+    pub fn unknown() -> Self {
+        Self(ResolutionState::Unknown)
+    }
+
+    pub fn from_candidates(candidates: BTreeSet<T>) -> Self {
+        match candidates.len() {
+            0 => Self::unknown(),
+            1 => Self::known(candidates.into_iter().next().expect("one candidate")),
+            _ => Self(ResolutionState::Ambiguous(candidates)),
+        }
+    }
+
+    pub fn status(&self) -> ResolutionStatus {
+        match &self.0 {
+            ResolutionState::Known(_) => ResolutionStatus::Known,
+            ResolutionState::Ambiguous(_) => ResolutionStatus::Ambiguous,
+            ResolutionState::Unknown => ResolutionStatus::Unknown,
+        }
+    }
+
+    pub fn known_value(&self) -> Option<&T> {
+        match &self.0 {
+            ResolutionState::Known(value) => Some(value),
+            ResolutionState::Ambiguous(_) | ResolutionState::Unknown => None,
+        }
+    }
+
+    pub fn candidate_values(&self) -> Option<Vec<T>>
+    where
+        T: Clone,
+    {
+        match &self.0 {
+            ResolutionState::Known(value) => Some(vec![value.clone()]),
+            ResolutionState::Ambiguous(values) => Some(values.iter().cloned().collect()),
+            ResolutionState::Unknown => None,
+        }
+    }
+
+    fn union(&self, other: &Self) -> Self
+    where
+        T: Clone,
+    {
+        let (Some(left), Some(right)) = (self.candidate_values(), other.candidate_values()) else {
+            return Self::unknown();
+        };
+        Self::from_candidates(left.into_iter().chain(right).collect())
+    }
+}
+
+impl Serialize for Resolution<PathBuf> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Resolution", 2)?;
+        state.serialize_field("status", &self.status())?;
+        let candidates: Vec<String> = self
+            .candidate_values()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+        state.serialize_field("candidates", &candidates)?;
+        state.end()
+    }
 }
 
 /// Shell redirection attached to a parsed command.
@@ -35,10 +121,7 @@ pub struct ShellRedirect {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Absolute nominal paths the target may resolve to at execution time.
-    /// Empty when the target is dynamic or the effective cwd is unknown.
-    pub resolved_targets: Vec<String>,
-    /// Confidence in `resolved_targets`.
-    pub target_resolution: ResolutionStatus,
+    pub target_resolution: Resolution<PathBuf>,
     /// Coarse redirection class for policy rules.
     pub kind: ShellRedirectKind,
     /// True when this redirect can write to a filesystem target.
@@ -67,9 +150,7 @@ pub struct ParsedCommand {
     /// preserved for policy evaluation.
     pub redirections: Vec<ShellRedirect>,
     /// Absolute nominal working directories in which this command may run.
-    pub effective_cwds: Vec<String>,
-    /// Confidence in `effective_cwds`.
-    pub effective_cwd_resolution: ResolutionStatus,
+    pub effective_cwd: Resolution<PathBuf>,
     /// Position in the chain (0-indexed)
     pub position: usize,
     /// Total number of commands in the chain
@@ -101,10 +182,7 @@ pub fn parse_command(input: &str, initial_cwd: &Path) -> ParseResult {
                 commands: vec![ParsedCommand {
                     text: input.to_string(),
                     redirections: vec![],
-                    effective_cwds: vec![absolute_initial_cwd(initial_cwd)
-                        .to_string_lossy()
-                        .to_string()],
-                    effective_cwd_resolution: ResolutionStatus::Known,
+                    effective_cwd: Resolution::known(absolute_initial_cwd(initial_cwd)),
                     position: 0,
                     chain_length: 1,
                     next_operator: None,
@@ -118,7 +196,7 @@ pub fn parse_command(input: &str, initial_cwd: &Path) -> ParseResult {
     let has_errors = root.has_error();
 
     let mut analyzer = ShellAnalyzer::new(input);
-    let initial_state = CwdState::one(absolute_initial_cwd(initial_cwd));
+    let initial_state = CwdState::known(absolute_initial_cwd(initial_cwd));
     analyzer.analyze_node(root, initial_state, vec![]);
     let unsupported = analyzer.unsupported;
     let commands = analyzer.finish();
@@ -129,10 +207,7 @@ pub fn parse_command(input: &str, initial_cwd: &Path) -> ParseResult {
             commands: vec![ParsedCommand {
                 text: input.to_string(),
                 redirections: vec![],
-                effective_cwds: vec![absolute_initial_cwd(initial_cwd)
-                    .to_string_lossy()
-                    .to_string()],
-                effective_cwd_resolution: ResolutionStatus::Known,
+                effective_cwd: Resolution::known(absolute_initial_cwd(initial_cwd)),
                 position: 0,
                 chain_length: 1,
                 next_operator: None,
@@ -147,48 +222,7 @@ pub fn parse_command(input: &str, initial_cwd: &Path) -> ParseResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CwdState {
-    Known(BTreeSet<PathBuf>),
-    Unknown,
-}
-
-impl CwdState {
-    fn one(path: PathBuf) -> Self {
-        Self::Known(BTreeSet::from([normalize_path(&path)]))
-    }
-
-    fn union(&self, other: &Self) -> Self {
-        match (self, other) {
-            (Self::Known(left), Self::Known(right)) => {
-                let mut paths = left.clone();
-                paths.extend(right.iter().cloned());
-                Self::Known(paths)
-            }
-            _ => Self::Unknown,
-        }
-    }
-
-    fn descriptor(&self) -> (Vec<String>, ResolutionStatus) {
-        match self {
-            Self::Known(paths) if paths.len() == 1 => (
-                paths
-                    .iter()
-                    .map(|path| path.to_string_lossy().to_string())
-                    .collect(),
-                ResolutionStatus::Known,
-            ),
-            Self::Known(paths) if !paths.is_empty() => (
-                paths
-                    .iter()
-                    .map(|path| path.to_string_lossy().to_string())
-                    .collect(),
-                ResolutionStatus::Ambiguous,
-            ),
-            _ => (vec![], ResolutionStatus::Unknown),
-        }
-    }
-}
+type CwdState = Resolution<PathBuf>;
 
 #[derive(Debug, Clone)]
 struct Flow {
@@ -212,8 +246,8 @@ impl Flow {
 
     fn unknown(first_command: Option<usize>, last_command: Option<usize>) -> Self {
         Self {
-            success: CwdState::Unknown,
-            failure: CwdState::Unknown,
+            success: CwdState::unknown(),
+            failure: CwdState::unknown(),
             first_command,
             last_command,
             mutates_cwd: true,
@@ -279,7 +313,6 @@ impl<'a> ShellAnalyzer<'a> {
         }
 
         let index = self.commands.len();
-        let (effective_cwds, effective_cwd_resolution) = input.descriptor();
         let redirections = redirects
             .into_iter()
             .map(|redirect| resolve_redirect(redirect, &input))
@@ -287,8 +320,7 @@ impl<'a> ShellAnalyzer<'a> {
         self.commands.push(ParsedCommand {
             text: text.clone(),
             redirections,
-            effective_cwds,
-            effective_cwd_resolution,
+            effective_cwd: input.clone(),
             position: index,
             chain_length: 0,
             next_operator: None,
@@ -557,7 +589,7 @@ impl<'a> ShellAnalyzer<'a> {
             .filter(|_| first.is_some());
         let resolved_redirects: Vec<_> = redirects
             .into_iter()
-            .map(|redirect| resolve_redirect(redirect, &CwdState::Unknown))
+            .map(|redirect| resolve_redirect(redirect, &CwdState::unknown()))
             .collect();
         self.attach_redirects(start, first, resolved_redirects);
         Flow::unknown(first, last)
@@ -572,8 +604,7 @@ impl<'a> ShellAnalyzer<'a> {
                     self.commands.push(ParsedCommand {
                         text,
                         redirections: vec![],
-                        effective_cwds: vec![],
-                        effective_cwd_resolution: ResolutionStatus::Unknown,
+                        effective_cwd: Resolution::unknown(),
                         position: index,
                         chain_length: 0,
                         next_operator: None,
@@ -650,7 +681,7 @@ fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool
                     .get(command_index)
                     .is_some_and(|token| token.starts_with('-'))
                 {
-                    return (CwdState::Unknown, true);
+                    return (CwdState::unknown(), true);
                 }
             }
             Some("command") => {
@@ -671,7 +702,7 @@ fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool
                     .get(command_index)
                     .is_some_and(|token| token.starts_with('-'))
                 {
-                    return (CwdState::Unknown, true);
+                    return (CwdState::unknown(), true);
                 }
             }
             _ => break,
@@ -688,7 +719,7 @@ fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool
         );
         return (
             if mutates {
-                CwdState::Unknown
+                CwdState::unknown()
             } else {
                 input.clone()
             },
@@ -703,8 +734,8 @@ fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool
         _ => None,
     };
     match target.and_then(static_absolute_cd_target) {
-        Some(path) => (CwdState::one(path), true),
-        None => (CwdState::Unknown, true),
+        Some(path) => (CwdState::known(path), true),
+        None => (CwdState::unknown(), true),
     }
 }
 
@@ -752,26 +783,15 @@ fn resolve_redirect(mut redirect: ShellRedirect, cwd: &CwdState) -> ShellRedirec
     let resolved: BTreeSet<PathBuf> = if path.is_absolute() {
         BTreeSet::from([normalize_path(path)])
     } else {
-        match cwd {
-            CwdState::Known(cwds) => cwds
-                .iter()
-                .map(|cwd| normalize_path(&cwd.join(path)))
-                .collect(),
-            CwdState::Unknown => return redirect,
-        }
+        let Some(cwds) = cwd.candidate_values() else {
+            return redirect;
+        };
+        cwds.iter()
+            .map(|cwd| normalize_path(&cwd.join(path)))
+            .collect()
     };
 
-    redirect.resolved_targets = resolved
-        .iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect();
-    redirect.target_resolution = if resolved.len() == 1 {
-        ResolutionStatus::Known
-    } else if resolved.is_empty() {
-        ResolutionStatus::Unknown
-    } else {
-        ResolutionStatus::Ambiguous
-    };
+    redirect.target_resolution = Resolution::from_candidates(resolved);
     redirect
 }
 
@@ -860,8 +880,7 @@ fn parse_redirect(raw: &str) -> Option<ShellRedirect> {
         operator,
         fd,
         target,
-        resolved_targets: vec![],
-        target_resolution: ResolutionStatus::Unknown,
+        target_resolution: Resolution::unknown(),
         kind,
         writes_to_file,
     })
@@ -1144,41 +1163,110 @@ mod tests {
             .expect("expected a redirect")
     }
 
+    fn paths(resolution: &Resolution<PathBuf>) -> Vec<String> {
+        resolution
+            .candidate_values()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn resolution_serialization_bundles_status_and_candidates() {
+        let known = Resolution::known(PathBuf::from("/tmp"));
+        assert_eq!(
+            serde_json::to_value(known).unwrap(),
+            serde_json::json!({"status": "known", "candidates": ["/tmp"]})
+        );
+
+        let ambiguous = Resolution::from_candidates(BTreeSet::from([
+            PathBuf::from("/tmp"),
+            PathBuf::from("/workspace"),
+        ]));
+        assert_eq!(
+            serde_json::to_value(ambiguous).unwrap(),
+            serde_json::json!({
+                "status": "ambiguous",
+                "candidates": ["/tmp", "/workspace"]
+            })
+        );
+
+        let unknown = Resolution::<PathBuf>::from_candidates(BTreeSet::new());
+        assert_eq!(
+            serde_json::to_value(unknown).unwrap(),
+            serde_json::json!({"status": "unknown", "candidates": []})
+        );
+    }
+
+    #[test]
+    fn singleton_candidate_set_normalizes_to_known() {
+        let resolution = Resolution::from_candidates(BTreeSet::from([PathBuf::from("/tmp")]));
+
+        assert_eq!(resolution.status(), ResolutionStatus::Known);
+        assert_eq!(paths(&resolution), ["/tmp"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_path_candidates_serialize_lossily() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(OsString::from_vec(b"/tmp/\xff".to_vec()));
+        let serialized = serde_json::to_value(Resolution::known(path)).unwrap();
+
+        assert_eq!(serialized["status"], "known");
+        assert_eq!(serialized["candidates"][0], "/tmp/�");
+    }
+
     #[test]
     fn resolves_redirect_after_successful_absolute_cd() {
         let result = parse("cd /tmp && echo test > test.txt");
 
         assert!(!result.has_errors);
-        assert_eq!(result.commands[1].effective_cwds, ["/tmp"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
         assert_eq!(
-            redirect(&result).resolved_targets,
-            ["/tmp/test.txt".to_string()]
+            paths(&redirect(&result).target_resolution),
+            ["/tmp/test.txt"]
         );
-        assert_eq!(redirect(&result).target_resolution, ResolutionStatus::Known);
+        assert_eq!(
+            redirect(&result).target_resolution.status(),
+            ResolutionStatus::Known
+        );
     }
 
     #[test]
     fn command_builtin_cd_updates_effective_cwd() {
         let result = parse("command -p cd /tmp && echo test > test.txt");
 
-        assert_eq!(result.commands[1].effective_cwds, ["/tmp"]);
-        assert_eq!(redirect(&result).resolved_targets, ["/tmp/test.txt"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
+        assert_eq!(
+            paths(&redirect(&result).target_resolution),
+            ["/tmp/test.txt"]
+        );
     }
 
     #[test]
     fn assignment_prefixed_cd_updates_effective_cwd() {
         let result = parse("CDPATH=/elsewhere cd /tmp && echo test > test.txt");
 
-        assert_eq!(result.commands[1].effective_cwds, ["/tmp"]);
-        assert_eq!(redirect(&result).resolved_targets, ["/tmp/test.txt"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
+        assert_eq!(
+            paths(&redirect(&result).target_resolution),
+            ["/tmp/test.txt"]
+        );
     }
 
     #[test]
     fn array_assignment_prefixed_cd_updates_effective_cwd() {
         let result = parse("A[0]=value cd /tmp && echo test > test.txt");
 
-        assert_eq!(result.commands[1].effective_cwds, ["/tmp"]);
-        assert_eq!(redirect(&result).resolved_targets, ["/tmp/test.txt"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
+        assert_eq!(
+            paths(&redirect(&result).target_resolution),
+            ["/tmp/test.txt"]
+        );
     }
 
     #[test]
@@ -1186,11 +1274,11 @@ mod tests {
         let result = parse("builtin pushd /tmp && echo test > test.txt");
 
         assert_eq!(
-            result.commands[1].effective_cwd_resolution,
+            result.commands[1].effective_cwd.status(),
             ResolutionStatus::Unknown
         );
         assert_eq!(
-            redirect(&result).target_resolution,
+            redirect(&result).target_resolution.status(),
             ResolutionStatus::Unknown
         );
     }
@@ -1200,11 +1288,11 @@ mod tests {
         let result = parse("builtin eval 'cd /tmp' && echo test > test.txt");
 
         assert_eq!(
-            result.commands[1].effective_cwd_resolution,
+            result.commands[1].effective_cwd.status(),
             ResolutionStatus::Unknown
         );
         assert_eq!(
-            redirect(&result).target_resolution,
+            redirect(&result).target_resolution.status(),
             ResolutionStatus::Unknown
         );
     }
@@ -1213,10 +1301,10 @@ mod tests {
     fn failed_cd_or_branch_keeps_incoming_cwd() {
         let result = parse("cd /tmp || echo test > test.txt");
 
-        assert_eq!(result.commands[1].effective_cwds, ["/workspace"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
         assert_eq!(
-            redirect(&result).resolved_targets,
-            ["/workspace/test.txt".to_string()]
+            paths(&redirect(&result).target_resolution),
+            ["/workspace/test.txt"]
         );
     }
 
@@ -1225,16 +1313,19 @@ mod tests {
         let result = parse("cd /tmp; echo test > test.txt");
 
         assert_eq!(
-            result.commands[1].effective_cwd_resolution,
+            result.commands[1].effective_cwd.status(),
             ResolutionStatus::Ambiguous
         );
-        assert_eq!(result.commands[1].effective_cwds, ["/tmp", "/workspace"]);
         assert_eq!(
-            redirect(&result).resolved_targets,
+            paths(&result.commands[1].effective_cwd),
+            ["/tmp", "/workspace"]
+        );
+        assert_eq!(
+            paths(&redirect(&result).target_resolution),
             ["/tmp/test.txt", "/workspace/test.txt"]
         );
         assert_eq!(
-            redirect(&result).target_resolution,
+            redirect(&result).target_resolution.status(),
             ResolutionStatus::Ambiguous
         );
     }
@@ -1243,10 +1334,10 @@ mod tests {
     fn subshell_cd_does_not_escape_to_following_command() {
         let result = parse("(cd /tmp) && echo test > test.txt");
 
-        assert_eq!(result.commands[1].effective_cwds, ["/workspace"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
         assert_eq!(
-            redirect(&result).resolved_targets,
-            ["/workspace/test.txt".to_string()]
+            paths(&redirect(&result).target_resolution),
+            ["/workspace/test.txt"]
         );
     }
 
@@ -1254,10 +1345,10 @@ mod tests {
     fn redirect_inside_subshell_uses_inner_cwd() {
         let result = parse("(cd /tmp && echo test > test.txt)");
 
-        assert_eq!(result.commands[1].effective_cwds, ["/tmp"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
         assert_eq!(
-            redirect(&result).resolved_targets,
-            ["/tmp/test.txt".to_string()]
+            paths(&redirect(&result).target_resolution),
+            ["/tmp/test.txt"]
         );
     }
 
@@ -1268,8 +1359,8 @@ mod tests {
         assert!(result.commands[0].redirections.len() == 1);
         assert!(result.commands[1].redirections.is_empty());
         assert_eq!(
-            redirect(&result).resolved_targets,
-            ["/workspace/test.txt".to_string()]
+            paths(&redirect(&result).target_resolution),
+            ["/workspace/test.txt"]
         );
     }
 
@@ -1277,10 +1368,10 @@ mod tests {
     fn brace_group_propagates_cd_to_inner_redirect() {
         let result = parse("{ cd /tmp && echo test > test.txt; }");
 
-        assert_eq!(result.commands[1].effective_cwds, ["/tmp"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
         assert_eq!(
-            redirect(&result).resolved_targets,
-            ["/tmp/test.txt".to_string()]
+            paths(&redirect(&result).target_resolution),
+            ["/tmp/test.txt"]
         );
     }
 
@@ -1288,10 +1379,10 @@ mod tests {
     fn background_cd_does_not_change_parent_cwd() {
         let result = parse("cd /tmp & echo test > test.txt");
 
-        assert_eq!(result.commands[1].effective_cwds, ["/workspace"]);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
         assert_eq!(
-            redirect(&result).resolved_targets,
-            ["/workspace/test.txt".to_string()]
+            paths(&redirect(&result).target_resolution),
+            ["/workspace/test.txt"]
         );
     }
 
@@ -1300,12 +1391,12 @@ mod tests {
         let result = parse("cd \"$TARGET\" && echo test > test.txt");
 
         assert_eq!(
-            result.commands[1].effective_cwd_resolution,
+            result.commands[1].effective_cwd.status(),
             ResolutionStatus::Unknown
         );
-        assert!(redirect(&result).resolved_targets.is_empty());
+        assert!(paths(&redirect(&result).target_resolution).is_empty());
         assert_eq!(
-            redirect(&result).target_resolution,
+            redirect(&result).target_resolution.status(),
             ResolutionStatus::Unknown
         );
     }
@@ -1314,17 +1405,20 @@ mod tests {
     fn absolute_redirect_is_known_even_when_cwd_is_unknown() {
         let result = parse("cd \"$TARGET\" && echo test > /dev/null");
 
-        assert_eq!(redirect(&result).resolved_targets, ["/dev/null"]);
-        assert_eq!(redirect(&result).target_resolution, ResolutionStatus::Known);
+        assert_eq!(paths(&redirect(&result).target_resolution), ["/dev/null"]);
+        assert_eq!(
+            redirect(&result).target_resolution.status(),
+            ResolutionStatus::Known
+        );
     }
 
     #[test]
     fn dynamic_redirect_target_is_unknown() {
         let result = parse("echo test > \"$TARGET\"");
 
-        assert!(redirect(&result).resolved_targets.is_empty());
+        assert!(paths(&redirect(&result).target_resolution).is_empty());
         assert_eq!(
-            redirect(&result).target_resolution,
+            redirect(&result).target_resolution.status(),
             ResolutionStatus::Unknown
         );
     }
@@ -1335,7 +1429,7 @@ mod tests {
 
         assert!(result.has_errors);
         assert_eq!(
-            redirect(&result).target_resolution,
+            redirect(&result).target_resolution.status(),
             ResolutionStatus::Unknown
         );
     }

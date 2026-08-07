@@ -280,7 +280,9 @@ allowed_redirect_targets["/dev/null"] := true
 Redirect table keys are absolute nominal paths. Relative targets are resolved
 against each command's shell-derived effective working directory. If control
 flow leaves multiple possible directories, every possible target must be
-listed; dynamic or otherwise unknown targets still prompt.
+listed; dynamic or otherwise unknown targets still prompt. Each redirect's
+`target_resolution` uses the same bundled `{status, candidates}` shape as
+`effective_cwd`.
 
 ### Custom Rules
 
@@ -385,8 +387,10 @@ Your policies receive structured input for each command:
   "paths": [{"raw": "./temp", "resolved": "/home/user/project/temp", "resolution_known": true, "exists": true, "is_dir": true}],
   "redirections": [],
   "cwd": "/home/user/project",
-  "effective_cwds": ["/home/user/project"],
-  "effective_cwd_resolution": "known",
+  "effective_cwd": {
+    "status": "known",
+    "candidates": ["/home/user/project"]
+  },
   "project_root": "/home/user/project",
   "chain_position": 1,
   "chain_length": 1,
@@ -412,7 +416,9 @@ rules["allow_sed_in_pipe"] := allow("sed in a pipe (stdin -> stdout)") if {
 ```
 
 `cwd` is the stable invocation directory supplied by the hook.
-`effective_cwds` is the per-command nominal shell state. cmdguard follows
+`effective_cwd` is the per-command nominal shell state. Its bundled `status`
+and `candidates` representation prevents contradictory resolution data.
+cmdguard follows
 literal absolute `cd` operations through `&&`, `||`, `;`, subshells, brace
 groups, and background execution. Multiple possible directories are reported
 as `ambiguous`; dynamic or unsupported directory changes are `unknown`.

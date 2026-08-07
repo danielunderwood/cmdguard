@@ -5,9 +5,9 @@ import rego.v1
 default allowed_redirect_targets := {}
 
 redirect_target_allowed(redirect) if {
-	redirect.target_resolution != "unknown"
-	count(redirect.resolved_targets) > 0
-	every target in redirect.resolved_targets {
+	redirect.target_resolution.status != "unknown"
+	count(redirect.target_resolution.candidates) > 0
+	every target in redirect.target_resolution.candidates {
 		allowed_redirect_targets[target]
 	}
 }

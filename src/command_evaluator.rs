@@ -139,21 +139,15 @@ impl<'a> CommandEvaluator<'a> {
         // Expand flags
         let flags_expanded = expand_flags(&extracted.command);
 
-        let effective_cwd_paths: Vec<PathBuf> =
-            cmd.effective_cwds.iter().map(PathBuf::from).collect();
-        let effective_cwds = (cmd.effective_cwd_resolution
-            != crate::parser::ResolutionStatus::Unknown)
-            .then_some(effective_cwd_paths.as_slice());
+        let effective_cwd_paths = cmd.effective_cwd.candidate_values();
+        let effective_cwd_candidates = effective_cwd_paths.as_deref();
 
         // Detect paths against every possible cwd. Unknown relative paths stay
         // explicitly unresolved rather than falling back to the hook cwd.
-        let paths = detect_paths_for_cwds(&extracted.command, effective_cwds);
+        let paths = detect_paths_for_cwds(&extracted.command, effective_cwd_candidates);
 
         // Resolve command binary and trust zone
-        let effective_cwd = (cmd.effective_cwd_resolution
-            == crate::parser::ResolutionStatus::Known
-            && effective_cwd_paths.len() == 1)
-            .then(|| effective_cwd_paths[0].as_path());
+        let effective_cwd = cmd.effective_cwd.known_value().map(PathBuf::as_path);
         let resolved = resolve_command_with_cwd(
             &extracted.command[0],
             effective_cwd,
@@ -188,8 +182,7 @@ impl<'a> CommandEvaluator<'a> {
             paths,
             redirections: cmd.redirections.clone(),
             cwd: context.cwd.to_string(),
-            effective_cwds: cmd.effective_cwds.clone(),
-            effective_cwd_resolution: cmd.effective_cwd_resolution,
+            effective_cwd: cmd.effective_cwd.clone(),
             project_root: context.project_root_str.to_string(),
             session_id: context.session_id.to_string(),
             chain_position: Some(cmd.position),
@@ -416,8 +409,7 @@ mod tests {
         let cmd = ParsedCommand {
             text: "".to_string(),
             redirections: vec![],
-            effective_cwds: vec![cwd.to_string()],
-            effective_cwd_resolution: crate::parser::ResolutionStatus::Known,
+            effective_cwd: crate::parser::Resolution::known(PathBuf::from(cwd)),
             position: 0,
             chain_length: 1,
             next_operator: None,

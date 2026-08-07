@@ -683,20 +683,14 @@ fn print_command_evaluation(
 
     let extracted = extract_command(&tokens, Some(nickel_config));
     let flags_expanded = expand_flags(&extracted.command);
-    let effective_cwd_paths: Vec<PathBuf> = cmd.effective_cwds.iter().map(PathBuf::from).collect();
-    let effective_cwds = (cmd.effective_cwd_resolution != parser::ResolutionStatus::Unknown)
-        .then_some(effective_cwd_paths.as_slice());
-    let paths = detect_paths_for_cwds(&extracted.command, effective_cwds);
+    let effective_cwd_paths = cmd.effective_cwd.candidate_values();
+    let effective_cwd_candidates = effective_cwd_paths.as_deref();
+    let effective_cwd = cmd.effective_cwd.known_value().map(PathBuf::as_path);
+    let paths = detect_paths_for_cwds(&extracted.command, effective_cwd_candidates);
 
     // Resolve the command binary and trust zone
     let resolved = if !extracted.command.is_empty() {
-        resolve_command_with_cwd(
-            &extracted.command[0],
-            (cmd.effective_cwd_resolution == parser::ResolutionStatus::Known
-                && effective_cwd_paths.len() == 1)
-                .then(|| effective_cwd_paths[0].as_path()),
-            project_root_detected,
-        )
+        resolve_command_with_cwd(&extracted.command[0], effective_cwd, project_root_detected)
     } else {
         resolve_command_with_cwd("", None, None)
     };
@@ -719,7 +713,8 @@ fn print_command_evaluation(
     }
     println!(
         "Effective cwd: {:?} ({:?})",
-        cmd.effective_cwds, cmd.effective_cwd_resolution
+        effective_cwd_paths.as_deref().unwrap_or_default(),
+        cmd.effective_cwd.status()
     );
     println!("Binary:     {}", resolved.binary_name);
     if let Some(path) = &resolved.resolved_path {
@@ -737,9 +732,7 @@ fn print_command_evaluation(
         command_parser::parse_command_with_cwd(
             &extracted.command,
             command_defs,
-            (cmd.effective_cwd_resolution == parser::ResolutionStatus::Known
-                && effective_cwd_paths.len() == 1)
-                .then(|| effective_cwd_paths[0].as_path()),
+            effective_cwd,
             project_root_detected,
         )
     } else {
@@ -831,8 +824,7 @@ fn print_command_evaluation(
         paths,
         redirections: cmd.redirections.clone(),
         cwd: cwd.to_string(),
-        effective_cwds: cmd.effective_cwds.clone(),
-        effective_cwd_resolution: cmd.effective_cwd_resolution,
+        effective_cwd: cmd.effective_cwd.clone(),
         project_root: project_root_str.to_string(),
         session_id: "eval".to_string(),
         chain_position: Some(cmd.position),
