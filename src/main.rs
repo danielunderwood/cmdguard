@@ -33,9 +33,9 @@ use logging::init_logging;
 use nickel_config::NickelConfig;
 use output::{Decision, HookEvent, HookOutput};
 use parser::parse_command;
-use paths::detect_paths;
+use paths::detect_paths_for_cwds;
 use policy::{PatternInput, PolicyEngine, PolicyInput, PythonAnalysisInput};
-use resolver::{detect_project_root, resolve_command};
+use resolver::{detect_project_root, resolve_command_with_cwd};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -588,7 +588,7 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
         .unwrap_or_else(|| cwd.to_string());
 
     // Parse for compound operators
-    let parse_result = parse_command(command);
+    let parse_result = parse_command(command, &cwd_path);
 
     println!("=== Compound Command Analysis ===");
     println!("Commands:   {} in chain", parse_result.commands.len());
@@ -624,7 +624,6 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
             &mut nickel_config,
             &command_defs,
             cwd,
-            &cwd_path,
             &project_root_str,
             project_root_detected.as_deref(),
             show_input,
@@ -633,7 +632,6 @@ fn run_eval(command: &str, cwd: &str, policy_dir: Option<PathBuf>, show_input: b
 
     let context = EvaluationContext {
         cwd,
-        cwd_path: &cwd_path,
         session_id: "eval",
         project_root_str: &project_root_str,
         project_root_path: project_root_detected.as_deref(),
@@ -659,7 +657,6 @@ fn print_command_evaluation(
     nickel_config: &mut NickelConfig,
     command_defs: &CommandDefinitions,
     cwd: &str,
-    cwd_path: &Path,
     project_root_str: &str,
     project_root_detected: Option<&Path>,
     show_input: bool,
@@ -686,13 +683,22 @@ fn print_command_evaluation(
 
     let extracted = extract_command(&tokens, Some(nickel_config));
     let flags_expanded = expand_flags(&extracted.command);
-    let paths = detect_paths(&extracted.command, cwd_path);
+    let effective_cwd_paths: Vec<PathBuf> = cmd.effective_cwds.iter().map(PathBuf::from).collect();
+    let effective_cwds = (cmd.effective_cwd_resolution != parser::ResolutionStatus::Unknown)
+        .then_some(effective_cwd_paths.as_slice());
+    let paths = detect_paths_for_cwds(&extracted.command, effective_cwds);
 
     // Resolve the command binary and trust zone
     let resolved = if !extracted.command.is_empty() {
-        resolve_command(&extracted.command[0], project_root_detected)
+        resolve_command_with_cwd(
+            &extracted.command[0],
+            (cmd.effective_cwd_resolution == parser::ResolutionStatus::Known
+                && effective_cwd_paths.len() == 1)
+                .then(|| effective_cwd_paths[0].as_path()),
+            project_root_detected,
+        )
     } else {
-        resolve_command("", None)
+        resolve_command_with_cwd("", None, None)
     };
 
     println!("Command:    {:?}", extracted.command);
@@ -711,6 +717,10 @@ fn print_command_evaluation(
     if !cmd.redirections.is_empty() {
         println!("Redirects:  {:?}", cmd.redirections);
     }
+    println!(
+        "Effective cwd: {:?} ({:?})",
+        cmd.effective_cwds, cmd.effective_cwd_resolution
+    );
     println!("Binary:     {}", resolved.binary_name);
     if let Some(path) = &resolved.resolved_path {
         println!("Resolved:   {}", path);
@@ -724,7 +734,14 @@ fn print_command_evaluation(
 
     // Parse command for structured flags and args
     let parsed_cmd = if !extracted.command.is_empty() {
-        command_parser::parse_command(&extracted.command, command_defs, project_root_detected)
+        command_parser::parse_command_with_cwd(
+            &extracted.command,
+            command_defs,
+            (cmd.effective_cwd_resolution == parser::ResolutionStatus::Known
+                && effective_cwd_paths.len() == 1)
+                .then(|| effective_cwd_paths[0].as_path()),
+            project_root_detected,
+        )
     } else {
         command_parser::ParsedCommand {
             parsed_flags: std::collections::HashMap::new(),
@@ -814,6 +831,8 @@ fn print_command_evaluation(
         paths,
         redirections: cmd.redirections.clone(),
         cwd: cwd.to_string(),
+        effective_cwds: cmd.effective_cwds.clone(),
+        effective_cwd_resolution: cmd.effective_cwd_resolution,
         project_root: project_root_str.to_string(),
         session_id: "eval".to_string(),
         chain_position: Some(cmd.position),
@@ -1040,7 +1059,7 @@ fn run_hook_inner(
         .unwrap_or_else(|| cwd.clone());
 
     // Parse command for compound operators
-    let parse_result = parse_command(raw_command);
+    let parse_result = parse_command(raw_command, &cwd_path);
     debug!(
         commands = ?parse_result.commands,
         has_errors = parse_result.has_errors,
@@ -1058,7 +1077,6 @@ fn run_hook_inner(
     // Evaluate compound command
     let context = EvaluationContext {
         cwd: &cwd,
-        cwd_path: &cwd_path,
         session_id: &session_id,
         project_root_str: &project_root_str,
         project_root_path: project_root_detected.as_deref(),

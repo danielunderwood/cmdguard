@@ -4,21 +4,27 @@ import rego.v1
 
 default allowed_redirect_targets := {}
 
-redirect_target_allowed(target) if {
-	allowed_redirect_targets[target]
+redirect_target_allowed(redirect) if {
+	redirect.target_resolution != "unknown"
+	count(redirect.resolved_targets) > 0
+	every target in redirect.resolved_targets {
+		allowed_redirect_targets[target]
+	}
 }
 
 rules["ask_shell_output_redirection"] := ask("Shell output redirection writes to file - confirm target") if {
 	some redirect in input.redirections
 	redirect.writes_to_file
-	not redirect_target_allowed(redirect.target)
+	not redirect_target_allowed(redirect)
 }
 
 path_record_in_project(path) if {
+	path.resolution_known == true
 	path.resolved == input.project_root
 }
 
 path_record_in_project(path) if {
+	path.resolution_known == true
 	startswith(path.resolved, sprintf("%s/", [input.project_root]))
 }
 

@@ -1,21 +1,72 @@
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DetectedPath {
     pub raw: String,
     pub resolved: String,
+    pub resolution_known: bool,
     pub exists: bool,
     pub is_dir: bool,
 }
 
 /// Detect and resolve paths in command arguments
+#[cfg(test)]
 pub fn detect_paths(tokens: &[String], cwd: &Path) -> Vec<DetectedPath> {
+    detect_paths_for_cwds(tokens, Some(&[cwd.to_path_buf()]))
+}
+
+/// Detect paths against every possible effective cwd. Absolute paths remain
+/// resolvable when the cwd is unknown; relative paths are marked unknown.
+pub fn detect_paths_for_cwds(tokens: &[String], cwds: Option<&[PathBuf]>) -> Vec<DetectedPath> {
     tokens
         .iter()
         .filter(|t| looks_like_path(t))
-        .map(|t| resolve_path(t, cwd))
+        .flat_map(|token| resolve_path_candidates(token, cwds))
         .collect()
+}
+
+fn resolve_path_candidates(raw: &str, cwds: Option<&[PathBuf]>) -> Vec<DetectedPath> {
+    if contains_shell_expansion(raw) {
+        return vec![unresolved_path(raw)];
+    }
+
+    let expanded = expand_tilde(raw);
+    let path = expanded.as_deref().unwrap_or_else(|| Path::new(raw));
+    if path.is_absolute() {
+        return vec![resolve_path(raw, Path::new("/"))];
+    }
+
+    let Some(cwds) = cwds.filter(|cwds| !cwds.is_empty()) else {
+        return vec![unresolved_path(raw)];
+    };
+
+    let mut seen = BTreeSet::new();
+    cwds.iter()
+        .map(|cwd| resolve_path(raw, cwd))
+        .filter(|path| seen.insert(path.resolved.clone()))
+        .collect()
+}
+
+fn unresolved_path(raw: &str) -> DetectedPath {
+    DetectedPath {
+        raw: raw.to_string(),
+        resolved: raw.to_string(),
+        resolution_known: false,
+        exists: false,
+        is_dir: false,
+    }
+}
+
+pub(crate) fn contains_shell_expansion(value: &str) -> bool {
+    let unsupported_tilde = value.contains('~') && value != "~" && !value.starts_with("~/");
+    value.contains("<(")
+        || value.contains(">(")
+        || unsupported_tilde
+        || value
+            .chars()
+            .any(|character| matches!(character, '$' | '`' | '*' | '?' | '[' | ']' | '{' | '}'))
 }
 
 fn looks_like_path(token: &str) -> bool {
@@ -61,6 +112,7 @@ fn resolve_path(raw: &str, cwd: &Path) -> DetectedPath {
     DetectedPath {
         raw: raw.to_string(),
         resolved: resolved.to_string_lossy().to_string(),
+        resolution_known: true,
         exists,
         is_dir,
     }
@@ -176,5 +228,48 @@ mod tests {
         let paths = detect_paths(&tokens, &cwd);
 
         assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn relative_path_resolves_against_every_cwd_candidate() {
+        let tokens = to_vec(&["cat", "./result.txt"]);
+        let cwds = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        let paths = detect_paths_for_cwds(&tokens, Some(&cwds));
+
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].resolved, "/a/result.txt");
+        assert_eq!(paths[1].resolved, "/b/result.txt");
+        assert!(paths.iter().all(|path| path.resolution_known));
+    }
+
+    #[test]
+    fn relative_path_stays_unresolved_when_cwd_is_unknown() {
+        let tokens = to_vec(&["cat", "./result.txt"]);
+        let paths = detect_paths_for_cwds(&tokens, None);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].resolved, "./result.txt");
+        assert!(!paths[0].resolution_known);
+    }
+
+    #[test]
+    fn absolute_path_resolves_when_cwd_is_unknown() {
+        let tokens = to_vec(&["cat", "/tmp/result.txt"]);
+        let paths = detect_paths_for_cwds(&tokens, None);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].resolved, "/tmp/result.txt");
+        assert!(paths[0].resolution_known);
+    }
+
+    #[test]
+    fn shell_expanded_path_is_never_treated_as_known() {
+        let tokens = to_vec(&["touch", "./$(printf ../../tmp/out)"]);
+        let cwds = vec![PathBuf::from("/workspace")];
+        let paths = detect_paths_for_cwds(&tokens, Some(&cwds));
+
+        assert_eq!(paths.len(), 1);
+        assert!(!paths[0].resolution_known);
+        assert_eq!(paths[0].resolved, "./$(printf ../../tmp/out)");
     }
 }

@@ -18,12 +18,19 @@ git_subcommand := input.command[1] if {
 
 path_outside_project if {
 	some path in input.paths
+	path.resolution_known != true
+}
+
+path_outside_project if {
+	some path in input.paths
+	path.resolution_known == true
 	not startswith(path.resolved, input.project_root)
 }
 
 all_paths_in_project if {
 	count(input.paths) > 0
 	every path in input.paths {
+		path.resolution_known == true
 		startswith(path.resolved, input.project_root)
 	}
 }

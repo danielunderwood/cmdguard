@@ -50,7 +50,12 @@ pub struct PolicyInput {
     pub flags_expanded: Vec<String>,
     pub paths: Vec<DetectedPath>,
     pub redirections: Vec<crate::parser::ShellRedirect>,
+    /// Invocation cwd supplied by the hook. This remains stable across every
+    /// command in a compound shell expression.
     pub cwd: String,
+    /// Nominal cwd candidates derived for this command from shell control flow.
+    pub effective_cwds: Vec<String>,
+    pub effective_cwd_resolution: crate::parser::ResolutionStatus,
     pub project_root: String,
     pub session_id: String,
     // New fields for compound commands
@@ -455,6 +460,8 @@ mod tests {
             paths: vec![],
             redirections: vec![],
             cwd: "/home/user/project".to_string(),
+            effective_cwds: vec!["/home/user/project".to_string()],
+            effective_cwd_resolution: crate::parser::ResolutionStatus::Known,
             project_root: "/home/user/project".to_string(),
             session_id: "test".to_string(),
             chain_position: None,
@@ -678,6 +685,8 @@ package cmdguard
 import rego.v1
 
 allowed_redirect_targets["/dev/null"] := true
+allowed_redirect_targets["/tmp/out.txt"] := true
+allowed_redirect_targets["/workspace/out.txt"] := true
 
 rules["ask_other_reason"] := ask("Other ask still wins") if {
 	input.binary_name == "dangerous"
@@ -711,6 +720,8 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("/dev/null".to_string()),
+            resolved_targets: vec!["/dev/null".to_string()],
+            target_resolution: crate::parser::ResolutionStatus::Known,
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         };
@@ -738,6 +749,8 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("out.txt".to_string()),
+            resolved_targets: vec!["/workspace/not-allowed.txt".to_string()],
+            target_resolution: crate::parser::ResolutionStatus::Known,
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];
@@ -745,6 +758,51 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
         let result = engine.evaluate(&file_redirect_input);
         assert_eq!(result.decision, Decision::Ask);
         assert_eq!(result.rule.as_deref(), Some("ask_shell_output_redirection"));
+
+        let mut ambiguous_allowed = make_input(vec!["echo", "hi"]);
+        ambiguous_allowed.binary_name = Some("echo".to_string());
+        ambiguous_allowed.redirections = vec![crate::parser::ShellRedirect {
+            raw: "> out.txt".to_string(),
+            operator: ">".to_string(),
+            fd: None,
+            target: Some("out.txt".to_string()),
+            resolved_targets: vec!["/tmp/out.txt".to_string(), "/workspace/out.txt".to_string()],
+            target_resolution: crate::parser::ResolutionStatus::Ambiguous,
+            kind: crate::parser::ShellRedirectKind::Write,
+            writes_to_file: true,
+        }];
+        assert_eq!(
+            engine.evaluate(&ambiguous_allowed).decision,
+            Decision::Allow
+        );
+
+        let mut ambiguous_unlisted = make_input(vec!["echo", "hi"]);
+        ambiguous_unlisted.binary_name = Some("echo".to_string());
+        ambiguous_unlisted.redirections = vec![crate::parser::ShellRedirect {
+            raw: "> out.txt".to_string(),
+            operator: ">".to_string(),
+            fd: None,
+            target: Some("out.txt".to_string()),
+            resolved_targets: vec!["/tmp/out.txt".to_string(), "/other/out.txt".to_string()],
+            target_resolution: crate::parser::ResolutionStatus::Ambiguous,
+            kind: crate::parser::ShellRedirectKind::Write,
+            writes_to_file: true,
+        }];
+        assert_eq!(engine.evaluate(&ambiguous_unlisted).decision, Decision::Ask);
+
+        let mut unknown_target = make_input(vec!["echo", "hi"]);
+        unknown_target.binary_name = Some("echo".to_string());
+        unknown_target.redirections = vec![crate::parser::ShellRedirect {
+            raw: "> $TARGET".to_string(),
+            operator: ">".to_string(),
+            fd: None,
+            target: Some("$TARGET".to_string()),
+            resolved_targets: vec![],
+            target_resolution: crate::parser::ResolutionStatus::Unknown,
+            kind: crate::parser::ShellRedirectKind::Write,
+            writes_to_file: true,
+        }];
+        assert_eq!(engine.evaluate(&unknown_target).decision, Decision::Ask);
     }
 
     #[test]

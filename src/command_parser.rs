@@ -7,6 +7,7 @@ use crate::command_defs::{
     ArgType, CommandDef, CommandDefinitions, FlagDef, FlagType, ParsingOptions, PositionalDef,
     SubcommandDef,
 };
+use crate::paths::contains_shell_expansion;
 use crate::resolver::TrustZonePaths;
 use crate::urls::{canonicalize_url, CanonicalUrl};
 
@@ -26,6 +27,8 @@ pub struct PositionalValue {
     pub raw: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_known: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_zone: Option<String>,
     #[serde(rename = "type")]
@@ -83,9 +86,21 @@ impl ParsedCommand {
 }
 
 /// Parse a command's tokens into structured flags and positional args
+#[cfg(test)]
 pub fn parse_command(
     tokens: &[String],
     definitions: &CommandDefinitions,
+    project_root: Option<&Path>,
+) -> ParsedCommand {
+    parse_command_with_cwd(tokens, definitions, project_root, project_root)
+}
+
+/// Parse a command while resolving path positionals against the effective cwd
+/// rather than assuming they are relative to the project root.
+pub fn parse_command_with_cwd(
+    tokens: &[String],
+    definitions: &CommandDefinitions,
+    cwd: Option<&Path>,
     project_root: Option<&Path>,
 ) -> ParsedCommand {
     if tokens.is_empty() {
@@ -124,6 +139,7 @@ pub fn parse_command(
                 &combined_flags,
                 &sub_def.positional,
                 parsing,
+                cwd,
                 project_root,
                 subcommand.as_ref(), // Skip the subcommand name in positional args
                 // Stub subcommands model no flags of their own, so every option
@@ -154,6 +170,7 @@ pub fn parse_command(
         flags,
         positional_defs,
         parsing,
+        cwd,
         project_root,
         None,
         !flags.is_empty(),
@@ -276,11 +293,13 @@ fn expand_combined_flags(flag: &str) -> Vec<String> {
 }
 
 /// Parse with known flag definitions, optionally skipping a specific token
+#[allow(clippy::too_many_arguments)]
 fn parse_with_definition_skip_token(
     args: &[String],
     flags: &HashMap<String, FlagDef>,
     positional_defs: &[PositionalDef],
     parsing: &ParsingOptions,
+    cwd: Option<&Path>,
     project_root: Option<&Path>,
     skip_token: Option<&String>,
     record_unknown_flags: bool,
@@ -396,7 +415,7 @@ fn parse_with_definition_skip_token(
 
     ParsedCommand {
         parsed_flags,
-        positional_args: process_positional_args(positional, positional_defs, project_root),
+        positional_args: process_positional_args(positional, positional_defs, cwd, project_root),
         subcommand: None,
         unknown_flags,
     }
@@ -629,6 +648,7 @@ fn insert_flag(
 fn process_positional_args(
     raw_args: Vec<String>,
     positional_defs: &[PositionalDef],
+    cwd: Option<&Path>,
     project_root: Option<&Path>,
 ) -> Vec<PositionalArg> {
     if positional_defs.is_empty() {
@@ -640,6 +660,7 @@ fn process_positional_args(
                 .map(|s| PositionalValue {
                     raw: s,
                     resolved: None,
+                    resolution_known: None,
                     trust_zone: None,
                     value_type: "string".to_string(),
                     url: None,
@@ -661,6 +682,7 @@ fn process_positional_args(
                 &def.name,
                 vec![value],
                 &def.arg_type,
+                cwd,
                 project_root,
             ));
         }
@@ -674,6 +696,7 @@ fn process_positional_args(
                 &last_def.name,
                 vec![last],
                 &last_def.arg_type,
+                cwd,
                 project_root,
             ));
         }
@@ -695,6 +718,7 @@ fn process_positional_args(
             &def.name,
             vec![value],
             &def.arg_type,
+            cwd,
             project_root,
         ));
     }
@@ -706,6 +730,7 @@ fn process_positional_args(
                 &variadic_def.name,
                 remaining,
                 &variadic_def.arg_type,
+                cwd,
                 project_root,
             ));
         }
@@ -718,6 +743,7 @@ fn process_positional_args(
                 .map(|s| PositionalValue {
                     raw: s,
                     resolved: None,
+                    resolution_known: None,
                     trust_zone: None,
                     value_type: "string".to_string(),
                     url: None,
@@ -744,6 +770,7 @@ pub fn url_value(raw: &str) -> PositionalValue {
     PositionalValue {
         raw: raw.to_string(),
         resolved: None,
+        resolution_known: None,
         trust_zone: None,
         value_type: "url".to_string(),
         url,
@@ -786,15 +813,17 @@ fn create_positional_arg(
     name: &str,
     values: Vec<String>,
     arg_type: &ArgType,
+    cwd: Option<&Path>,
     project_root: Option<&Path>,
 ) -> PositionalArg {
     let resolved_values: Vec<PositionalValue> = values
         .into_iter()
         .map(|raw| match arg_type {
-            ArgType::Path => resolve_path_arg(&raw, project_root),
+            ArgType::Path => resolve_path_arg(&raw, cwd, project_root),
             ArgType::String => PositionalValue {
                 raw,
                 resolved: None,
+                resolution_known: None,
                 trust_zone: None,
                 value_type: "string".to_string(),
                 url: None,
@@ -803,6 +832,7 @@ fn create_positional_arg(
             ArgType::Number => PositionalValue {
                 raw,
                 resolved: None,
+                resolution_known: None,
                 trust_zone: None,
                 value_type: "number".to_string(),
                 url: None,
@@ -819,23 +849,45 @@ fn create_positional_arg(
 }
 
 /// Resolve a path argument with trust zone classification
-fn resolve_path_arg(raw: &str, project_root: Option<&Path>) -> PositionalValue {
+fn resolve_path_arg(raw: &str, cwd: Option<&Path>, project_root: Option<&Path>) -> PositionalValue {
     use std::path::Path as StdPath;
+
+    if contains_shell_expansion(raw) {
+        return PositionalValue {
+            raw: raw.to_string(),
+            resolved: None,
+            resolution_known: Some(false),
+            trust_zone: Some("unknown".to_string()),
+            value_type: "path".to_string(),
+            url: None,
+            rejected: None,
+        };
+    }
 
     let expanded = expand_tilde(raw);
     let path = expanded.as_deref().unwrap_or_else(|| StdPath::new(raw));
     let zone_paths = TrustZonePaths::defaults();
 
+    if !path.is_absolute() && cwd.is_none() {
+        return PositionalValue {
+            raw: raw.to_string(),
+            resolved: None,
+            resolution_known: Some(false),
+            trust_zone: Some("unknown".to_string()),
+            value_type: "path".to_string(),
+            url: None,
+            rejected: None,
+        };
+    }
+
     // Try to canonicalize the path. For non-existent targets, keep a lexical
     // absolute path so create/write operations can still be scoped by policy.
     let candidate = if path.is_absolute() {
         path.to_path_buf()
-    } else if let Some(root) = project_root {
-        root.join(path)
+    } else if let Some(cwd) = cwd {
+        cwd.join(path)
     } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| PathBuf::from(path))
+        unreachable!("relative paths without a cwd return above")
     };
     let resolved = candidate
         .canonicalize()
@@ -865,6 +917,7 @@ fn resolve_path_arg(raw: &str, project_root: Option<&Path>) -> PositionalValue {
     PositionalValue {
         raw: raw.to_string(),
         resolved: Some(resolved.to_string_lossy().to_string()),
+        resolution_known: Some(true),
         trust_zone: Some(trust_zone),
         value_type: "path".to_string(),
         url: None,
@@ -996,6 +1049,7 @@ fn parse_without_definition(
                     .map(|s| PositionalValue {
                         raw: s,
                         resolved: None,
+                        resolution_known: None,
                         trust_zone: None,
                         value_type: "string".to_string(),
                         url: None,
@@ -1757,6 +1811,68 @@ mod tests {
                     .as_ref()
             )
         );
+    }
+
+    #[test]
+    fn path_resolution_uses_effective_cwd() {
+        let defs = test_definitions();
+        let cwd = PathBuf::from("/tmp/effective");
+        let project_root = PathBuf::from("/workspace");
+        let result = parse_command_with_cwd(
+            &to_tokens("rm ./target"),
+            &defs,
+            Some(&cwd),
+            Some(&project_root),
+        );
+
+        let target = &result
+            .positional_args
+            .iter()
+            .find(|arg| arg.name == "targets")
+            .unwrap()
+            .values[0];
+        assert_eq!(target.resolved.as_deref(), Some("/tmp/effective/target"));
+        assert_ne!(target.trust_zone.as_deref(), Some("project"));
+    }
+
+    #[test]
+    fn relative_path_is_unresolved_when_effective_cwd_is_unknown() {
+        let defs = test_definitions();
+        let project_root = PathBuf::from("/workspace");
+        let result =
+            parse_command_with_cwd(&to_tokens("rm ./target"), &defs, None, Some(&project_root));
+
+        let target = &result
+            .positional_args
+            .iter()
+            .find(|arg| arg.name == "targets")
+            .unwrap()
+            .values[0];
+        assert_eq!(target.resolved, None);
+        assert_eq!(target.resolution_known, Some(false));
+        assert_eq!(target.trust_zone.as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn shell_expanded_path_is_unresolved() {
+        let defs = test_definitions();
+        let cwd = PathBuf::from("/workspace");
+        let result = parse_command_with_cwd(
+            &to_tokens("rm ./$(printf ../../tmp/target)"),
+            &defs,
+            Some(&cwd),
+            Some(&cwd),
+        );
+
+        let target = &result
+            .positional_args
+            .iter()
+            .find(|arg| arg.name == "targets")
+            .unwrap()
+            .values[0];
+        assert_eq!(target.resolved, None);
+        assert_eq!(target.resolution_known, Some(false));
+        assert_eq!(target.trust_zone.as_deref(), Some("unknown"));
     }
 
     #[test]

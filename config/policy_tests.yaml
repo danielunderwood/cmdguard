@@ -357,6 +357,30 @@ tests:
     command: "touch ./new-file.txt"
     expect: allow
 
+  - name: "ask touch after successful cd outside project"
+    command: "cd /tmp && touch ./new-file.txt"
+    expect: ask
+
+  - name: "subshell cd does not escape to following touch"
+    command: "(cd /tmp) && touch ./new-file.txt"
+    expect: allow
+
+  - name: "ask touch after fallible sequential cd"
+    command: "cd /tmp; touch ./new-file.txt"
+    expect: ask
+
+  - name: "ask touch after dynamic cd"
+    command: 'cd "$TARGET" && touch ./new-file.txt'
+    expect: ask
+
+  - name: "ask touch with command-substituted path"
+    command: 'touch "./$(printf ../../../../tmp/cmdguard_probe)"'
+    expect: ask
+
+  - name: "ask process substitution with nested redirect"
+    command: "echo test > >(cat > /tmp/cmdguard_probe)"
+    expect: ask
+
   - name: "ask touch outside project"
     command: "touch /etc/cmdguard_probe"
     expect: ask
