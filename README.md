@@ -1,5 +1,31 @@
 # cmdguard
 
+## Nix
+
+The flake exports `packages.default` and a Home Manager module:
+
+```nix
+{
+  inputs.cmdguard.url = "github:danielunderwood/cmdguard";
+
+  imports = [ inputs.cmdguard.homeManagerModules.default ];
+  programs.cmdguard = {
+    enable = true;
+    hookTargets = [ "claude" "codex" ];
+  };
+}
+```
+
+The module refreshes shipped base policies and registers only cmdguard's own
+hook entries, preserving user policies and unrelated agent hooks.
+
+Before disabling the module, remove its managed hooks from each enabled target:
+
+```console
+cmdguard hook uninstall --target claude
+cmdguard hook uninstall --target codex
+```
+
 Policy-driven permission control for AI coding agents. cmdguard evaluates shell commands against [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/) policies and integrates with Claude Code and Codex lifecycle hooks.
 
 **See also:** [Security Model](docs/security-model.md) | [Common Rules Recipes](docs/common-rules.md)
