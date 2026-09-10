@@ -206,9 +206,10 @@ pattern *and* nothing else on the command line can move the request or touch a
 local file. It keeps asking for a flag cmdguard does not model, a wrapper or
 `VAR=value` prefix, a redirected destination (`-L`, `--config`, `--connect-to`,
 `--resolve`, proxies, `--doh-url`, Unix sockets), a local file written or read
-(`-o`, `-O`, `-T`, `-c`, `-b`, `--trace`, `--netrc-file`, `--cacert`, ...), an
-`@file` value on `-d`/`-H`/`-F`/`-w`, or a URL the shell or curl would expand
-before the request (`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`).
+(`-o`, `-O`, `-T`, `-c`, `-b`, `--trace`, `--netrc-file`, `--cacert`, ...), a
+value that reads one (`-d @f`, `-H @f`, `-w @f`, `-F field=@f`,
+`--data-urlencode name@f`), or a URL the shell or curl would expand before the
+request (`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`).
 Other safety asks, including shell output redirection, retain precedence.
 
 These are automatically dispatched by the base policies. No rule body or

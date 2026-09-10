@@ -123,8 +123,6 @@ _curl_at_file_flags := {
 	"data_ascii",
 	"data_binary",
 	"data_raw",
-	"form",
-	"form_string",
 	"write_out",
 }
 
@@ -171,6 +169,18 @@ _curl_touches_local_files if {
 _curl_touches_local_files if {
 	some value in _curl_flag_values("data_urlencode")
 	contains(value, "@")
+}
+
+# `-F`/`--form` names the field before the file marker, so the marker sits in
+# the middle of the value: `field=@/etc/passwd` uploads a file and
+# `field=</etc/passwd` sends its contents as the field's value. `--form-string`
+# takes its value literally, but it is cheaper to ask than to carry the
+# exception.
+_curl_touches_local_files if {
+	some flag in {"form", "form_string"}
+	some value in _curl_flag_values(flag)
+	some marker in ["@", "<"]
+	contains(value, marker)
 }
 
 # The normal allow priority (25) beats curl's informational ask (20), while

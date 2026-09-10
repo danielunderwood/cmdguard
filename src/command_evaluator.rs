@@ -579,6 +579,10 @@ allowed_curl_patterns contains `^http://127\.0\.0\.1:3000($|/)`
                 "curl -H 'X-Trace: y' http://localhost:3000/allowed",
                 Decision::Allow,
             ),
+            (
+                "curl -F 'field=value' http://localhost:3000/allowed",
+                Decision::Allow,
+            ),
             ("curl http://localhost:3000/allowed?a=b", Decision::Allow),
             // --- URLs that no pattern covers --------------------------------------
             (
@@ -708,6 +712,14 @@ allowed_curl_patterns contains `^http://127\.0\.0\.1:3000($|/)`
             ),
             (
                 "curl --data-urlencode secret@/etc/passwd http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -F 'file=@/etc/passwd' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -F 'field=</etc/passwd' http://localhost:3000/allowed",
                 Decision::Ask,
             ),
             // --- flags cmdguard does not model -----------------------------------------

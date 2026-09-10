@@ -84,11 +84,11 @@ command carries a flag cmdguard does not model, when a wrapper or `VAR=value`
 prefix could redirect the request, when an option such as `-L`, `--config`,
 `--connect-to`, `--resolve`, a proxy, `--doh-url` or a Unix socket can remap the
 destination, when an option writes or reads a local file (`-o`, `-O`, `-T`,
-`-c`, `-b`, `--trace`, `--netrc-file`, `--cacert`, an `@file` value on
-`-d`/`-H`/`-F`/`-w`), and when a URL token contains something the shell or curl
-expands before the request (`$(...)`, backticks, a leading `~`, `{a,b}`,
-`[1-9]`, `*`). Higher-priority safety asks such as shell output redirection
-still win.
+`-c`, `-b`, `--trace`, `--netrc-file`, `--cacert`, or a value that reads one:
+`-d @f`, `-H @f`, `-w @f`, `-F field=@f`, `--data-urlencode name@f`), and when a
+URL token contains something the shell or curl expands before the request
+(`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`). Higher-priority
+safety asks such as shell output redirection still win.
 
 This checks URLs present in the command only. Curl can also load `~/.curlrc`
 implicitly. Requiring `-q` or `--disable` as the first curl option disables that
