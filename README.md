@@ -277,6 +277,7 @@ Your policies receive structured input for each command:
     "recursive": true,
     "force": true
   },
+  "unknown_flags": [],
   "positional": {
     "targets": [{"raw": "./temp", "resolved": "/project/temp", "trust_zone": "project"}]
   },
@@ -286,6 +287,23 @@ Your policies receive structured input for each command:
   "chain_position": 1,
   "chain_length": 1,
   "chain_operator": null
+}
+```
+
+`unknown_flags` holds the flag tokens that matched no flag definition, in
+the order they were typed. It is only recorded where flags are modelled at
+all — the matched definition must declare at least one flag — so a
+flagless command (`touch`) or a subcommand cmdguard names but models no
+flags for (`git log`) reports `[]` rather than listing every option it was
+given. A rule that grants a command extra latitude should require the list
+to be empty; the stdlib helper `no_unknown_flags` does exactly that:
+
+```rego
+rules["allow_sed_in_pipe"] := allow("sed in a pipe (stdin -> stdout)") if {
+    input.binary_name == "sed"
+    input.prev_operator == "|"
+    not input.parsed_flags.in_place
+    no_unknown_flags
 }
 ```
 
