@@ -209,8 +209,19 @@ local file. It keeps asking for a flag cmdguard does not model, a wrapper or
 (`-o`, `-O`, `-T`, `-c`, `-b`, `-w`, `--trace`, `--netrc-file`, `--cacert`,
 ...), a value that reads one (`-d @f`, `-H @f`, `-F field=@f`,
 `--data-urlencode name@f`), or a URL the shell or curl would expand before the
-request (`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`).
-Other safety asks, including shell output redirection, retain precedence.
+request (`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`). A command
+substitution anywhere on the line blocks the allow too, not only in the URL:
+the shell runs `curl -H "X: $(cat /etc/passwd)" URL` before curl ever starts. A
+plain `$NAME` still allows, so `curl -H "Authorization: Bearer $TOKEN" URL`
+keeps working. Other safety asks, including shell output redirection, retain
+precedence.
+
+Two consequences worth knowing. An IPv6 literal URL such as `http://[::1]:3000/`
+can never be allowed: `[` and `]` count as glob characters, so such a URL always
+reads as dynamic -- use the hostname form instead. And this checks the URLs
+written on the command line only; curl also reads `~/.curlrc` implicitly, so
+pass `-q` (or `--disable`) as curl's first argument when the policy has to
+constrain the connection curl actually makes rather than only the declared URLs.
 
 These are automatically dispatched by the base policies. No rule body or
 custom priority is needed. Like every table here, they have to live in a file

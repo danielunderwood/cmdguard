@@ -88,8 +88,17 @@ destination, when an option writes or reads a local file (`-o`, `-O`, `-T`,
 `--trace`, `--netrc-file`, `--cacert`, or a value that reads one: `-d @f`,
 `-H @f`, `-F field=@f`, `--data-urlencode name@f`), and when a URL token
 contains something the shell or curl expands before the request
-(`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`). Higher-priority
+(`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`), and when any
+argument -- not only the URL -- contains a command substitution (`$(...)`,
+backticks, `${...}`), because the shell runs it before curl starts:
+`curl -H "X: $(cat /etc/passwd)" URL` reaches an allowed URL with the file's
+contents in a header. A plain `$NAME` is deliberately still allowed so that
+`curl -H "Authorization: Bearer $TOKEN" URL` keeps working. Higher-priority
 safety asks such as shell output redirection still win.
+
+One shape can never be allowed: an IPv6 literal URL such as `http://[::1]:3000/`
+always reads as dynamic, because `[` and `]` are treated as glob characters. Use
+the hostname form instead.
 
 This checks URLs present in the command only. Curl can also load `~/.curlrc`
 implicitly. Requiring `-q` or `--disable` as the first curl option disables that
