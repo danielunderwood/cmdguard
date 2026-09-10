@@ -55,7 +55,7 @@ rules["deny_psql_drop"] := deny("DROP statements blocked in psql") if {
 ## Curl URLs
 
 Allow curl only when every URL written on the command line targets a local
-service by contributing an anchored regular expression to the built-in set:
+service by contributing a regular expression to the built-in set:
 
 ```rego
 package cmdguard
@@ -65,13 +65,30 @@ import rego.v1
 allowed_curl_patterns contains `^http://localhost:3000($|/)`
 ```
 
+Put this in a file cmdguard loads. With the synced base layout that is
+`~/.config/cmdguard/policies/custom.rego` or any `*.rego` beside it; with a flat
+`--policy-dir DIR` (`cmdguard eval`/`cmdguard test` against a checkout's
+`config/`) only the top-level `*.rego` files of `DIR` are loaded, so the pattern
+has to sit directly in that directory.
+
 Set membership matches the data: each entry is a regex, and `contains` lets
 multiple policy files contribute patterns without replacing a list or storing
-dummy boolean values. The base policy requires at least one declared URL and
-checks every bare URL and repeated `--url` value. It keeps asking when a URL
-does not match, or when options such as `-L`, `--config`, `--connect-to`,
-`--resolve`, proxies, or Unix sockets can redirect or remap the destination.
-Higher-priority safety asks such as shell output redirection still win.
+dummy boolean values. Each pattern is anchored at the start before it is
+matched -- `regex.match` otherwise searches anywhere in the URL -- so it must
+describe the URL from its first character, and a host pattern should end with
+`($|/)` so that `http://localhost:3000.evil.example/` cannot match it.
+
+The base policy requires at least one declared URL and checks every bare URL and
+repeated `--url` value. It keeps asking when a URL does not match, when the
+command carries a flag cmdguard does not model, when a wrapper or `VAR=value`
+prefix could redirect the request, when an option such as `-L`, `--config`,
+`--connect-to`, `--resolve`, a proxy, `--doh-url` or a Unix socket can remap the
+destination, when an option writes or reads a local file (`-o`, `-O`, `-T`,
+`-c`, `-b`, `--trace`, `--netrc-file`, `--cacert`, an `@file` value on
+`-d`/`-H`/`-F`/`-w`), and when a URL token contains something the shell or curl
+expands before the request (`$(...)`, backticks, a leading `~`, `{a,b}`,
+`[1-9]`, `*`). Higher-priority safety asks such as shell output redirection
+still win.
 
 This checks URLs present in the command only. Curl can also load `~/.curlrc`
 implicitly. Requiring `-q` or `--disable` as the first curl option disables that

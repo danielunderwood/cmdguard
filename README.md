@@ -191,19 +191,33 @@ import rego.v1
 allowed_with_args["make"] := {"build", "test", "clean", "lint"}
 ```
 
-For curl, contribute anchored regular expressions to an incremental set:
+For curl, contribute regular expressions to an incremental set:
 
 ```rego
 allowed_curl_patterns contains `^http://localhost:3000($|/)`
 ```
 
-Curl is allowed only when every bare URL and every `--url` value matches a
-pattern. Destination-changing options such as `-L`, `--config`,
-`--connect-to`, proxies, and Unix sockets continue to ask. Other safety asks,
-including shell output redirection, also retain precedence.
+Every pattern is anchored at the start before it is matched, so it must
+describe the URL from its first character. End a host pattern with `($|/)`, or
+`http://localhost:3000.evil.example/` matches it too.
+
+curl is allowed only when every bare URL and every `--url` value matches a
+pattern *and* nothing else on the command line can move the request or touch a
+local file. It keeps asking for a flag cmdguard does not model, a wrapper or
+`VAR=value` prefix, a redirected destination (`-L`, `--config`, `--connect-to`,
+`--resolve`, proxies, `--doh-url`, Unix sockets), a local file written or read
+(`-o`, `-O`, `-T`, `-c`, `-b`, `--trace`, `--netrc-file`, `--cacert`, ...), an
+`@file` value on `-d`/`-H`/`-F`/`-w`, or a URL the shell or curl would expand
+before the request (`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`).
+Other safety asks, including shell output redirection, retain precedence.
 
 These are automatically dispatched by the base policies. No rule body or
-custom priority is needed.
+custom priority is needed. Like every table here, they have to live in a file
+cmdguard loads: in the synced base layout that is
+`~/.config/cmdguard/policies/custom.rego` or any `*.rego` beside it, while a
+flat `--policy-dir DIR` (what `cmdguard eval`/`cmdguard test` use against a
+checkout's `config/`) loads only the top-level `*.rego` files of `DIR`, so
+there the pattern belongs in a `*.rego` file directly in that directory.
 
 ### Exclusion Tables
 
