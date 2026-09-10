@@ -258,6 +258,16 @@ tests:
     command: "(git status; rm -rf /) | cat"
     expect: ask
 
+  # A newline terminates a statement just like `;`: the trailing `&` belongs
+  # to `touch`, not to the newline-terminated `cd`, so the cd is in effect.
+  - name: "ask touch after newline-terminated cd with later background operator"
+    command: "cd /tmp\ntouch ./new-file.txt & git status"
+    expect: ask
+
+  - name: "ask touch after newline-terminated cd inside brace group"
+    command: "{ cd /tmp\ntouch ./new-file.txt & }"
+    expect: ask
+
   # With redirects
   - name: "ask for shell output redirect"
     command: "git log > /tmp/log.txt"

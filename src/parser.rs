@@ -368,13 +368,13 @@ impl<'a> ShellAnalyzer<'a> {
         input: CwdState,
         trailing_redirects: Vec<ShellRedirect>,
     ) -> Flow {
-        let (items, operators) = statement_children(node);
+        let items = statement_children(node);
         if items.is_empty() {
             return Flow::unchanged(input);
         }
 
         let mut current = self.analyze_node(
-            items[0],
+            items[0].0,
             input,
             if items.len() == 1 {
                 trailing_redirects.clone()
@@ -383,8 +383,8 @@ impl<'a> ShellAnalyzer<'a> {
             },
         );
 
-        for (index, item) in items.iter().enumerate().skip(1) {
-            let operator = operators.get(index - 1).map(String::as_str).unwrap_or(";");
+        for (index, (item, _)) in items.iter().enumerate().skip(1) {
+            let operator = items[index - 1].1.as_deref().unwrap_or(";");
             self.set_next_operator(current.last_command, operator);
             let right_input = match operator {
                 "&&" => current.success.clone(),
@@ -435,7 +435,7 @@ impl<'a> ShellAnalyzer<'a> {
         input: CwdState,
         trailing_redirects: Vec<ShellRedirect>,
     ) -> Flow {
-        let (items, operators) = statement_children(node);
+        let items = statement_children(node);
         if items.is_empty() {
             return Flow::unchanged(input);
         }
@@ -445,8 +445,8 @@ impl<'a> ShellAnalyzer<'a> {
         let mut last_flow = Flow::unchanged(next_input.clone());
         let mut mutates_cwd = false;
 
-        for (index, item) in items.iter().enumerate() {
-            let following_operator = operators.get(index).map(String::as_str);
+        for (index, (item, terminator)) in items.iter().enumerate() {
+            let following_operator = terminator.as_deref();
             let mut flow = self.analyze_node(
                 *item,
                 next_input.clone(),
@@ -533,12 +533,12 @@ impl<'a> ShellAnalyzer<'a> {
         input: CwdState,
         trailing_redirects: Vec<ShellRedirect>,
     ) -> Flow {
-        let (items, operators) = statement_children(node);
+        let items = statement_children(node);
         let mut first_command = None;
         let mut last_command = None;
         let mut mutates_cwd = false;
 
-        for (index, item) in items.iter().enumerate() {
+        for (index, (item, terminator)) in items.iter().enumerate() {
             let flow = self.analyze_node(
                 *item,
                 input.clone(),
@@ -550,7 +550,7 @@ impl<'a> ShellAnalyzer<'a> {
             );
             first_command = first_command.or(flow.first_command);
             if index + 1 < items.len() {
-                let operator = operators.get(index).map(String::as_str).unwrap_or("|");
+                let operator = terminator.as_deref().unwrap_or("|");
                 self.set_next_operator(flow.last_command, operator);
             }
             last_command = flow.last_command.or(last_command);
@@ -645,20 +645,28 @@ impl<'a> ShellAnalyzer<'a> {
     }
 }
 
-fn statement_children(node: Node<'_>) -> (Vec<Node<'_>>, Vec<String>) {
-    let mut items = vec![];
-    let mut operators = vec![];
+/// Pair each named statement with the operator token that terminates it.
+///
+/// tree-sitter-bash emits no node for a newline terminator, so a statement
+/// with no operator token before the next statement is newline-separated and
+/// reported as `None`. Callers treat that exactly like `;`. Pairing by child
+/// position matters: collecting operators into a separate list would make a
+/// later `&` look like it terminated an earlier newline-terminated statement.
+fn statement_children(node: Node<'_>) -> Vec<(Node<'_>, Option<String>)> {
+    let mut items: Vec<(Node<'_>, Option<String>)> = vec![];
     for i in 0..node.child_count() as u32 {
         let Some(child) = node.child(i) else {
             continue;
         };
         if child.is_named() {
-            items.push(child);
+            items.push((child, None));
         } else if matches!(child.kind(), "&&" | "||" | ";" | "&" | "|" | "|&") {
-            operators.push(child.kind().to_string());
+            if let Some((_, operator @ None)) = items.last_mut() {
+                *operator = Some(child.kind().to_string());
+            }
         }
     }
-    (items, operators)
+    items
 }
 
 fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool) {
@@ -1477,5 +1485,36 @@ mod tests {
             ["/tmp", "/workspace"]
         );
         assert_eq!(paths(&result.commands[2].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn newline_terminator_does_not_backdate_a_later_background_operator() {
+        let result = parse("cd /tmp\ntouch ./new-file.txt & git status");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 3);
+        assert_eq!(result.commands[0].text, "cd /tmp");
+        assert_eq!(result.commands[0].next_operator, Some(";".to_string()));
+        assert_eq!(result.commands[1].next_operator, Some("&".to_string()));
+        assert!(paths(&result.commands[1].effective_cwd).contains(&"/tmp".to_string()));
+    }
+
+    #[test]
+    fn newline_terminator_inside_brace_group_keeps_cd_in_effect() {
+        let result = parse("{ cd /tmp\ntouch ./new-file.txt & }");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[1].next_operator, Some("&".to_string()));
+        assert!(paths(&result.commands[1].effective_cwd).contains(&"/tmp".to_string()));
+    }
+
+    #[test]
+    fn background_operator_still_applies_to_its_own_statement() {
+        let result = parse("cd /tmp & touch ./new-file.txt");
+
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[0].next_operator, Some("&".to_string()));
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
     }
 }
