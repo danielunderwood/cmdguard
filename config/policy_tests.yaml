@@ -357,6 +357,16 @@ tests:
     command: "cat <<EOF > secrets.txt\nhi\nEOF"
     expect: ask
 
+  # A redirect destination is `repeat1(_literal)` in the grammar, so arguments
+  # written after it end up inside the redirect node instead of the command.
+  - name: "ask redirect that swallowed command arguments"
+    command: "find . > /dev/null -delete"
+    expect: ask
+
+  - name: "ask redirect written before command arguments"
+    command: "cat > ./out.txt /etc/passwd"
+    expect: ask
+
   # `time` times the pipeline that follows it, so a timed cd still moves the
   # shell.
   - name: "ask touch after timed cd outside project"

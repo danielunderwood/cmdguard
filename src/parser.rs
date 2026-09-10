@@ -369,7 +369,7 @@ impl<'a> ShellAnalyzer<'a> {
                 continue;
             };
             if is_redirect_node(child.kind()) {
-                collect_redirections(&child, self.source, &mut redirects);
+                self.unsupported |= collect_redirections(&child, self.source, &mut redirects);
             } else {
                 words.push(node_text(&child, self.source));
             }
@@ -393,7 +393,8 @@ impl<'a> ShellAnalyzer<'a> {
                 continue;
             };
             if is_redirect_node(child.kind()) {
-                collect_redirections(&child, self.source, &mut inherited_redirects);
+                self.unsupported |=
+                    collect_redirections(&child, self.source, &mut inherited_redirects);
             } else if child.is_named() {
                 body = Some(child);
             }
@@ -785,7 +786,8 @@ impl<'a> ShellAnalyzer<'a> {
                         continue;
                     };
                     if is_redirect_node(child.kind()) {
-                        collect_redirections(&child, self.source, &mut redirects);
+                        self.unsupported |=
+                            collect_redirections(&child, self.source, &mut redirects);
                     } else if child.is_named() {
                         body = Some(child);
                         self.extract_embedded_commands(child, cwd);
@@ -1151,16 +1153,31 @@ fn is_redirect_node(kind: &str) -> bool {
     kind.ends_with("_redirect")
 }
 
+/// Collect the redirects under `node`.
+///
+/// Returns `true` when a redirect's shape means the surrounding command text
+/// cannot be trusted, so the caller must fail closed.
+#[must_use]
 fn collect_redirections(
     node: &tree_sitter::Node,
     source: &str,
     redirects: &mut Vec<ShellRedirect>,
-) {
+) -> bool {
     if is_redirect_node(node.kind()) {
         let raw = node_text(node, source);
         if let Some(redirect) = parse_redirect(&raw) {
             redirects.push(redirect);
         }
+        // A `file_redirect`'s destination is `repeat1(_literal)`, so bash's
+        // `find . > /dev/null -delete` puts `-delete` in the redirect node
+        // rather than in the command. Only the first literal is the
+        // destination, and the rest would silently vanish from the command.
+        let mut ambiguous = node.kind() == "file_redirect" && {
+            let mut cursor = node.walk();
+            node.children_by_field_name("destination", &mut cursor)
+                .count()
+                > 1
+        };
         // tree-sitter-bash nests a redirect that follows a heredoc marker
         // inside the `heredoc_redirect` node (`cat <<EOF > secrets.txt`), so
         // returning here would lose the write.
@@ -1168,20 +1185,22 @@ fn collect_redirections(
             for i in 0..node.child_count() as u32 {
                 match node.child(i) {
                     Some(child) if is_redirect_node(child.kind()) => {
-                        collect_redirections(&child, source, redirects);
+                        ambiguous |= collect_redirections(&child, source, redirects);
                     }
                     _ => {}
                 }
             }
         }
-        return;
+        return ambiguous;
     }
 
+    let mut ambiguous = false;
     for i in 0..node.child_count() as u32 {
         if let Some(child) = node.child(i) {
-            collect_redirections(&child, source, redirects);
+            ambiguous |= collect_redirections(&child, source, redirects);
         }
     }
+    ambiguous
 }
 
 fn parse_redirect(raw: &str) -> Option<ShellRedirect> {
@@ -2219,5 +2238,31 @@ mod tests {
             ),
             ["/workspace/secrets.txt"]
         );
+    }
+
+    #[test]
+    fn redirect_that_swallowed_command_arguments_fails_closed() {
+        // `file_redirect`'s destination is `repeat1(_literal)`, so bash's
+        // `find . > /dev/null -delete` leaves `-delete` inside the redirect
+        // node and out of the command. Only the destination is kept, so the
+        // parse says `find .` - fail closed instead.
+        let result = parse("find . > /dev/null -delete");
+
+        assert!(result.has_errors);
+    }
+
+    #[test]
+    fn redirect_with_a_single_destination_is_still_supported() {
+        let result = parse("find . > /dev/null");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands[0].text, "find .");
+    }
+
+    #[test]
+    fn redirect_before_command_arguments_fails_closed() {
+        let result = parse("cat > ./out.txt /etc/passwd");
+
+        assert!(result.has_errors);
     }
 }
