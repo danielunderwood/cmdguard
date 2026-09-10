@@ -859,6 +859,14 @@ fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool
                     return (CwdState::unknown(), true);
                 }
             }
+            // The `time` reserved word times the pipeline that follows it, so
+            // a `time cd /tmp` still changes the shell's cwd.
+            Some("time") => {
+                command_index += 1;
+                while matches!(tokens.get(command_index).map(String::as_str), Some("-p")) {
+                    command_index += 1;
+                }
+            }
             _ => break,
         }
     }
@@ -1855,5 +1863,40 @@ mod tests {
             paths(&redirect(&result).target_resolution),
             ["/workspace/secrets.txt"]
         );
+    }
+
+    #[test]
+    fn time_prefixed_cd_updates_effective_cwd() {
+        let result = parse("time cd /tmp && echo test > test.txt");
+
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
+        assert_eq!(
+            paths(&redirect(&result).target_resolution),
+            ["/tmp/test.txt"]
+        );
+    }
+
+    #[test]
+    fn posix_time_prefixed_cd_updates_effective_cwd() {
+        let result = parse("time -p cd /tmp && echo test > test.txt");
+
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
+    }
+
+    #[test]
+    fn time_prefixed_dynamic_cd_makes_cwd_unknown() {
+        let result = parse("time cd \"$TARGET\" && echo test > test.txt");
+
+        assert_eq!(
+            result.commands[1].effective_cwd.status(),
+            ResolutionStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn time_prefixed_ordinary_command_leaves_cwd_alone() {
+        let result = parse("time git status && echo test > test.txt");
+
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
     }
 }

@@ -333,6 +333,12 @@ tests:
     command: 'for f in *.rs; do rm -rf /; done'
     expect: ask
 
+  # `time` times the pipeline that follows it, so a timed cd still moves the
+  # shell.
+  - name: "ask touch after timed cd outside project"
+    command: "time cd /tmp && touch ./new-file.txt"
+    expect: ask
+
   # A cd inside a conditional or loop body cannot be followed, so the cwd of
   # every command in the construct is unknown and the chain is flagged.
   - name: "ask conditional containing cd"
