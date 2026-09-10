@@ -136,7 +136,7 @@ cmdguard receives the command string from the agent hook, then:
 |----------|----------|-------------|-------|
 | `deny`   | 100      | Block in `PreToolUse` | Block in `PreToolUse` or `PermissionRequest` |
 | `ask`    | 50       | Prompt from `PreToolUse` | No hook decision; preserve a normal Codex approval prompt if one occurs |
-| `allow`  | 25       | Allow from `PreToolUse` | Fall through in `PreToolUse`; allow an actual `PermissionRequest` |
+| `allow`  | 25       | Allow from `PreToolUse` | No hook decision in `PreToolUse` or `PermissionRequest`; cmdguard never auto-approves |
 | `defer`  | 10       | No hook output; use Claude Code's normal permission flow | No hook decision; use Codex's sandbox and approval policy |
 
 By default, a command no rule matches **defers** -- cmdguard stays silent
@@ -244,8 +244,9 @@ This registers Bash matchers for both `PreToolUse` and `PermissionRequest` in
 `~/.codex/hooks.json`. `PreToolUse` blocks cmdguard `deny` decisions before the
 tool call. Other decisions emit nothing at this stage, so Codex still applies
 its configured sandbox and approval policy. If Codex is about to request
-approval, `PermissionRequest` lets cmdguard allow a policy `allow`, deny a
-policy `deny`, or leave `ask`/`defer` to the normal prompt.
+approval, `PermissionRequest` lets cmdguard deny a policy `deny`; `allow`,
+`ask`, and `defer` all leave the normal prompt in place. cmdguard can only
+refuse an approval request, never grant one.
 
 Codex does not currently support `permissionDecision: "ask"` from
 `PreToolUse`. Consequently, a cmdguard `ask` cannot create a prompt for a
