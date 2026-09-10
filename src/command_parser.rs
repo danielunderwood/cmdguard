@@ -45,14 +45,19 @@ pub struct ParsedCommand {
     pub positional_args: Vec<PositionalArg>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subcommand: Option<String>,
-    /// Flag tokens that matched no entry in the command's definition.
+    /// Flag tokens that matched no entry in the command's definition, in the
+    /// order they were typed (repeats included).
     ///
-    /// Only populated for commands cmdguard has a definition for; for unknown
-    /// binaries every flag is trivially unrecognized, which is not useful
-    /// signal. Policies that grant a command extra latitude should refuse to do
-    /// so when this is non-empty -- a flag we could not model is a flag whose
-    /// effect we cannot reason about.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Recorded only where flags are actually modelled: the matched definition
+    /// must declare at least one flag -- the subcommand's own flag map when a
+    /// subcommand matched, otherwise the command's. For an unknown binary, a
+    /// stub subcommand (`git log`) or a flagless command (`touch`) every option
+    /// would be "unknown", which is noise rather than signal, so the list stays
+    /// empty.
+    ///
+    /// Policies that grant a command extra latitude should refuse to do so when
+    /// this is non-empty -- a flag we could not model is a flag whose effect we
+    /// cannot reason about.
     pub unknown_flags: Vec<String>,
 }
 
@@ -111,6 +116,10 @@ pub fn parse_command(
                 parsing,
                 project_root,
                 subcommand.as_ref(), // Skip the subcommand name in positional args
+                // Stub subcommands model no flags of their own, so every option
+                // would be reported as unknown. Only a subcommand that declares
+                // flags can tell a modelled option from an unmodelled one.
+                !sub_def.flags.is_empty(),
             );
 
             return ParsedCommand {
@@ -130,8 +139,15 @@ pub fn parse_command(
         return parse_without_definition(args, parsing, subcommand, project_root);
     };
 
-    let mut result =
-        parse_with_definition_skip_token(args, flags, positional_defs, parsing, project_root, None);
+    let mut result = parse_with_definition_skip_token(
+        args,
+        flags,
+        positional_defs,
+        parsing,
+        project_root,
+        None,
+        !flags.is_empty(),
+    );
     result.subcommand = subcommand;
     result
 }
@@ -257,6 +273,7 @@ fn parse_with_definition_skip_token(
     parsing: &ParsingOptions,
     project_root: Option<&Path>,
     skip_token: Option<&String>,
+    record_unknown_flags: bool,
 ) -> ParsedCommand {
     let mut parsed_flags: HashMap<String, FlagValue> = HashMap::new();
     let mut positional: Vec<String> = vec![];
@@ -305,6 +322,35 @@ fn parse_with_definition_skip_token(
         }
 
         // Handle short flags (-f, -rf, -u root)
+        //
+        // Try the whole token against the definitions first: a definition may
+        // declare a single-dash long form (find's -name) or a multi-character
+        // short form (wget's -nc), neither of which survives being expanded
+        // into single characters.
+        if let Some((name, def)) =
+            match_flag_by_long(arg, flags).or_else(|| match_flag_by_short(arg, flags))
+        {
+            let (consumed, value, is_repeatable) = flag_value_from_following(def, &args[i + 1..]);
+            insert_flag(&mut parsed_flags, name, value, is_repeatable);
+            i += 1 + consumed;
+            continue;
+        }
+
+        // A value attached to a single-character flag: `-i.bak`, `-XPOST`,
+        // `-n5`. The remainder of the token is data, so it must not be expanded
+        // into flags (which would also report each character as unknown).
+        if let Some((name, value, is_repeatable)) = match_attached_value_flag(arg, flags) {
+            insert_flag(
+                &mut parsed_flags,
+                name,
+                FlagValue::String(value),
+                is_repeatable,
+            );
+            i += 1;
+            continue;
+        }
+
+        // Otherwise the token is a run of combined boolean flags (-rf).
         let expanded = if parsing.combine_short_flags {
             expand_combined_flags(arg)
         } else {
@@ -332,8 +378,11 @@ fn parse_with_definition_skip_token(
         i += 1 + extra_consumed;
     }
 
-    unknown_flags.sort();
-    unknown_flags.dedup();
+    // Unmatched tokens are only signal where flags are modelled at all; see
+    // ParsedCommand::unknown_flags.
+    if !record_unknown_flags {
+        unknown_flags.clear();
+    }
 
     ParsedCommand {
         parsed_flags,
@@ -355,11 +404,11 @@ fn parse_long_flag(
 
     // Check for = form: --user=root
     if let Some(equals_pos) = without_dashes.find('=') {
-        let flag_part = &without_dashes[..equals_pos];
+        let flag_token = &arg[..equals_pos + 2];
         let value_part = &without_dashes[equals_pos + 1..];
 
         // Find matching flag definition
-        if let Some((name, def)) = match_flag_by_long(flag_part, flags) {
+        if let Some((name, def)) = match_flag_by_long(flag_token, flags) {
             match def.flag_type {
                 FlagType::Boolean => {
                     // Boolean flags shouldn't use = form, but handle it anyway
@@ -384,56 +433,17 @@ fn parse_long_flag(
             }
         }
 
-        // Unknown flag with =, treat as positional
+        // No definition matched; the caller records the token in unknown_flags.
         return (1, None, FlagValue::Bool(false), false);
     }
 
     // No = form: --force or --user root
-    if let Some((name, def)) = match_flag_by_long(without_dashes, flags) {
-        match def.flag_type {
-            FlagType::Boolean => {
-                return (1, Some(name), FlagValue::Bool(true), false);
-            }
-            FlagType::WithArg => {
-                // Needs an argument
-                if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (
-                        2,
-                        Some(name),
-                        FlagValue::String(remaining[0].clone()),
-                        false,
-                    );
-                } else {
-                    // Missing required argument, treat as boolean
-                    return (1, Some(name), FlagValue::Bool(true), false);
-                }
-            }
-            FlagType::WithOptionalArg => {
-                // Optional argument
-                if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (
-                        2,
-                        Some(name),
-                        FlagValue::String(remaining[0].clone()),
-                        false,
-                    );
-                } else {
-                    return (1, Some(name), FlagValue::Bool(true), false);
-                }
-            }
-            FlagType::Repeatable => {
-                // Needs an argument
-                if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (2, Some(name), FlagValue::String(remaining[0].clone()), true);
-                } else {
-                    // Missing required argument, skip
-                    return (1, Some(name), FlagValue::Bool(true), true);
-                }
-            }
-        }
+    if let Some((name, def)) = match_flag_by_long(arg, flags) {
+        let (consumed, value, is_repeatable) = flag_value_from_following(def, remaining);
+        return (1 + consumed, Some(name), value, is_repeatable);
     }
 
-    // Unknown flag, skip it
+    // No definition matched; the caller records the token in unknown_flags.
     (1, None, FlagValue::Bool(false), false)
 }
 
@@ -446,47 +456,8 @@ fn parse_short_flag(
 ) -> (usize, Option<String>, FlagValue, bool) {
     // Find matching flag definition
     if let Some((name, def)) = match_flag_by_short(arg, flags) {
-        match def.flag_type {
-            FlagType::Boolean => {
-                return (0, Some(name), FlagValue::Bool(true), false);
-            }
-            FlagType::WithArg => {
-                // Needs an argument
-                if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (
-                        1,
-                        Some(name),
-                        FlagValue::String(remaining[0].clone()),
-                        false,
-                    );
-                } else {
-                    // Missing required argument, treat as boolean
-                    return (0, Some(name), FlagValue::Bool(true), false);
-                }
-            }
-            FlagType::WithOptionalArg => {
-                // Optional argument
-                if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (
-                        1,
-                        Some(name),
-                        FlagValue::String(remaining[0].clone()),
-                        false,
-                    );
-                } else {
-                    return (0, Some(name), FlagValue::Bool(true), false);
-                }
-            }
-            FlagType::Repeatable => {
-                // Needs an argument
-                if !remaining.is_empty() && !remaining[0].starts_with('-') {
-                    return (1, Some(name), FlagValue::String(remaining[0].clone()), true);
-                } else {
-                    // Missing required argument, skip
-                    return (0, Some(name), FlagValue::Bool(true), true);
-                }
-            }
-        }
+        let (consumed, value, is_repeatable) = flag_value_from_following(def, remaining);
+        return (consumed, Some(name), value, is_repeatable);
     }
 
     // Try claim patterns for unknown flags (e.g., -30 -> lines: "30")
@@ -494,22 +465,81 @@ fn parse_short_flag(
         return (0, Some(name), FlagValue::String(value), false);
     }
 
-    // Unknown flag, skip it
+    // No definition matched; the caller records the token in unknown_flags.
     (0, None, FlagValue::Bool(false), false)
 }
 
-/// Find a flag definition by long form
+/// Work out a matched flag's value from the tokens that follow it.
+///
+/// Returns (extra_tokens_consumed, value, is_repeatable). `WithOptionalArg`
+/// never consumes a following token: GNU tools spell the optional value
+/// attached (`-i.bak`, `--in-place=.bak`), so treating the next token as the
+/// value swallows an argument -- `sed -i 's/foo/bar/' f` would take the script
+/// as the backup suffix.
+fn flag_value_from_following(def: &FlagDef, remaining: &[String]) -> (usize, FlagValue, bool) {
+    let is_repeatable = matches!(def.flag_type, FlagType::Repeatable);
+
+    match def.flag_type {
+        FlagType::Boolean | FlagType::WithOptionalArg => (0, FlagValue::Bool(true), false),
+        FlagType::WithArg | FlagType::Repeatable => {
+            if !remaining.is_empty() && !remaining[0].starts_with('-') {
+                (1, FlagValue::String(remaining[0].clone()), is_repeatable)
+            } else {
+                // Missing required argument; record the flag's presence only.
+                (0, FlagValue::Bool(true), is_repeatable)
+            }
+        }
+    }
+}
+
+/// Match `-i.bak` / `-XPOST` / `-n5`: a single-character flag that takes a
+/// value, with that value attached to the same token.
+///
+/// Returns (flag_name, value, is_repeatable).
+fn match_attached_value_flag(
+    token: &str,
+    flags: &HashMap<String, FlagDef>,
+) -> Option<(String, String, bool)> {
+    let mut chars = token.strip_prefix('-')?.chars();
+    let first = chars.next()?;
+    let value: String = chars.collect();
+    if value.is_empty() {
+        return None;
+    }
+
+    let (name, def) = match_flag_by_short(&format!("-{}", first), flags)?;
+    if !matches!(
+        def.flag_type,
+        FlagType::WithArg | FlagType::WithOptionalArg | FlagType::Repeatable
+    ) {
+        return None;
+    }
+
+    Some((name, value, matches!(def.flag_type, FlagType::Repeatable)))
+}
+
+/// Find a flag definition by long form, given the whole token (dashes included)
+///
+/// A definition may spell its long form with a single dash -- find's `-name`,
+/// `-type`, `-maxdepth` -- in which case the token must match it exactly.
 fn match_flag_by_long<'a>(
-    long_form: &str,
+    token: &str,
     flags: &'a HashMap<String, FlagDef>,
 ) -> Option<(String, &'a FlagDef)> {
     for (name, def) in flags {
-        if let Some(long) = &def.long {
-            // Strip -- from definition if present
-            let long_without_dashes = long.strip_prefix("--").unwrap_or(long);
-            if long_without_dashes == long_form {
-                return Some((name.clone(), def));
-            }
+        let Some(long) = &def.long else { continue };
+
+        let matched = match long.strip_prefix("--") {
+            // GNU long option: compare the names without their dashes
+            Some(long_name) => token.strip_prefix("--") == Some(long_name),
+            // Single-dash long form (find's -name): match the token exactly
+            None if long.starts_with('-') => long.as_str() == token,
+            // Declared without dashes: still a GNU long option
+            None => token.strip_prefix("--") == Some(long.as_str()),
+        };
+
+        if matched {
+            return Some((name.clone(), def));
         }
     }
     None
@@ -1009,6 +1039,8 @@ mod tests {
                             make_flag(&[], Some("--hard"), FlagType::Boolean),
                         )])),
                     ),
+                    // stub: a subcommand cmdguard names but models no flags for
+                    ("log".to_string(), make_subcommand(HashMap::new())),
                 ]),
                 is_wrapper: false,
                 parsing: ParsingOptions::default(),
@@ -1110,6 +1142,238 @@ mod tests {
                         make_flag(&["-D"], Some("--save-dev"), FlagType::Boolean),
                     )])),
                 )]),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // sed -- WithOptionalArg (-i / --in-place[=SUFFIX]) plus a repeatable
+        // script flag, mirroring config/builtins.ncl
+        commands.insert(
+            "sed".to_string(),
+            CommandDef {
+                flags: HashMap::from([
+                    (
+                        "in_place".to_string(),
+                        make_flag(&["-i"], Some("--in-place"), FlagType::WithOptionalArg),
+                    ),
+                    (
+                        "expression".to_string(),
+                        make_flag(&["-e"], Some("--expression"), FlagType::Repeatable),
+                    ),
+                    (
+                        "quiet".to_string(),
+                        make_flag(&["-n"], Some("--quiet"), FlagType::Boolean),
+                    ),
+                ]),
+                positional: vec![
+                    PositionalDef {
+                        name: "script".to_string(),
+                        arg_type: ArgType::String,
+                        position: None,
+                        variadic: false,
+                        last: false,
+                        optional: false,
+                    },
+                    PositionalDef {
+                        name: "files".to_string(),
+                        arg_type: ArgType::Path,
+                        position: None,
+                        variadic: true,
+                        last: false,
+                        optional: true,
+                    },
+                ],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // find -- long options written with a single dash
+        commands.insert(
+            "find".to_string(),
+            CommandDef {
+                flags: HashMap::from([
+                    (
+                        "name".to_string(),
+                        make_flag(&[], Some("-name"), FlagType::WithArg),
+                    ),
+                    (
+                        "type".to_string(),
+                        make_flag(&[], Some("-type"), FlagType::WithArg),
+                    ),
+                    (
+                        "maxdepth".to_string(),
+                        make_flag(&[], Some("-maxdepth"), FlagType::WithArg),
+                    ),
+                ]),
+                positional: vec![PositionalDef {
+                    name: "paths".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: true,
+                    last: false,
+                    optional: true,
+                }],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // wget -- multi-character short form (-nc)
+        commands.insert(
+            "wget".to_string(),
+            CommandDef {
+                flags: HashMap::from([
+                    (
+                        "no_clobber".to_string(),
+                        make_flag(&["-nc"], Some("--no-clobber"), FlagType::Boolean),
+                    ),
+                    (
+                        "quiet".to_string(),
+                        make_flag(&["-q"], Some("--quiet"), FlagType::Boolean),
+                    ),
+                ]),
+                positional: vec![PositionalDef {
+                    name: "urls".to_string(),
+                    arg_type: ArgType::String,
+                    position: None,
+                    variadic: true,
+                    last: false,
+                    optional: false,
+                }],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // curl -- value attached to a single-character short flag (-XPOST)
+        commands.insert(
+            "curl".to_string(),
+            CommandDef {
+                flags: HashMap::from([
+                    (
+                        "request".to_string(),
+                        make_flag(&["-X"], Some("--request"), FlagType::WithArg),
+                    ),
+                    (
+                        "output".to_string(),
+                        make_flag(&["-o"], Some("--output"), FlagType::WithArg),
+                    ),
+                    (
+                        "header".to_string(),
+                        make_flag(&["-H"], Some("--header"), FlagType::Repeatable),
+                    ),
+                ]),
+                positional: vec![PositionalDef {
+                    name: "url".to_string(),
+                    arg_type: ArgType::String,
+                    position: None,
+                    variadic: false,
+                    last: true,
+                    optional: false,
+                }],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // grep -- -A3 style attached numeric value
+        commands.insert(
+            "grep".to_string(),
+            CommandDef {
+                flags: HashMap::from([
+                    (
+                        "after_context".to_string(),
+                        make_flag(&["-A"], Some("--after-context"), FlagType::WithArg),
+                    ),
+                    (
+                        "ignore_case".to_string(),
+                        make_flag(&["-i"], Some("--ignore-case"), FlagType::Boolean),
+                    ),
+                    (
+                        "recursive".to_string(),
+                        make_flag(&["-r", "-R"], Some("--recursive"), FlagType::Boolean),
+                    ),
+                ]),
+                positional: vec![
+                    PositionalDef {
+                        name: "pattern".to_string(),
+                        arg_type: ArgType::String,
+                        position: None,
+                        variadic: false,
+                        last: false,
+                        optional: false,
+                    },
+                    PositionalDef {
+                        name: "files".to_string(),
+                        arg_type: ArgType::Path,
+                        position: None,
+                        variadic: true,
+                        last: false,
+                        optional: true,
+                    },
+                ],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions::default(),
+            },
+        );
+
+        // tail -- combine_short_flags = false plus a claim_pattern for -NUM
+        commands.insert(
+            "tail".to_string(),
+            CommandDef {
+                flags: HashMap::from([
+                    (
+                        "lines".to_string(),
+                        FlagDef {
+                            short: vec!["-n".to_string()],
+                            long: Some("--lines".to_string()),
+                            flag_type: FlagType::WithArg,
+                            claim_pattern: Some("^-(\\d+)$".to_string()),
+                        },
+                    ),
+                    (
+                        "follow".to_string(),
+                        make_flag(&["-f"], Some("--follow"), FlagType::Boolean),
+                    ),
+                ]),
+                positional: vec![PositionalDef {
+                    name: "files".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: true,
+                    last: false,
+                    optional: true,
+                }],
+                subcommands: HashMap::new(),
+                is_wrapper: false,
+                parsing: ParsingOptions {
+                    combine_short_flags: false,
+                    double_dash_ends_flags: true,
+                },
+            },
+        );
+
+        // touch -- a command with no modelled flags at all
+        commands.insert(
+            "touch".to_string(),
+            CommandDef {
+                flags: HashMap::new(),
+                positional: vec![PositionalDef {
+                    name: "files".to_string(),
+                    arg_type: ArgType::Path,
+                    position: None,
+                    variadic: true,
+                    last: false,
+                    optional: false,
+                }],
+                subcommands: HashMap::new(),
                 is_wrapper: false,
                 parsing: ParsingOptions::default(),
             },
@@ -1275,7 +1539,20 @@ mod tests {
         let result = parse_command(&to_tokens("rm --no-preserve-root=yes /"), &defs, None);
 
         assert_eq!(result.unknown_flags, vec!["--no-preserve-root=yes"]);
-        assert!(!result.parsed_flags.contains_key("no-preserve-root"));
+        // The token is recorded as unknown, not smuggled in under some other
+        // name: nothing lands in parsed_flags, and the positional targets are
+        // exactly what was typed.
+        assert!(result.parsed_flags.is_empty(), "{:?}", result.parsed_flags);
+        let targets = result.positional_args.iter().find(|a| a.name == "targets");
+        assert_eq!(
+            targets
+                .unwrap()
+                .values
+                .iter()
+                .map(|v| v.raw.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/"]
+        );
     }
 
     #[test]
@@ -1599,5 +1876,254 @@ mod tests {
             result2.parsed_flags.get("lines"),
             Some(&FlagValue::String("50".to_string()))
         );
+    }
+
+    #[test]
+    fn test_optional_arg_flag_does_not_consume_next_token() {
+        // `sed -i 's/foo/bar/' f`: -i takes its suffix only when attached.
+        // Swallowing the next token turned the script into the suffix and the
+        // file into the script.
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("sed -i s/foo/bar/ f"), &defs, None);
+
+        assert_eq!(
+            result.parsed_flags.get("in_place"),
+            Some(&FlagValue::Bool(true))
+        );
+        let script = result.positional_args.iter().find(|a| a.name == "script");
+        assert_eq!(script.unwrap().values[0].raw, "s/foo/bar/");
+        let files = result.positional_args.iter().find(|a| a.name == "files");
+        assert_eq!(
+            files
+                .unwrap()
+                .values
+                .iter()
+                .map(|v| v.raw.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f"]
+        );
+    }
+
+    #[test]
+    fn test_long_optional_arg_flag_does_not_consume_next_token() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("sed --in-place s/foo/bar/ f"), &defs, None);
+
+        assert_eq!(
+            result.parsed_flags.get("in_place"),
+            Some(&FlagValue::Bool(true))
+        );
+        let script = result.positional_args.iter().find(|a| a.name == "script");
+        assert_eq!(script.unwrap().values[0].raw, "s/foo/bar/");
+        let files = result.positional_args.iter().find(|a| a.name == "files");
+        assert_eq!(
+            files
+                .unwrap()
+                .values
+                .iter()
+                .map(|v| v.raw.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f"]
+        );
+    }
+
+    #[test]
+    fn test_long_optional_arg_takes_attached_value() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("sed --in-place=.bak s/x/y/ f"), &defs, None);
+
+        assert_eq!(
+            result.parsed_flags.get("in_place"),
+            Some(&FlagValue::String(".bak".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_short_optional_arg_takes_attached_value() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("sed -i.bak s/x/y/ f"), &defs, None);
+
+        assert_eq!(
+            result.parsed_flags.get("in_place"),
+            Some(&FlagValue::String(".bak".to_string()))
+        );
+        // ".bak" is a value, not a run of combined boolean flags: expanding it
+        // would report -b/-a/-k as unknown.
+        assert!(
+            result.unknown_flags.is_empty(),
+            "expected no unknown flags, got {:?}",
+            result.unknown_flags
+        );
+    }
+
+    #[test]
+    fn test_single_dash_long_options_match_their_definition() {
+        // find spells its long options with one dash. Expanding -name into
+        // -n/-a/-m/-e lost the option and buried its value in the paths.
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("find . -name *.rs -type f"), &defs, None);
+
+        assert_eq!(
+            result.parsed_flags.get("name"),
+            Some(&FlagValue::String("*.rs".to_string()))
+        );
+        assert_eq!(
+            result.parsed_flags.get("type"),
+            Some(&FlagValue::String("f".to_string()))
+        );
+        assert!(
+            result.unknown_flags.is_empty(),
+            "expected no unknown flags, got {:?}",
+            result.unknown_flags
+        );
+        let paths = result.positional_args.iter().find(|a| a.name == "paths");
+        assert_eq!(
+            paths
+                .unwrap()
+                .values
+                .iter()
+                .map(|v| v.raw.as_str())
+                .collect::<Vec<_>>(),
+            vec!["."]
+        );
+    }
+
+    #[test]
+    fn test_multi_character_short_form_matches_whole_token() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("wget -nc http://x/y"), &defs, None);
+
+        assert_eq!(
+            result.parsed_flags.get("no_clobber"),
+            Some(&FlagValue::Bool(true))
+        );
+        assert!(
+            result.unknown_flags.is_empty(),
+            "expected no unknown flags, got {:?}",
+            result.unknown_flags
+        );
+    }
+
+    #[test]
+    fn test_value_attached_to_short_flag() {
+        let defs = test_definitions();
+
+        let grep = parse_command(&to_tokens("grep -A3 pat f"), &defs, None);
+        assert_eq!(
+            grep.parsed_flags.get("after_context"),
+            Some(&FlagValue::String("3".to_string()))
+        );
+        assert!(grep.unknown_flags.is_empty(), "{:?}", grep.unknown_flags);
+
+        let curl_request = parse_command(&to_tokens("curl -XPOST https://x"), &defs, None);
+        assert_eq!(
+            curl_request.parsed_flags.get("request"),
+            Some(&FlagValue::String("POST".to_string()))
+        );
+        assert!(
+            curl_request.unknown_flags.is_empty(),
+            "{:?}",
+            curl_request.unknown_flags
+        );
+
+        let curl_output = parse_command(&to_tokens("curl -o/tmp/out http://x"), &defs, None);
+        assert_eq!(
+            curl_output.parsed_flags.get("output"),
+            Some(&FlagValue::String("/tmp/out".to_string()))
+        );
+        assert!(
+            curl_output.unknown_flags.is_empty(),
+            "{:?}",
+            curl_output.unknown_flags
+        );
+    }
+
+    #[test]
+    fn test_value_attached_to_short_flag_without_combining() {
+        // tail sets combine_short_flags = false; -n5 must still mean -n 5.
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("tail -n5 f"), &defs, None);
+
+        assert_eq!(
+            result.parsed_flags.get("lines"),
+            Some(&FlagValue::String("5".to_string()))
+        );
+        assert!(
+            result.unknown_flags.is_empty(),
+            "expected no unknown flags, got {:?}",
+            result.unknown_flags
+        );
+    }
+
+    #[test]
+    fn test_combined_boolean_flags_record_unmatched_characters() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("rm -rq x"), &defs, None);
+
+        assert_eq!(
+            result.parsed_flags.get("recursive"),
+            Some(&FlagValue::Bool(true))
+        );
+        assert_eq!(result.unknown_flags, vec!["-q"]);
+    }
+
+    #[test]
+    fn test_unknown_flags_only_recorded_where_flags_are_modelled() {
+        let defs = test_definitions();
+
+        // `log` is a subcommand stub with no modelled flags: every option would
+        // be "unknown", which is noise rather than signal.
+        let log = parse_command(&to_tokens("git log --oneline -5"), &defs, None);
+        assert!(log.unknown_flags.is_empty(), "{:?}", log.unknown_flags);
+
+        // `push` does model flags, so an unmatched one is real signal.
+        let push = parse_command(&to_tokens("git push --bogus origin main"), &defs, None);
+        assert_eq!(push.unknown_flags, vec!["--bogus"]);
+
+        // touch models no flags at all.
+        let touch = parse_command(&to_tokens("touch -r a b"), &defs, None);
+        assert!(touch.unknown_flags.is_empty(), "{:?}", touch.unknown_flags);
+    }
+
+    #[test]
+    fn test_unknown_flags_preserve_order_and_repeats() {
+        let defs = test_definitions();
+        let result = parse_command(&to_tokens("rm --beta --alpha --beta /tmp/x"), &defs, None);
+
+        assert_eq!(
+            result.unknown_flags,
+            vec!["--beta", "--alpha", "--beta"],
+            "unknown flags are reported in command order, without dedup"
+        );
+    }
+
+    #[test]
+    fn test_builtin_definitions_leave_common_commands_unknown_free() {
+        // Guards the shipped config/builtins.ncl, not just the test fixtures:
+        // these are the shapes that used to be misparsed.
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let nickel = crate::nickel_config::NickelConfig::load(&config_dir);
+        assert!(
+            nickel.is_loaded(),
+            "failed to load {}",
+            config_dir.display()
+        );
+        let defs = CommandDefinitions::from_map(nickel.get_command_definitions());
+
+        for command in [
+            "sed -i.bak s/x/y/ f",
+            "find . -name *.rs",
+            "curl -XPOST https://x",
+            "git log --oneline -5",
+            "wget -nc http://x/y",
+        ] {
+            let result = parse_command(&to_tokens(command), &defs, None);
+            assert!(
+                result.unknown_flags.is_empty(),
+                "`{}` reported unknown flags {:?}",
+                command,
+                result.unknown_flags
+            );
+        }
     }
 }
