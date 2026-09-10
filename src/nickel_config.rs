@@ -1026,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_curl_required_values_can_start_with_dash() {
+    fn test_builtin_curl_dash_leading_value_is_not_consumed() {
         use crate::command_defs::CommandDefinitions;
         use crate::command_parser::{self, FlagValue};
         use crate::tokenizer::tokenize;
@@ -1036,54 +1036,46 @@ mod tests {
         let mut definitions = CommandDefinitions::builtin();
         definitions.merge(config.get_command_definitions());
 
+        // curl takes `--url`'s value verbatim, dashes included; the parser
+        // refuses to, so the value stays invisible rather than being
+        // misattributed. The curl policy treats that shape as an unchecked URL
+        // (`_curl_url_flag_value_hidden` in config/network.rego).
         let parsed = command_parser::parse_command(
             &tokenize("curl --url --next http://localhost:3000/allowed").unwrap(),
             &definitions,
             None,
         );
+        assert!(!parsed.parsed_flags.contains_key("url"));
         assert_eq!(
-            parsed.parsed_flags.get("url"),
-            Some(&FlagValue::Array(vec!["--next".to_string()]))
-        );
-        assert!(!parsed.parsed_flags.contains_key("next"));
-
-        let parsed = command_parser::parse_command(
-            &tokenize("curl --url -external http://localhost:3000/allowed").unwrap(),
-            &definitions,
-            None,
-        );
-        assert_eq!(
-            parsed.parsed_flags.get("url"),
-            Some(&FlagValue::Array(vec!["-external".to_string()]))
+            parsed.parsed_flags.get("next"),
+            Some(&FlagValue::Bool(true))
         );
 
+        // A value attached to a single-character flag is still read off the
+        // token that carries it. curl's detection-only flags are declared
+        // single-valued, so they record a string rather than an array.
         let parsed = command_parser::parse_command(
-            &tokenize("curl -X -GET http://localhost:3000/allowed").unwrap(),
+            &tokenize("curl -K/tmp/curl.conf http://localhost:3000/allowed").unwrap(),
             &definitions,
             None,
-        );
-        assert_eq!(
-            parsed.parsed_flags.get("request"),
-            Some(&FlagValue::String("-GET".to_string()))
-        );
-
-        let parsed = command_parser::parse_command(
-            &tokenize("curl -sXPOST -K/tmp/curl.conf http://localhost:3000/allowed").unwrap(),
-            &definitions,
-            None,
-        );
-        assert_eq!(
-            parsed.parsed_flags.get("request"),
-            Some(&FlagValue::String("POST".to_string()))
         );
         assert_eq!(
             parsed.parsed_flags.get("config"),
-            Some(&FlagValue::Array(vec!["/tmp/curl.conf".to_string()]))
+            Some(&FlagValue::String("/tmp/curl.conf".to_string()))
+        );
+
+        // A run of combined short flags reports the characters it cannot match,
+        // so an unmodelled option cannot slip through inside one.
+        let parsed = command_parser::parse_command(
+            &tokenize("curl -sXPOST http://localhost:3000/allowed").unwrap(),
+            &definitions,
+            None,
         );
         assert_eq!(
             parsed.parsed_flags.get("silent"),
             Some(&FlagValue::Bool(true))
         );
+        assert_eq!(parsed.unknown_flags, vec!["-P".to_string()]);
     }
 
     #[test]
