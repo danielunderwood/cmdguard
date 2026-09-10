@@ -320,7 +320,11 @@ impl<'a> ShellAnalyzer<'a> {
         input: CwdState,
         redirects: Vec<ShellRedirect>,
     ) -> Flow {
-        let text = node_text(&node, self.source).trim().to_string();
+        // tree-sitter-bash can place a redirect inside the `command` node
+        // itself (`>/dev/null cd /tmp`). Splitting it out keeps it out of the
+        // command text - otherwise the tokens start with `>/dev/null` and the
+        // `cd` is never seen - and keeps the write in the policy input.
+        let (text, embedded_redirects) = self.split_command_redirects(node);
         if text.is_empty() {
             return Flow::unchanged(input);
         }
@@ -328,6 +332,7 @@ impl<'a> ShellAnalyzer<'a> {
         let index = self.commands.len();
         let redirections = redirects
             .into_iter()
+            .chain(embedded_redirects)
             .map(|redirect| resolve_redirect(redirect, &input))
             .collect();
         self.commands.push(ParsedCommand {
@@ -340,15 +345,40 @@ impl<'a> ShellAnalyzer<'a> {
         });
 
         let tokens = crate::tokenizer::tokenize(&text).unwrap_or_default();
-        let (success, mutates_cwd) = command_success_state(&tokens, &input);
+        let effect = command_success_state(&tokens, &input);
+        if effect.unsupported {
+            self.unsupported = true;
+        }
         Flow {
-            success,
+            success: effect.success,
             // A failed command or redirection leaves the incoming cwd intact.
             failure: input,
             first_command: Some(index),
             last_command: Some(index),
-            mutates_cwd,
+            mutates_cwd: effect.mutates_cwd,
         }
+    }
+
+    /// Split a `command` node into its command text and the redirects the
+    /// grammar nested inside it, if any.
+    fn split_command_redirects(&mut self, node: Node<'_>) -> (String, Vec<ShellRedirect>) {
+        let mut redirects = vec![];
+        let mut words: Vec<String> = vec![];
+        for i in 0..node.child_count() as u32 {
+            let Some(child) = node.child(i) else {
+                continue;
+            };
+            if is_redirect_node(child.kind()) {
+                collect_redirections(&child, self.source, &mut redirects);
+            } else {
+                words.push(node_text(&child, self.source));
+            }
+        }
+
+        if redirects.is_empty() {
+            return (node_text(&node, self.source).trim().to_string(), redirects);
+        }
+        (words.join(" ").trim().to_string(), redirects)
     }
 
     fn analyze_redirected(
@@ -362,7 +392,7 @@ impl<'a> ShellAnalyzer<'a> {
             let Some(child) = node.child(i) else {
                 continue;
             };
-            if child.kind().contains("redirect") {
+            if is_redirect_node(child.kind()) {
                 collect_redirections(&child, self.source, &mut inherited_redirects);
             } else if child.is_named() {
                 body = Some(child);
@@ -855,7 +885,7 @@ fn subtree_mutates_cwd(node: Node<'_>, source: &str) -> bool {
         "command" | "simple_command" => {
             let text = node_text(&node, source);
             let tokens = crate::tokenizer::tokenize(text.trim()).unwrap_or_default();
-            command_success_state(&tokens, &CwdState::unknown()).1
+            command_success_state(&tokens, &CwdState::unknown()).mutates_cwd
         }
         _ => (0..node.child_count() as u32)
             .filter_map(|index| node.child(index))
@@ -863,7 +893,45 @@ fn subtree_mutates_cwd(node: Node<'_>, source: &str) -> bool {
     }
 }
 
-fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool) {
+/// What running a single command does to the shell's cwd.
+struct CommandEffect {
+    /// The cwd that holds if the command succeeds.
+    success: CwdState,
+    /// Whether the command can change the cwd at all.
+    mutates_cwd: bool,
+    /// The command's effect cannot be modelled and the caller must fail closed.
+    unsupported: bool,
+}
+
+impl CommandEffect {
+    fn new(success: CwdState, mutates_cwd: bool) -> Self {
+        Self {
+            success,
+            mutates_cwd,
+            unsupported: false,
+        }
+    }
+
+    fn unsupported() -> Self {
+        Self {
+            success: CwdState::unknown(),
+            mutates_cwd: true,
+            unsupported: true,
+        }
+    }
+}
+
+/// Words bash treats as reserved rather than as a command name.
+///
+/// tree-sitter-bash has no `time` keyword, so `time { cd /tmp; }` parses as the
+/// command `time { cd /tmp`. Seeing one of these where a command name belongs
+/// means the tree does not describe what bash actually runs.
+const RESERVED_WORDS: &[&str] = &[
+    "{", "}", "(", ")", "!", "if", "then", "elif", "else", "fi", "while", "until", "for", "do",
+    "done", "case", "esac", "select", "function", "[[", "]]", "time",
+];
+
+fn command_success_state(tokens: &[String], input: &CwdState) -> CommandEffect {
     let mut command_index = tokens
         .iter()
         .take_while(|token| is_shell_assignment(token))
@@ -877,7 +945,7 @@ fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool
                     .get(command_index)
                     .is_some_and(|token| token.starts_with('-'))
                 {
-                    return (CwdState::unknown(), true);
+                    return CommandEffect::new(CwdState::unknown(), true);
                 }
             }
             Some("command") => {
@@ -892,36 +960,48 @@ fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool
                     tokens.get(command_index).map(String::as_str),
                     Some("-v" | "-V")
                 ) {
-                    return (input.clone(), false);
+                    return CommandEffect::new(input.clone(), false);
                 }
                 if tokens
                     .get(command_index)
                     .is_some_and(|token| token.starts_with('-'))
                 {
-                    return (CwdState::unknown(), true);
+                    return CommandEffect::new(CwdState::unknown(), true);
                 }
             }
             // The `time` reserved word times the pipeline that follows it, so
-            // a `time cd /tmp` still changes the shell's cwd.
+            // a `time cd /tmp` still changes the shell's cwd. Assignments may
+            // follow it (`time FOO=bar cd /tmp`), so skip those again.
             Some("time") => {
                 command_index += 1;
                 while matches!(tokens.get(command_index).map(String::as_str), Some("-p")) {
                     command_index += 1;
                 }
+                command_index += tokens
+                    .get(command_index..)
+                    .unwrap_or_default()
+                    .iter()
+                    .take_while(|token| is_shell_assignment(token))
+                    .count();
             }
             _ => break,
         }
     }
 
     let Some(command) = tokens.get(command_index).map(String::as_str) else {
-        return (input.clone(), false);
+        return CommandEffect::new(input.clone(), false);
     };
+    // A reserved word where a command name belongs means the parse does not
+    // match what bash runs (`time { cd /tmp`, `time ! cd /tmp`): fail closed.
+    if RESERVED_WORDS.contains(&command) {
+        return CommandEffect::unsupported();
+    }
     if command != "cd" {
         let mutates = matches!(
             command,
             "pushd" | "popd" | "eval" | "source" | "." | "trap" | "set" | "shopt" | "enable"
         );
-        return (
+        return CommandEffect::new(
             if mutates {
                 CwdState::unknown()
             } else {
@@ -938,8 +1018,8 @@ fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool
         _ => None,
     };
     match target.and_then(static_absolute_cd_target) {
-        Some(path) => (CwdState::known(path), true),
-        None => (CwdState::unknown(), true),
+        Some(path) => CommandEffect::new(CwdState::known(path), true),
+        None => CommandEffect::new(CwdState::unknown(), true),
     }
 }
 
@@ -2051,5 +2131,60 @@ mod tests {
             ),
             ["/workspace/secrets.txt"]
         );
+    }
+
+    #[test]
+    fn time_prefixed_assignment_still_follows_cd() {
+        let result = parse("time FOO=bar cd /tmp && touch ./x");
+
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
+    }
+
+    #[test]
+    fn time_before_a_brace_group_is_not_a_silent_no_op() {
+        // tree-sitter-bash has no `time` keyword, so this parses as the
+        // commands `time { cd /tmp` and `}`. Real bash changes the cwd here,
+        // which the analyzer cannot follow: fail closed.
+        let result = parse("time { cd /tmp; } && touch ./new-file.txt");
+
+        assert!(result.has_errors);
+        // The `cd` really happens, so nothing after it may claim the old cwd.
+        assert_eq!(
+            result
+                .commands
+                .last()
+                .expect("a command")
+                .effective_cwd
+                .status(),
+            ResolutionStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn time_before_a_negation_is_not_a_silent_no_op() {
+        let result = parse("time ! cd /tmp; touch ./x");
+
+        assert!(result.has_errors);
+        assert_eq!(
+            result.commands[1].effective_cwd.status(),
+            ResolutionStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn reserved_word_command_is_not_a_silent_no_op() {
+        let result = parse("time if cd /tmp; then :; fi");
+
+        assert!(result.has_errors);
+    }
+
+    #[test]
+    fn leading_redirect_inside_a_command_keeps_the_command_visible() {
+        let result = parse(">/dev/null cd /tmp && touch ./x");
+
+        assert_eq!(result.commands[0].text, "cd /tmp");
+        assert_eq!(result.commands[0].redirections.len(), 1);
+        assert_eq!(result.commands[0].redirections[0].raw, ">/dev/null");
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
     }
 }

@@ -357,6 +357,31 @@ tests:
     command: "time cd /tmp && touch ./new-file.txt"
     expect: ask
 
+  - name: "ask touch after timed assignment-prefixed cd"
+    command: "time FOO=bar cd /tmp && touch ./x"
+    expect: ask
+
+  # A `;`-terminated cd may fail, so the cwd after it is ambiguous; the point
+  # is that `time` does not turn the cd into a no-op.
+  - name: "defer cat after a timed cd"
+    command: "time cd /tmp; cat ./x"
+    expect: defer
+
+  # tree-sitter-bash has no `time` keyword, so these parse as a command whose
+  # name is a bash reserved word: the tree does not describe what bash runs.
+  - name: "ask timed brace group containing cd"
+    command: "time { cd /tmp; } && touch ./new-file.txt"
+    expect: ask
+
+  - name: "ask timed negated cd"
+    command: "time ! cd /tmp; touch ./x"
+    expect: ask
+
+  # A redirect may precede the command name; the cd must still be seen.
+  - name: "ask touch after a cd behind a leading redirect"
+    command: ">/dev/null cd /tmp && touch ./x"
+    expect: ask
+
   # A cd inside a conditional or loop body cannot be followed, so the cwd of
   # every command in the construct is unknown and the chain is flagged.
   - name: "ask conditional containing cd"
