@@ -333,6 +333,24 @@ tests:
     command: 'for f in *.rs; do rm -rf /; done'
     expect: ask
 
+  # A construct that contributes no command of its own still carries its
+  # redirects: the write must stay visible to policy.
+  - name: "ask redirect on a test command in a chain"
+    command: "cargo build && [ -f x ] > secrets.txt"
+    expect: ask
+
+  - name: "ask redirect on a leading test command"
+    command: "[ -f x ] > secrets.txt; cargo build"
+    expect: ask
+
+  - name: "ask redirect on a declaration"
+    command: "cargo build && unset FOO > secrets.txt"
+    expect: ask
+
+  - name: "ask redirect attached to a function definition"
+    command: "f() { :; } > secrets.txt"
+    expect: ask
+
   # `time` times the pipeline that follows it, so a timed cd still moves the
   # shell.
   - name: "ask touch after timed cd outside project"

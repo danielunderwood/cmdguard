@@ -506,17 +506,17 @@ impl<'a> ShellAnalyzer<'a> {
             .into_iter()
             .map(|redirect| resolve_redirect(redirect, &input))
             .collect();
-        let start = self.commands.len();
         // tree-sitter-bash inlines a subshell's statements as children of the
         // `subshell` node, so all of them have to be analyzed as a sequence.
         let inner = self.analyze_sequence(node, input.clone(), vec![]);
-        self.attach_redirects(start, inner.first_command, resolved_redirects);
+        let anchor = self.redirect_anchor(node, &input, inner.first_command, &resolved_redirects);
+        self.attach_redirects(anchor, resolved_redirects);
 
         Flow {
             success: input.clone(),
             failure: input,
-            first_command: inner.first_command,
-            last_command: inner.last_command,
+            first_command: inner.first_command.or(anchor),
+            last_command: inner.last_command.or(anchor),
             mutates_cwd: false,
         }
     }
@@ -531,11 +531,14 @@ impl<'a> ShellAnalyzer<'a> {
             .into_iter()
             .map(|redirect| resolve_redirect(redirect, &input))
             .collect();
-        let start = self.commands.len();
+        let has_redirects = !resolved_redirects.is_empty();
         let mut inner = self.analyze_sequence(node, input.clone(), vec![]);
-        self.attach_redirects(start, inner.first_command, resolved_redirects.clone());
-        if !resolved_redirects.is_empty() {
+        let anchor = self.redirect_anchor(node, &input, inner.first_command, &resolved_redirects);
+        self.attach_redirects(anchor, resolved_redirects);
+        if has_redirects {
             inner.failure = inner.failure.union(&input);
+            inner.first_command = inner.first_command.or(anchor);
+            inner.last_command = inner.last_command.or(anchor);
         }
         inner
     }
@@ -677,18 +680,39 @@ impl<'a> ShellAnalyzer<'a> {
     ) -> (Option<usize>, Option<usize>) {
         let start = self.commands.len();
         self.extract_embedded_commands(node, embedded_cwd);
-        let first = (self.commands.len() > start).then_some(start);
+        let resolved_redirects: Vec<_> = redirects
+            .into_iter()
+            .map(|redirect| resolve_redirect(redirect, input))
+            .collect();
+        let extracted = (self.commands.len() > start).then_some(start);
+        let anchor = self.redirect_anchor(node, input, extracted, &resolved_redirects);
+        self.attach_redirects(anchor, resolved_redirects);
+        let first = extracted.or(anchor);
         let last = self
             .commands
             .len()
             .checked_sub(1)
             .filter(|_| first.is_some());
-        let resolved_redirects: Vec<_> = redirects
-            .into_iter()
-            .map(|redirect| resolve_redirect(redirect, input))
-            .collect();
-        self.attach_redirects(start, first, resolved_redirects);
         (first, last)
+    }
+
+    /// The command a construct's own redirects attach to: the first command it
+    /// contributed, or - when it contributed none but does carry redirects - a
+    /// placeholder standing in for the construct itself. Without the
+    /// placeholder a write like `[ -f x ] > secrets.txt` would vanish from the
+    /// policy input entirely.
+    fn redirect_anchor(
+        &mut self,
+        node: Node<'_>,
+        cwd: &CwdState,
+        first_command: Option<usize>,
+        redirects: &[ShellRedirect],
+    ) -> Option<usize> {
+        match first_command {
+            Some(index) => Some(index),
+            None if redirects.is_empty() => None,
+            None => self.push_placeholder_command(node, cwd),
+        }
     }
 
     fn analyze_unsupported(
@@ -719,16 +743,21 @@ impl<'a> ShellAnalyzer<'a> {
                     });
                 }
             }
-            "redirected_statement" => {
+            // Everything else: recurse, keeping any redirect attached directly
+            // to this node (`redirected_statement`, and a function definition's
+            // trailing `> file`) with the commands it applies to.
+            _ => {
                 let start = self.commands.len();
                 let mut redirects = vec![];
+                let mut body = None;
                 for i in 0..node.child_count() as u32 {
                     let Some(child) = node.child(i) else {
                         continue;
                     };
-                    if child.kind().contains("redirect") {
+                    if is_redirect_node(child.kind()) {
                         collect_redirections(&child, self.source, &mut redirects);
                     } else if child.is_named() {
+                        body = Some(child);
                         self.extract_embedded_commands(child, cwd);
                     }
                 }
@@ -743,33 +772,50 @@ impl<'a> ShellAnalyzer<'a> {
                     .len()
                     .checked_sub(1)
                     .filter(|last| *last >= start);
-                self.attach_redirects(start, target, resolved);
-            }
-            _ => {
-                for i in 0..node.child_count() as u32 {
-                    if let Some(child) = node.child(i) {
-                        if child.is_named() {
-                            self.extract_embedded_commands(child, cwd);
-                        }
-                    }
-                }
+                let anchor = self.redirect_anchor(body.unwrap_or(node), cwd, target, &resolved);
+                self.attach_redirects(anchor, resolved);
             }
         }
     }
 
-    fn attach_redirects(
-        &mut self,
-        fallback_index: usize,
-        command_index: Option<usize>,
-        redirects: Vec<ShellRedirect>,
-    ) {
+    /// Attach `redirects` to the command they apply to.
+    ///
+    /// A redirect must never be dropped: a construct that contributes no
+    /// command of its own (`[ -f x ] > secrets.txt`) still truncates the
+    /// target, so callers synthesize a placeholder command for it first. If
+    /// one ever slips through anyway, fail closed by flagging the command for
+    /// review rather than silently losing the write.
+    fn attach_redirects(&mut self, command_index: Option<usize>, redirects: Vec<ShellRedirect>) {
         if redirects.is_empty() {
             return;
         }
-        let index = command_index.unwrap_or(fallback_index);
-        if let Some(command) = self.commands.get_mut(index) {
-            command.redirections.extend(redirects);
+        match command_index.and_then(|index| self.commands.get_mut(index)) {
+            Some(command) => command.redirections.extend(redirects),
+            None => {
+                debug_assert!(false, "redirects with no command to attach them to");
+                self.unsupported = true;
+            }
         }
+    }
+
+    /// Record a command standing in for a construct that contributes no
+    /// command of its own but carries redirects, so redirect rules still see
+    /// them.
+    fn push_placeholder_command(&mut self, node: Node<'_>, cwd: &CwdState) -> Option<usize> {
+        let text = node_text(&node, self.source).trim().to_string();
+        if text.is_empty() {
+            return None;
+        }
+        let index = self.commands.len();
+        self.commands.push(ParsedCommand {
+            text,
+            redirections: vec![],
+            effective_cwd: cwd.clone(),
+            position: index,
+            chain_length: 0,
+            next_operator: None,
+        });
+        Some(index)
     }
 
     fn set_next_operator(&mut self, command_index: Option<usize>, operator: &str) {
@@ -1015,6 +1061,14 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 fn node_text(node: &tree_sitter::Node, source: &str) -> String {
     source[node.start_byte()..node.end_byte()].to_string()
+}
+
+/// A redirect node (`file_redirect`, `heredoc_redirect`, `herestring_redirect`).
+///
+/// Deliberately stricter than `kind().contains("redirect")`, which also matches
+/// `redirected_statement` and would swallow the command it wraps.
+fn is_redirect_node(kind: &str) -> bool {
+    kind.ends_with("_redirect")
 }
 
 fn collect_redirections(
@@ -1915,5 +1969,87 @@ mod tests {
 
         assert_eq!(redirect(&result).kind, ShellRedirectKind::Write);
         assert_eq!(paths(target(&result)), ["/workspace/build.log"]);
+    }
+
+    fn all_redirects(result: &ParseResult) -> Vec<&ShellRedirect> {
+        result
+            .commands
+            .iter()
+            .flat_map(|command| command.redirections.iter())
+            .collect()
+    }
+
+    #[test]
+    fn redirect_on_a_test_command_survives_in_the_chain() {
+        let result = parse("cargo build && [ -f x ] > secrets.txt");
+
+        assert_eq!(all_redirects(&result).len(), 1);
+        let redirect = all_redirects(&result)[0];
+        assert_eq!(redirect.target.as_deref(), Some("secrets.txt"));
+        assert!(redirect.writes_to_file);
+        assert_eq!(
+            paths(redirect.target_resolution.as_ref().unwrap()),
+            ["/workspace/secrets.txt"]
+        );
+    }
+
+    #[test]
+    fn redirect_on_a_leading_test_command_survives_in_the_chain() {
+        let result = parse("[ -f x ] > secrets.txt; cargo build");
+
+        assert_eq!(all_redirects(&result).len(), 1);
+        assert_eq!(result.commands[0].text, "[ -f x ]");
+        assert_eq!(result.commands[0].redirections.len(), 1);
+        assert_eq!(result.commands.last().unwrap().text, "cargo build");
+    }
+
+    #[test]
+    fn redirect_on_a_declaration_survives_in_the_chain() {
+        let result = parse("cargo build && unset FOO > secrets.txt");
+
+        assert_eq!(all_redirects(&result).len(), 1);
+        assert_eq!(result.commands[1].text, "unset FOO");
+        assert_eq!(result.commands[1].redirections.len(), 1);
+    }
+
+    #[test]
+    fn redirect_on_a_lone_test_command_survives() {
+        let result = parse("[ -f x ] > secrets.txt");
+
+        assert_eq!(all_redirects(&result).len(), 1);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "[ -f x ]");
+    }
+
+    #[test]
+    fn redirect_on_a_zero_command_construct_inside_a_compound_survives() {
+        let result = parse("if true; then [ -f x ] > secrets.txt; fi");
+
+        assert_eq!(all_redirects(&result).len(), 1);
+        assert_eq!(
+            paths(
+                all_redirects(&result)[0]
+                    .target_resolution
+                    .as_ref()
+                    .unwrap()
+            ),
+            ["/workspace/secrets.txt"]
+        );
+    }
+
+    #[test]
+    fn redirect_attached_to_a_function_definition_survives() {
+        let result = parse("f() { :; } > secrets.txt");
+
+        assert_eq!(all_redirects(&result).len(), 1);
+        assert_eq!(
+            paths(
+                all_redirects(&result)[0]
+                    .target_resolution
+                    .as_ref()
+                    .unwrap()
+            ),
+            ["/workspace/secrets.txt"]
+        );
     }
 }
