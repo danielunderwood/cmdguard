@@ -84,9 +84,10 @@ command carries a flag cmdguard does not model, when a wrapper or `VAR=value`
 prefix could redirect the request, when an option such as `-L`, `--config`,
 `--connect-to`, `--resolve`, a proxy, `--doh-url` or a Unix socket can remap the
 destination, when an option writes or reads a local file (`-o`, `-O`, `-T`,
-`-c`, `-b`, `--trace`, `--netrc-file`, `--cacert`, or a value that reads one:
-`-d @f`, `-H @f`, `-w @f`, `-F field=@f`, `--data-urlencode name@f`), and when a
-URL token contains something the shell or curl expands before the request
+`-c`, `-b`, `-w` -- its format string can write one with `%output{file}` --
+`--trace`, `--netrc-file`, `--cacert`, or a value that reads one: `-d @f`,
+`-H @f`, `-F field=@f`, `--data-urlencode name@f`), and when a URL token
+contains something the shell or curl expands before the request
 (`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`). Higher-priority
 safety asks such as shell output redirection still win.
 

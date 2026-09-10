@@ -722,6 +722,23 @@ allowed_curl_patterns contains `^http://127\.0\.0\.1:3000($|/)`
                 "curl -F 'field=</etc/passwd' http://localhost:3000/allowed",
                 Decision::Ask,
             ),
+            // `--write-out` writes a local file itself: since curl 7.83 its
+            // format string takes `%output{file}` and `%output{>>file}`, and
+            // curl creates the file even when the transfer fails. The value is
+            // not worth parsing, so any `-w` blocks the allow.
+            (
+                "curl -w '%output{/tmp/pwn}%{http_code}' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --write-out '%output{>>/tmp/pwn}hi' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // The trade-off: a plain format string asks too.
+            (
+                "curl -w '%{http_code}' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
             // --- flags cmdguard does not model -----------------------------------------
             (
                 "curl --frobnicate=1 http://localhost:3000/allowed",

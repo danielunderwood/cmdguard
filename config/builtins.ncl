@@ -683,6 +683,8 @@ in
         data_urlencode = repeat_flag [] "--data-urlencode",
         form = repeat_flag "-F" "--form",
         form_string = repeat_flag [] "--form-string",
+
+        # Writes a local file itself: `-w '%output{file}'` (curl 7.83+)
         write_out = arg_flag "-w" "--write-out",
       },
       # curl accepts multiple bare URLs. Keep the established `url` field name,

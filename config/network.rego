@@ -113,6 +113,12 @@ _curl_local_file_flags := {
 	"capath",
 	"cert",
 	"key",
+
+	# `--write-out` writes a file itself: its format string takes
+	# `%output{file}` and `%output{>>file}` (curl 7.83+), and curl creates the
+	# file even when the transfer fails. Parsing the format string to find out is
+	# not worth it, so any `-w` blocks the allow.
+	"write_out",
 }
 
 # Options whose value curl reads from a local file when it starts with `@`.
@@ -123,7 +129,6 @@ _curl_at_file_flags := {
 	"data_ascii",
 	"data_binary",
 	"data_raw",
-	"write_out",
 }
 
 _curl_flag_present(flag) if {
