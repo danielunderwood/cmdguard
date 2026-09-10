@@ -377,7 +377,6 @@ Your policies receive structured input for each command:
   "binary_name": "rm",
   "resolved_path": "/bin/rm",
   "resolved_trust_zone": "system",
-  "subcommand": null,
   "parsed_flags": {
     "recursive": true,
     "force": true
@@ -394,11 +393,14 @@ Your policies receive structured input for each command:
     "candidates": ["/home/user/project"]
   },
   "project_root": "/home/user/project",
-  "chain_position": 1,
-  "chain_length": 1,
-  "chain_operator": null
+  "chain_position": 0,
+  "chain_length": 1
 }
 ```
+
+`chain_position` is zero-based. Optional fields are omitted when they have
+no value rather than serialized as `null`, so `subcommand`, `chain_operator`
+and `prev_operator` are absent above.
 
 `unknown_flags` holds the flag tokens that matched no flag definition, in
 the order they were typed. It is only recorded where flags are modelled at

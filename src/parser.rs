@@ -400,10 +400,21 @@ impl<'a> ShellAnalyzer<'a> {
             }
         }
 
-        match body {
-            Some(body) => self.analyze_node(body, input, inherited_redirects),
-            None => self.analyze_unsupported(node, input, inherited_redirects),
-        }
+        let Some(body) = body else {
+            // `> ./x` truncates the file with no command at all. Its redirects
+            // are already collected above, so re-walking the node here would
+            // record every one of them twice.
+            self.unsupported = true;
+            let unknown = CwdState::unknown();
+            let resolved: Vec<_> = inherited_redirects
+                .into_iter()
+                .map(|redirect| resolve_redirect(redirect, &unknown))
+                .collect();
+            let anchor = self.redirect_anchor(node, &unknown, None, &resolved);
+            self.attach_redirects(anchor, resolved);
+            return Flow::unknown(anchor, anchor);
+        };
+        self.analyze_node(body, input, inherited_redirects)
     }
 
     fn analyze_list(
@@ -2264,5 +2275,21 @@ mod tests {
         let result = parse("cat > ./out.txt /etc/passwd");
 
         assert!(result.has_errors);
+    }
+
+    #[test]
+    fn bodiless_redirect_is_recorded_once() {
+        let result = parse("> ./x");
+
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "> ./x");
+        assert_eq!(all_redirects(&result).len(), 1);
+    }
+
+    #[test]
+    fn bodiless_redirect_after_an_operator_is_recorded_once() {
+        let result = parse("cd /tmp && > ./x");
+
+        assert_eq!(all_redirects(&result).len(), 1);
     }
 }
