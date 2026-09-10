@@ -157,10 +157,51 @@ fn lint_policy_source(
     diagnostics
 }
 
+/// Outcome of advancing the shared string-literal tracking state (see
+/// `step_quote_state`) by one position.
+enum QuoteStep {
+    /// The byte at this position is outside any string literal; the caller
+    /// should apply its own (comment/paren/comma) handling to it.
+    NotInString,
+    /// The byte was consumed as part of string-literal handling (opening a
+    /// quote, an ordinary character inside one, an escape pair, or closing
+    /// a quote). The caller should advance by this many bytes and continue.
+    Consumed(usize),
+}
+
+/// Shared quote-tracking step used by `strip_comments`, `matching_close_paren`,
+/// and `split_top_level_args` so all three scanners agree on what counts as
+/// "inside a string literal" in Rego source.
+///
+/// Recognizes `"` and `'` (which support `\`-escapes) and Rego backtick raw
+/// strings (`` ` ``), which do *not* support escapes: inside a backtick
+/// string a `\` is just a literal character, so it must not be treated as
+/// escaping the next byte.
+fn step_quote_state(bytes: &[u8], i: usize, in_string: &mut Option<u8>) -> QuoteStep {
+    let c = bytes[i];
+    if let Some(quote) = *in_string {
+        if quote != b'`' && c == b'\\' && i + 1 < bytes.len() {
+            return QuoteStep::Consumed(2);
+        }
+        if c == quote {
+            *in_string = None;
+        }
+        return QuoteStep::Consumed(1);
+    }
+
+    if c == b'"' || c == b'\'' || c == b'`' {
+        *in_string = Some(c);
+        return QuoteStep::Consumed(1);
+    }
+
+    QuoteStep::NotInString
+}
+
 /// Replace `#` comments (line-start or trailing) with spaces, leaving
 /// newlines and all other byte offsets untouched so callers can still map
 /// positions in the returned string back to line numbers in the original.
-/// `#` characters inside quoted string literals are left alone.
+/// `#` characters inside quoted string literals (including backtick raw
+/// strings) are left alone.
 fn strip_comments(contents: &str) -> String {
     let bytes = contents.as_bytes();
     let mut out = bytes.to_vec();
@@ -168,33 +209,19 @@ fn strip_comments(contents: &str) -> String {
     let mut i = 0;
 
     while i < bytes.len() {
-        let c = bytes[i];
-        if let Some(quote) = in_string {
-            if c == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if c == quote {
-                in_string = None;
-            }
-            i += 1;
+        if let QuoteStep::Consumed(n) = step_quote_state(bytes, i, &mut in_string) {
+            i += n;
             continue;
         }
 
-        match c {
-            b'"' | b'\'' => {
-                in_string = Some(c);
-                i += 1;
-            }
+        match bytes[i] {
             b'#' => {
                 while i < bytes.len() && bytes[i] != b'\n' {
                     out[i] = b' ';
                     i += 1;
                 }
             }
-            _ => {
-                i += 1;
-            }
+            _ => i += 1,
         }
     }
 
@@ -240,8 +267,11 @@ fn find_call_sites<'a>(contents: &'a str, name: &str) -> Vec<(usize, usize, &'a 
                 search_from = args_end + 1;
             }
             None => {
-                // Unbalanced call; nothing further to salvage from here.
-                break;
+                // Unbalanced call (or a false trigger, e.g. a `name(` that
+                // turned out to sit inside a string we didn't realize we
+                // were in yet). Skip past this occurrence and keep scanning
+                // the rest of the file rather than giving up on it entirely.
+                search_from = args_start;
             }
         }
     }
@@ -263,21 +293,12 @@ fn matching_close_paren(contents: &str, start: usize) -> Option<usize> {
     let mut in_string: Option<u8> = None;
 
     while i < bytes.len() {
-        let c = bytes[i];
-        if let Some(quote) = in_string {
-            if c == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if c == quote {
-                in_string = None;
-            }
-            i += 1;
+        if let QuoteStep::Consumed(n) = step_quote_state(bytes, i, &mut in_string) {
+            i += n;
             continue;
         }
 
-        match c {
-            b'"' | b'\'' => in_string = Some(c),
+        match bytes[i] {
             b'(' => depth += 1,
             b')' => {
                 depth -= 1;
@@ -304,21 +325,12 @@ fn split_top_level_args(args: &str) -> Vec<&str> {
     let mut i = 0;
 
     while i < bytes.len() {
-        let c = bytes[i];
-        if let Some(quote) = in_string {
-            if c == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if c == quote {
-                in_string = None;
-            }
-            i += 1;
+        if let QuoteStep::Consumed(n) = step_quote_state(bytes, i, &mut in_string) {
+            i += n;
             continue;
         }
 
-        match c {
-            b'"' | b'\'' => in_string = Some(c),
+        match bytes[i] {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             b',' if depth == 0 => {
@@ -579,6 +591,61 @@ rules["allow_hash"] := allow_at("uses a # inside the reason string", 99) if {
         );
 
         assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "policy/high-priority-allow");
+    }
+
+    #[test]
+    fn backtick_raw_string_hash_is_not_treated_as_comment() {
+        // Regression: Rego backtick raw strings (used in this codebase, e.g.
+        // config/gh.rego and config/inproject.rego) were not recognized as
+        // string literals by the quote-tracking scanners, so a `#` inside
+        // one was treated as starting a comment and blanked out the rest of
+        // the line -- silently swallowing the real allow_at(..., 99) call.
+        let diagnostics = lint_policy_source(
+            Path::new("custom.rego"),
+            r#"
+package cmdguard
+import rego.v1
+
+rules["allow_bt"] := allow_at(`weird # not a comment`, 99) if {
+	input.binary_name == "safe"
+}
+"#,
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected the 99 priority to be reported, got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].code, "policy/high-priority-allow");
+    }
+
+    #[test]
+    fn backtick_raw_string_with_parens_and_comma_does_not_confuse_call_scanning() {
+        // A backtick string containing `)` and `,` must not be mistaken for
+        // the end of the argument list or an extra argument boundary.
+        let diagnostics = lint_policy_source(
+            Path::new("custom.rego"),
+            r#"
+package cmdguard
+import rego.v1
+
+rules["allow_bt2"] := allow_at(`has (parens) and, commas`, 99) if {
+	input.binary_name == "safe"
+}
+"#,
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one finding for the single allow_at call, got: {:?}",
+            diagnostics
+        );
         assert_eq!(diagnostics[0].code, "policy/high-priority-allow");
     }
 
