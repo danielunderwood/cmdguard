@@ -249,6 +249,15 @@ tests:
     command: "cargo build && unknown-cmd && cargo test"
     expect: defer
 
+  # Subshells: every statement inside the parentheses is evaluated
+  - name: "ask dangerous second statement in subshell"
+    command: "(git status; rm -rf /)"
+    expect: ask
+
+  - name: "ask dangerous statement in piped subshell"
+    command: "(git status; rm -rf /) | cat"
+    expect: ask
+
   # With redirects
   - name: "ask for shell output redirect"
     command: "git log > /tmp/log.txt"

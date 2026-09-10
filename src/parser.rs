@@ -494,9 +494,9 @@ impl<'a> ShellAnalyzer<'a> {
             .map(|redirect| resolve_redirect(redirect, &input))
             .collect();
         let start = self.commands.len();
-        let inner = first_named_statement(node)
-            .map(|child| self.analyze_node(child, input.clone(), vec![]))
-            .unwrap_or_else(|| Flow::unchanged(input.clone()));
+        // tree-sitter-bash inlines a subshell's statements as children of the
+        // `subshell` node, so all of them have to be analyzed as a sequence.
+        let inner = self.analyze_sequence(node, input.clone(), vec![]);
         self.attach_redirects(start, inner.first_command, resolved_redirects);
 
         Flow {
@@ -659,12 +659,6 @@ fn statement_children(node: Node<'_>) -> (Vec<Node<'_>>, Vec<String>) {
         }
     }
     (items, operators)
-}
-
-fn first_named_statement(node: Node<'_>) -> Option<Node<'_>> {
-    (0..node.child_count() as u32)
-        .filter_map(|index| node.child(index))
-        .find(|child| child.is_named())
 }
 
 fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool) {
@@ -1432,5 +1426,56 @@ mod tests {
             redirect(&result).target_resolution.status(),
             ResolutionStatus::Unknown
         );
+    }
+
+    #[test]
+    fn subshell_analyzes_every_statement() {
+        let result = parse("(git status; rm -rf /)");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[0].text, "git status");
+        assert_eq!(result.commands[1].text, "rm -rf /");
+        assert_eq!(result.commands[1].chain_length, 2);
+    }
+
+    #[test]
+    fn subshell_analyzes_newline_separated_statements() {
+        let result = parse("(git status\nrm -rf /)");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[1].text, "rm -rf /");
+    }
+
+    #[test]
+    fn subshell_after_operator_analyzes_every_statement() {
+        let result = parse("git status && (cat README.md; rm -rf /)");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 3);
+        assert_eq!(result.commands[2].text, "rm -rf /");
+    }
+
+    #[test]
+    fn piped_subshell_analyzes_every_statement() {
+        let result = parse("(git status; rm -rf /) | cat");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 3);
+        assert_eq!(result.commands[1].text, "rm -rf /");
+        assert_eq!(result.commands[1].next_operator, Some("|".to_string()));
+        assert_eq!(result.commands[2].text, "cat");
+    }
+
+    #[test]
+    fn subshell_statements_see_earlier_subshell_cd() {
+        let result = parse("(cd /tmp; echo test > test.txt) && echo outer > outer.txt");
+
+        assert_eq!(
+            paths(&result.commands[1].effective_cwd),
+            ["/tmp", "/workspace"]
+        );
+        assert_eq!(paths(&result.commands[2].effective_cwd), ["/workspace"]);
     }
 }
