@@ -5,11 +5,16 @@ use std::process::Command;
 /// process cwd set to `cwd`, capture stdout and exit code.
 fn run_lint(cwd: &Path, fail_on: &str) -> (String, i32) {
     let policy_dir = format!("{}/config", env!("CARGO_MANIFEST_DIR"));
+    run_lint_with_policy_dir(cwd, Path::new(&policy_dir), fail_on)
+}
 
+/// Same as `run_lint` but with an explicit `--policy-dir`, for cases that
+/// lint a standalone flat policy directory rather than the repo's config.
+fn run_lint_with_policy_dir(cwd: &Path, policy_dir: &Path, fail_on: &str) -> (String, i32) {
     let output = Command::new(env!("CARGO_BIN_EXE_cmdguard"))
         .arg("lint")
         .arg("--policy-dir")
-        .arg(&policy_dir)
+        .arg(policy_dir)
         .arg("--fail-on")
         .arg(fail_on)
         .current_dir(cwd)
@@ -62,4 +67,32 @@ rules["allow_bad"] := allow_at("bad idea", 90) if {
         code, 1,
         "warning-level finding should fail the lint under --fail-on warning; stdout={stdout}"
     );
+}
+
+#[test]
+fn lint_ignores_commented_out_allow_at_and_exits_clean() {
+    // A commented-out allow_at call must not be flagged, and with only
+    // clean findings, --fail-on warning must still exit 0.
+    let policy_dir = tempfile::tempdir().expect("create temp policy dir");
+    std::fs::write(
+        policy_dir.path().join("custom.rego"),
+        r#"
+package cmdguard
+import rego.v1
+
+# rules["allow_bad"] := allow_at("bad idea", 99) if {
+#	input.binary_name == "bad"
+# }
+"#,
+    )
+    .expect("write custom.rego");
+
+    let cwd = tempfile::tempdir().expect("create temp cwd");
+    let (stdout, code) = run_lint_with_policy_dir(cwd.path(), policy_dir.path(), "warning");
+
+    assert!(
+        !stdout.contains("policy/high-priority-allow"),
+        "expected no findings for commented-out call, got: {stdout}"
+    );
+    assert_eq!(code, 0, "clean lint should exit 0; stdout={stdout}");
 }
