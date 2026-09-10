@@ -402,7 +402,12 @@ impl PolicyEngine {
 
                 let mut result = vec![];
                 for (key_val, enabled_val) in obj.iter() {
-                    let enabled = enabled_val.as_bool().ok().copied().unwrap_or(false);
+                    // Rego truthiness: any value other than `false` (or
+                    // undefined) is truthy, not just the literal `true`.
+                    let enabled = !matches!(
+                        enabled_val,
+                        regorus::Value::Bool(false) | regorus::Value::Undefined
+                    );
                     if enabled {
                         if let Ok(key) = key_val.as_string() {
                             result.push(key.to_string());
@@ -732,6 +737,34 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
         let result = engine.evaluate(&file_redirect_input);
         assert_eq!(result.decision, Decision::Ask);
         assert_eq!(result.rule.as_deref(), Some("ask_shell_output_redirection"));
+    }
+
+    #[test]
+    fn test_query_boolean_key_table_reports_any_truthy_value() {
+        // Rego truthiness for an extension table entry means "not false"
+        // (and not undefined); it isn't limited to the literal `true`.
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let file_ops =
+            std::fs::read_to_string(config_dir.join("file-ops.rego")).expect("read file-ops.rego");
+        let user_policy = r#"
+package cmdguard
+import rego.v1
+
+allowed_redirect_targets["/dev/null"] := "yes"
+allowed_redirect_targets["/dev/zero"] := false
+"#;
+        let mut engine = PolicyEngine::new();
+        engine
+            .engine
+            .add_policy("file-ops.rego".into(), file_ops)
+            .expect("load file-ops.rego");
+        engine
+            .engine
+            .add_policy("user.rego".into(), user_policy.into())
+            .expect("load policy");
+
+        let entries = engine.query_boolean_key_table("allowed_redirect_targets");
+        assert_eq!(entries, vec!["/dev/null".to_string()]);
     }
 
     #[test]
