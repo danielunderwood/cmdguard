@@ -351,6 +351,12 @@ tests:
     command: "f() { :; } > secrets.txt"
     expect: ask
 
+  # tree-sitter-bash nests a redirect that follows a heredoc marker inside the
+  # heredoc node; the write must not be lost.
+  - name: "ask redirect following a heredoc marker"
+    command: "cat <<EOF > secrets.txt\nhi\nEOF"
+    expect: ask
+
   # `time` times the pipeline that follows it, so a timed cd still moves the
   # shell.
   - name: "ask touch after timed cd outside project"

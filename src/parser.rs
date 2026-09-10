@@ -1156,10 +1156,23 @@ fn collect_redirections(
     source: &str,
     redirects: &mut Vec<ShellRedirect>,
 ) {
-    if node.kind().contains("redirect") {
+    if is_redirect_node(node.kind()) {
         let raw = node_text(node, source);
         if let Some(redirect) = parse_redirect(&raw) {
             redirects.push(redirect);
+        }
+        // tree-sitter-bash nests a redirect that follows a heredoc marker
+        // inside the `heredoc_redirect` node (`cat <<EOF > secrets.txt`), so
+        // returning here would lose the write.
+        if node.kind() == "heredoc_redirect" {
+            for i in 0..node.child_count() as u32 {
+                match node.child(i) {
+                    Some(child) if is_redirect_node(child.kind()) => {
+                        collect_redirections(&child, source, redirects);
+                    }
+                    _ => {}
+                }
+            }
         }
         return;
     }
@@ -2186,5 +2199,25 @@ mod tests {
         assert_eq!(result.commands[0].redirections.len(), 1);
         assert_eq!(result.commands[0].redirections[0].raw, ">/dev/null");
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
+    }
+
+    #[test]
+    fn heredoc_does_not_swallow_a_following_file_redirect() {
+        let result = parse("cat <<EOF > secrets.txt\nhi\nEOF");
+
+        let writes: Vec<_> = all_redirects(&result)
+            .into_iter()
+            .filter(|redirect| redirect.writes_to_file)
+            .collect();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            paths(
+                writes[0]
+                    .target_resolution
+                    .as_ref()
+                    .expect("a resolved target")
+            ),
+            ["/workspace/secrets.txt"]
+        );
     }
 }
