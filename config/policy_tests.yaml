@@ -63,6 +63,13 @@ tests:
     command: "bash -c 'git status'"
     expect: allow
 
+  # `env --chdir=/etc` runs the command elsewhere: it is an option, not a
+  # NAME=value assignment, so it must not be unwrapped into a trusted
+  # in-project `touch`.
+  - name: "defer env with an option that changes directory"
+    command: "env --chdir=/etc touch ./x"
+    expect: defer
+
   # ==========================================================================
   # Cargo Commands
   # ==========================================================================

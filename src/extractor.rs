@@ -143,8 +143,14 @@ fn extract_sudo(tokens: &[String]) -> Option<(String, Vec<String>)> {
 
 fn extract_env(tokens: &[String]) -> Option<(String, Vec<String>)> {
     // env [VAR=val]... command
+    //
+    // Only NAME=value assignments are skipped: `env --chdir=/etc touch ./x`
+    // also contains an `=`, but it runs the command somewhere else, so
+    // unwrapping it to a bare `touch ./x` would resolve paths against the
+    // wrong directory. Leaving the option as the command name makes the
+    // command unrecognized, which defers rather than allows.
     let mut idx = 1;
-    while idx < tokens.len() && tokens[idx].contains('=') {
+    while idx < tokens.len() && is_env_assignment(&tokens[idx]) {
         idx += 1;
     }
     if idx < tokens.len() {
@@ -356,6 +362,17 @@ mod tests {
         let tokens = to_vec(&["env", "FOO=bar", "BAZ=qux", "echo", "hello"]);
         let result = extract_command(&tokens, None);
         assert_eq!(result.command, to_vec(&["echo", "hello"]));
+        assert_eq!(result.wrapper_chain, vec!["env"]);
+    }
+
+    #[test]
+    fn test_env_option_with_a_value_is_not_an_assignment() {
+        // `env --chdir=/etc touch ./x` runs `touch` in /etc, so unwrapping it
+        // to a plain `touch ./x` would resolve the path against the wrong
+        // directory. Leave the option in place so the command is not trusted.
+        let tokens = to_vec(&["env", "--chdir=/etc", "touch", "./x"]);
+        let result = extract_command(&tokens, None);
+        assert_eq!(result.command, to_vec(&["--chdir=/etc", "touch", "./x"]));
         assert_eq!(result.wrapper_chain, vec!["env"]);
     }
 
