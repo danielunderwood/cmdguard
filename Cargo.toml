@@ -1,6 +1,6 @@
 [package]
 name = "cmdguard"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "Policy-driven shell command control for Claude Code and Codex hooks"
 license = "MIT"
