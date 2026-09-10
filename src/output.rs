@@ -164,8 +164,10 @@ impl HookOutput {
     ///
     /// PreToolUse only receives an explicit deny. Allow, ask, and defer all
     /// fall through so Codex can apply its sandbox and approval policy.
-    /// PermissionRequest receives allow/deny decisions; ask and defer leave
-    /// the normal approval prompt in place.
+    /// PermissionRequest only ever receives a deny decision: cmdguard can
+    /// refuse an approval request but never grant one, so allow, ask, and
+    /// defer all fall through and leave Codex's own approval prompt in
+    /// place.
     pub fn render_codex(&self, event: HookEvent) -> Option<String> {
         match (event, self.decision) {
             (HookEvent::PreToolUse, Decision::Deny) => {
@@ -178,18 +180,6 @@ impl HookOutput {
                         hook_event_name: "PreToolUse",
                         permission_decision: "deny",
                         permission_decision_reason: reason,
-                    },
-                };
-                Some(serde_json::to_string(&output).expect("Codex hook output is serializable"))
-            }
-            (HookEvent::PermissionRequest, Decision::Allow) => {
-                let output = CodexPermissionRequestWireOutput {
-                    hook_specific_output: CodexPermissionRequestOutput {
-                        hook_event_name: "PermissionRequest",
-                        decision: CodexPermissionDecision {
-                            behavior: "allow",
-                            message: None,
-                        },
                     },
                 };
                 Some(serde_json::to_string(&output).expect("Codex hook output is serializable"))
@@ -267,23 +257,24 @@ mod tests {
     }
 
     #[test]
-    fn codex_permission_request_emits_allow_and_deny() {
-        let allow = HookOutput::allow()
+    fn codex_permission_request_never_auto_approves() {
+        // cmdguard can only refuse a PermissionRequest, never grant it: an
+        // `allow` decision must fall through exactly like `ask`, leaving
+        // Codex's own approval prompt in place.
+        assert!(HookOutput::allow()
             .render_codex(HookEvent::PermissionRequest)
-            .unwrap();
-        assert!(allow.contains(r#""behavior":"allow""#));
-
-        let deny = HookOutput::deny("blocked")
-            .render_codex(HookEvent::PermissionRequest)
-            .unwrap();
-        assert!(deny.contains(r#""behavior":"deny""#));
-        assert!(deny.contains(r#""message":"blocked""#));
-
+            .is_none());
         assert!(HookOutput::ask()
             .render_codex(HookEvent::PermissionRequest)
             .is_none());
         assert!(HookOutput::defer()
             .render_codex(HookEvent::PermissionRequest)
             .is_none());
+
+        let deny = HookOutput::deny("blocked")
+            .render_codex(HookEvent::PermissionRequest)
+            .unwrap();
+        assert!(deny.contains(r#""behavior":"deny""#));
+        assert!(deny.contains(r#""message":"blocked""#));
     }
 }

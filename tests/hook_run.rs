@@ -180,14 +180,17 @@ fn codex_pre_tool_use_parse_error_falls_through() {
 }
 
 #[test]
-fn codex_permission_request_allows_policy_allow() {
+fn codex_permission_request_allow_falls_through() {
+    // cmdguard never auto-approves a PermissionRequest: a policy `allow`
+    // must fall through just like `ask`, leaving Codex's own approval
+    // prompt in place.
     let (stdout, _stderr, code) =
         run_hook_for("git status", ".", &[], "codex", Some("PermissionRequest"));
     assert_eq!(code, 0, "exit code; stdout={stdout}");
-    assert!(
-        stdout.contains(r#""hookEventName":"PermissionRequest""#)
-            && stdout.contains(r#""behavior":"allow""#),
-        "expected Codex PermissionRequest allow JSON, got: {stdout}"
+    assert_eq!(
+        stdout.trim(),
+        "",
+        "expected no decision so Codex keeps its approval prompt, got: {stdout}"
     );
 }
 
