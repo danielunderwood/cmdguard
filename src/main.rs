@@ -265,13 +265,25 @@ fn run_lint(policy_dir: Option<PathBuf>, fail_on: LintFailOn) {
         diagnostics.push(Diagnostic::warning("config/nickel", warning));
     }
 
+    // Detect the project root the same way the hook path does, so
+    // project-local `.cmdguard/` policies are loaded and linted too.
+    let cwd_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let project_root_detected = detect_project_root(&cwd_path);
+
     let mut engine = PolicyEngine::new();
-    if let Err(e) = load_all_policies(&mut engine, &policy_dir, None) {
+    if let Err(e) = load_all_policies(&mut engine, &policy_dir, project_root_detected.as_ref()) {
         diagnostics.push(Diagnostic::error("policy/load-error", e));
     }
 
     match diagnostics::loaded_policy_file_sets(&policy_dir) {
-        Ok((base_files, user_files)) => {
+        Ok((base_files, mut user_files)) => {
+            if let Some(project_policy_dir) = get_project_policy_dir(project_root_detected.as_ref())
+            {
+                match diagnostics::collect_policy_files(&project_policy_dir) {
+                    Ok(mut project_files) => user_files.append(&mut project_files),
+                    Err(e) => diagnostics.push(Diagnostic::error("policy/read-error", e)),
+                }
+            }
             diagnostics.extend(diagnostics::lint_policy_sources(&base_files, &user_files));
         }
         Err(e) => diagnostics.push(Diagnostic::error("policy/read-error", e)),
