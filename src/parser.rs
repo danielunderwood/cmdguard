@@ -121,7 +121,10 @@ pub struct ShellRedirect {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Absolute nominal paths the target may resolve to at execution time.
-    pub target_resolution: Resolution<PathBuf>,
+    /// Absent for redirects whose target is not a filesystem path: fd
+    /// duplication (`2>&1`), heredocs and here-strings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_resolution: Option<Resolution<PathBuf>>,
     /// Coarse redirection class for policy rules.
     pub kind: ShellRedirectKind,
     /// True when this redirect can write to a filesystem target.
@@ -933,7 +936,25 @@ fn static_absolute_cd_target(target: &str) -> Option<PathBuf> {
     Some(normalize_path(path))
 }
 
+/// Whether a redirect's target names a filesystem path. Fd duplication
+/// (`2>&1`, `<&3`), heredocs and here-strings name a descriptor or carry
+/// inline text, so resolving their target would invent a path like `<cwd>/1`
+/// or `<cwd>/EOF`.
+fn names_a_file(kind: &ShellRedirectKind) -> bool {
+    matches!(
+        kind,
+        ShellRedirectKind::Read
+            | ShellRedirectKind::Write
+            | ShellRedirectKind::Append
+            | ShellRedirectKind::ReadWrite
+    )
+}
+
 fn resolve_redirect(mut redirect: ShellRedirect, cwd: &CwdState) -> ShellRedirect {
+    if !names_a_file(&redirect.kind) {
+        redirect.target_resolution = None;
+        return redirect;
+    }
     let Some(target) = redirect.target.as_deref() else {
         return redirect;
     };
@@ -953,7 +974,7 @@ fn resolve_redirect(mut redirect: ShellRedirect, cwd: &CwdState) -> ShellRedirec
             .collect()
     };
 
-    redirect.target_resolution = Resolution::from_candidates(resolved);
+    redirect.target_resolution = Some(Resolution::from_candidates(resolved));
     redirect
 }
 
@@ -1042,7 +1063,7 @@ fn parse_redirect(raw: &str) -> Option<ShellRedirect> {
         operator,
         fd,
         target,
-        target_resolution: Resolution::unknown(),
+        target_resolution: names_a_file(&kind).then(Resolution::unknown),
         kind,
         writes_to_file,
     })
@@ -1325,6 +1346,13 @@ mod tests {
             .expect("expected a redirect")
     }
 
+    fn target(result: &ParseResult) -> &Resolution<PathBuf> {
+        redirect(result)
+            .target_resolution
+            .as_ref()
+            .expect("expected a resolvable redirect target")
+    }
+
     fn paths(resolution: &Resolution<PathBuf>) -> Vec<String> {
         resolution
             .candidate_values()
@@ -1388,14 +1416,8 @@ mod tests {
 
         assert!(!result.has_errors);
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/tmp/test.txt"]
-        );
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Known
-        );
+        assert_eq!(paths(target(&result)), ["/tmp/test.txt"]);
+        assert_eq!(target(&result).status(), ResolutionStatus::Known);
     }
 
     #[test]
@@ -1403,10 +1425,7 @@ mod tests {
         let result = parse("command -p cd /tmp && echo test > test.txt");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/tmp/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/tmp/test.txt"]);
     }
 
     #[test]
@@ -1414,10 +1433,7 @@ mod tests {
         let result = parse("CDPATH=/elsewhere cd /tmp && echo test > test.txt");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/tmp/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/tmp/test.txt"]);
     }
 
     #[test]
@@ -1425,10 +1441,7 @@ mod tests {
         let result = parse("A[0]=value cd /tmp && echo test > test.txt");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/tmp/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/tmp/test.txt"]);
     }
 
     #[test]
@@ -1439,10 +1452,7 @@ mod tests {
             result.commands[1].effective_cwd.status(),
             ResolutionStatus::Unknown
         );
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Unknown
-        );
+        assert_eq!(target(&result).status(), ResolutionStatus::Unknown);
     }
 
     #[test]
@@ -1453,10 +1463,7 @@ mod tests {
             result.commands[1].effective_cwd.status(),
             ResolutionStatus::Unknown
         );
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Unknown
-        );
+        assert_eq!(target(&result).status(), ResolutionStatus::Unknown);
     }
 
     #[test]
@@ -1464,10 +1471,7 @@ mod tests {
         let result = parse("cd /tmp || echo test > test.txt");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/workspace/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/workspace/test.txt"]);
     }
 
     #[test]
@@ -1483,13 +1487,10 @@ mod tests {
             ["/tmp", "/workspace"]
         );
         assert_eq!(
-            paths(&redirect(&result).target_resolution),
+            paths(target(&result)),
             ["/tmp/test.txt", "/workspace/test.txt"]
         );
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Ambiguous
-        );
+        assert_eq!(target(&result).status(), ResolutionStatus::Ambiguous);
     }
 
     #[test]
@@ -1497,10 +1498,7 @@ mod tests {
         let result = parse("(cd /tmp) && echo test > test.txt");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/workspace/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/workspace/test.txt"]);
     }
 
     #[test]
@@ -1508,10 +1506,7 @@ mod tests {
         let result = parse("(cd /tmp && echo test > test.txt)");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/tmp/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/tmp/test.txt"]);
     }
 
     #[test]
@@ -1520,10 +1515,7 @@ mod tests {
 
         assert!(result.commands[0].redirections.len() == 1);
         assert!(result.commands[1].redirections.is_empty());
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/workspace/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/workspace/test.txt"]);
     }
 
     #[test]
@@ -1531,10 +1523,7 @@ mod tests {
         let result = parse("{ cd /tmp && echo test > test.txt; }");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/tmp/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/tmp/test.txt"]);
     }
 
     #[test]
@@ -1542,10 +1531,7 @@ mod tests {
         let result = parse("cd /tmp & echo test > test.txt");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/workspace/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/workspace/test.txt"]);
     }
 
     #[test]
@@ -1556,33 +1542,24 @@ mod tests {
             result.commands[1].effective_cwd.status(),
             ResolutionStatus::Unknown
         );
-        assert!(paths(&redirect(&result).target_resolution).is_empty());
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Unknown
-        );
+        assert!(paths(target(&result)).is_empty());
+        assert_eq!(target(&result).status(), ResolutionStatus::Unknown);
     }
 
     #[test]
     fn absolute_redirect_is_known_even_when_cwd_is_unknown() {
         let result = parse("cd \"$TARGET\" && echo test > /dev/null");
 
-        assert_eq!(paths(&redirect(&result).target_resolution), ["/dev/null"]);
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Known
-        );
+        assert_eq!(paths(target(&result)), ["/dev/null"]);
+        assert_eq!(target(&result).status(), ResolutionStatus::Known);
     }
 
     #[test]
     fn dynamic_redirect_target_is_unknown() {
         let result = parse("echo test > \"$TARGET\"");
 
-        assert!(paths(&redirect(&result).target_resolution).is_empty());
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Unknown
-        );
+        assert!(paths(target(&result)).is_empty());
+        assert_eq!(target(&result).status(), ResolutionStatus::Unknown);
     }
 
     #[test]
@@ -1590,10 +1567,7 @@ mod tests {
         let result = parse("echo test > >(cat > /tmp/out)");
 
         assert!(result.has_errors);
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Unknown
-        );
+        assert_eq!(target(&result).status(), ResolutionStatus::Unknown);
     }
 
     #[test]
@@ -1722,10 +1696,7 @@ mod tests {
 
         assert!(!result.has_errors);
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/tmp/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/tmp/test.txt"]);
     }
 
     #[test]
@@ -1838,10 +1809,7 @@ mod tests {
             result.commands.last().unwrap().effective_cwd.status(),
             ResolutionStatus::Unknown
         );
-        assert_eq!(
-            redirect(&result).target_resolution.status(),
-            ResolutionStatus::Unknown
-        );
+        assert_eq!(target(&result).status(), ResolutionStatus::Unknown);
     }
 
     #[test]
@@ -1859,10 +1827,7 @@ mod tests {
         let result = parse("if true; then cat /etc/passwd > secrets.txt; fi");
 
         assert!(!result.has_errors);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/workspace/secrets.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/workspace/secrets.txt"]);
     }
 
     #[test]
@@ -1870,10 +1835,7 @@ mod tests {
         let result = parse("time cd /tmp && echo test > test.txt");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
-        assert_eq!(
-            paths(&redirect(&result).target_resolution),
-            ["/tmp/test.txt"]
-        );
+        assert_eq!(paths(target(&result)), ["/tmp/test.txt"]);
     }
 
     #[test]
@@ -1898,5 +1860,67 @@ mod tests {
         let result = parse("time git status && echo test > test.txt");
 
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn fd_duplication_gets_no_target_resolution() {
+        let result = parse("git status 2>&1 | tail -3");
+
+        let duplication = &result.commands[0].redirections[0];
+        assert_eq!(duplication.operator, ">&");
+        assert_eq!(duplication.fd.as_deref(), Some("2"));
+        assert_eq!(duplication.target.as_deref(), Some("1"));
+        assert_eq!(duplication.target_resolution, None);
+        assert_eq!(
+            serde_json::to_value(duplication)
+                .unwrap()
+                .get("target_resolution"),
+            None
+        );
+    }
+
+    #[test]
+    fn input_fd_duplication_gets_no_target_resolution() {
+        let result = parse("cat <&3");
+
+        assert_eq!(redirect(&result).kind, ShellRedirectKind::FdDuplicate);
+        assert_eq!(redirect(&result).target_resolution, None);
+    }
+
+    #[test]
+    fn heredoc_gets_no_target_resolution() {
+        let result = parse("cat <<EOF\nhi\nEOF");
+
+        assert_eq!(redirect(&result).kind, ShellRedirectKind::Heredoc);
+        assert_eq!(redirect(&result).target_resolution, None);
+    }
+
+    #[test]
+    fn here_string_gets_no_target_resolution() {
+        let here_string = parse_redirect("<<< hello").expect("here-string redirect");
+
+        assert_eq!(here_string.kind, ShellRedirectKind::HereString);
+        assert_eq!(
+            resolve_redirect(here_string, &CwdState::known(PathBuf::from("/workspace")))
+                .target_resolution,
+            None
+        );
+    }
+
+    #[test]
+    fn read_redirect_target_is_still_resolved() {
+        let result = parse("cat < input.txt");
+
+        assert_eq!(redirect(&result).kind, ShellRedirectKind::Read);
+        assert_eq!(target(&result).status(), ResolutionStatus::Known);
+        assert_eq!(paths(target(&result)), ["/workspace/input.txt"]);
+    }
+
+    #[test]
+    fn combined_output_redirect_target_is_still_resolved() {
+        let result = parse("cargo build &> build.log");
+
+        assert_eq!(redirect(&result).kind, ShellRedirectKind::Write);
+        assert_eq!(paths(target(&result)), ["/workspace/build.log"]);
     }
 }

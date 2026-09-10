@@ -280,9 +280,11 @@ allowed_redirect_targets["/dev/null"] := true
 Redirect table keys are absolute nominal paths. Relative targets are resolved
 against each command's shell-derived effective working directory. If control
 flow leaves multiple possible directories, every possible target must be
-listed; dynamic or otherwise unknown targets still prompt. Each redirect's
-`target_resolution` uses the same bundled `{status, candidates}` shape as
-`effective_cwd`.
+listed; dynamic or otherwise unknown targets still prompt. A redirect that
+names a file carries a `target_resolution` using the same bundled
+`{status, candidates}` shape as `effective_cwd`; redirects whose target is not
+a path (fd duplication such as `2>&1`, heredocs, here-strings) carry no
+`target_resolution` at all.
 
 ### Custom Rules
 

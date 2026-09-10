@@ -718,7 +718,7 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("/dev/null".to_string()),
-            target_resolution: crate::parser::Resolution::known(PathBuf::from("/dev/null")),
+            target_resolution: Some(crate::parser::Resolution::known(PathBuf::from("/dev/null"))),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         };
@@ -746,9 +746,9 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("out.txt".to_string()),
-            target_resolution: crate::parser::Resolution::known(PathBuf::from(
+            target_resolution: Some(crate::parser::Resolution::known(PathBuf::from(
                 "/workspace/not-allowed.txt",
-            )),
+            ))),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];
@@ -764,12 +764,12 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("out.txt".to_string()),
-            target_resolution: crate::parser::Resolution::from_candidates(
+            target_resolution: Some(crate::parser::Resolution::from_candidates(
                 std::collections::BTreeSet::from([
                     PathBuf::from("/tmp/out.txt"),
                     PathBuf::from("/workspace/out.txt"),
                 ]),
-            ),
+            )),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];
@@ -785,12 +785,12 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("out.txt".to_string()),
-            target_resolution: crate::parser::Resolution::from_candidates(
+            target_resolution: Some(crate::parser::Resolution::from_candidates(
                 std::collections::BTreeSet::from([
                     PathBuf::from("/tmp/out.txt"),
                     PathBuf::from("/other/out.txt"),
                 ]),
-            ),
+            )),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];
@@ -803,7 +803,7 @@ rules["allow_dangerous"] := allow("Dangerous allowed") if {
             operator: ">".to_string(),
             fd: None,
             target: Some("$TARGET".to_string()),
-            target_resolution: crate::parser::Resolution::unknown(),
+            target_resolution: Some(crate::parser::Resolution::unknown()),
             kind: crate::parser::ShellRedirectKind::Write,
             writes_to_file: true,
         }];
