@@ -595,7 +595,11 @@ impl<'a> ShellAnalyzer<'a> {
         input: CwdState,
         redirects: Vec<ShellRedirect>,
     ) -> Flow {
-        let embedded_cwd = self.embedded_cwd(node, &input);
+        let embedded_cwd = if subtree_mutates_cwd(node, self.source) {
+            CwdState::unknown()
+        } else {
+            input.clone()
+        };
         let (first_command, last_command) =
             self.contribute_embedded_commands(node, &embedded_cwd, &input, redirects);
         Flow {
@@ -658,17 +662,6 @@ impl<'a> ShellAnalyzer<'a> {
                 last_command,
                 mutates_cwd: false,
             }
-        }
-    }
-
-    /// The cwd to report for commands nested inside a construct whose control
-    /// flow is not modelled: the incoming cwd, unless the construct contains a
-    /// cwd mutation that cannot be ordered against them.
-    fn embedded_cwd(&self, node: Node<'_>, input: &CwdState) -> CwdState {
-        if subtree_mutates_cwd(node, self.source) {
-            CwdState::unknown()
-        } else {
-            input.clone()
         }
     }
 
