@@ -286,6 +286,60 @@ tests:
     expect: ask
 
   # ==========================================================================
+  # Shell Constructs
+  # ==========================================================================
+
+  # Assignments, declarations and test commands are cwd no-ops that contribute
+  # no command of their own; the rest of the chain is still evaluated.
+  - name: "allow command after export declaration"
+    command: "export FOO=bar && cargo build"
+    expect: allow
+
+  - name: "allow command after bare assignment"
+    command: "FOO=bar; git status"
+    expect: allow
+
+  - name: "allow command after unset"
+    command: "unset FOO; git status"
+    expect: allow
+
+  - name: "allow command guarded by posix test"
+    command: "[ -f x ] && cat ./x"
+    expect: allow
+
+  - name: "allow command guarded by bracket test"
+    command: "[[ -f x ]] && cat ./x"
+    expect: allow
+
+  # `!` contributes the command it negates.
+  - name: "allow negated command"
+    command: "! grep -q foo x.txt"
+    expect: allow
+
+  # Loops, conditionals and case contribute every command they contain.
+  - name: "allow for loop body command"
+    command: 'for f in *.rs; do cat "$f"; done'
+    expect: allow
+
+  - name: "allow while loop condition and body commands"
+    command: 'while read l; do echo $l; done'
+    expect: allow
+
+  - name: "allow case branch command"
+    command: 'case $x in a) ls;; esac'
+    expect: allow
+
+  - name: "deny dangerous command inside a for loop"
+    command: 'for f in *.rs; do rm -rf /; done'
+    expect: ask
+
+  # A cd inside a conditional or loop body cannot be followed, so the cwd of
+  # every command in the construct is unknown and the chain is flagged.
+  - name: "ask conditional containing cd"
+    command: "if cd /tmp; then cat ./x; fi"
+    expect: ask
+
+  # ==========================================================================
   # Stdlib Helpers (verified via migrated rules)
   # ==========================================================================
 

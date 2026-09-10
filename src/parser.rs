@@ -296,6 +296,16 @@ impl<'a> ShellAnalyzer<'a> {
             "subshell" => self.analyze_subshell(node, input, redirects),
             "compound_statement" => self.analyze_compound(node, input, redirects),
             "command" | "simple_command" => self.analyze_command(node, input, redirects),
+            "declaration_command" | "variable_assignment" | "unset_command" | "test_command" => {
+                self.analyze_cwd_neutral(node, input, redirects)
+            }
+            "negated_command" => self.analyze_negated(node, input, redirects),
+            "if_statement"
+            | "for_statement"
+            | "c_style_for_statement"
+            | "while_statement"
+            | "case_statement"
+            | "function_definition" => self.analyze_compound_statement(node, input, redirects),
             "comment" => Flow::unchanged(input),
             _ => self.analyze_unsupported(node, input, redirects),
         }
@@ -572,15 +582,105 @@ impl<'a> ShellAnalyzer<'a> {
         }
     }
 
-    fn analyze_unsupported(
+    /// Assignments, declarations (`export`, `declare`, `local`, `readonly`),
+    /// `unset` and test commands (`[ ... ]`, `[[ ... ]]`) never change the
+    /// shell's cwd. They can still embed commands in a command substitution,
+    /// which are contributed to the chain.
+    fn analyze_cwd_neutral(
         &mut self,
         node: Node<'_>,
-        _input: CwdState,
+        input: CwdState,
         redirects: Vec<ShellRedirect>,
     ) -> Flow {
-        self.unsupported = true;
+        let embedded_cwd = self.embedded_cwd(node, &input);
+        let (first_command, last_command) =
+            self.contribute_embedded_commands(node, &embedded_cwd, &input, redirects);
+        Flow {
+            success: input.clone(),
+            failure: input,
+            first_command,
+            last_command,
+            mutates_cwd: false,
+        }
+    }
+
+    /// `!` inverts the exit status of the statement it prefixes; the statement
+    /// itself still runs and can still change the cwd.
+    fn analyze_negated(
+        &mut self,
+        node: Node<'_>,
+        input: CwdState,
+        redirects: Vec<ShellRedirect>,
+    ) -> Flow {
+        let Some(inner) = node.named_child(0) else {
+            return self.analyze_unsupported(node, input, redirects);
+        };
+        let flow = self.analyze_node(inner, input, redirects);
+        Flow {
+            success: flow.failure,
+            failure: flow.success,
+            first_command: flow.first_command,
+            last_command: flow.last_command,
+            mutates_cwd: flow.mutates_cwd,
+        }
+    }
+
+    /// Conditionals, loops, `case` and function definitions contribute every
+    /// command they contain. Their bodies may run zero, one or many times, so
+    /// a `cd` anywhere inside them cannot be followed: the cwd of every
+    /// contributed command, and of everything after the construct, becomes
+    /// unknown, and the whole command is flagged for review.
+    fn analyze_compound_statement(
+        &mut self,
+        node: Node<'_>,
+        input: CwdState,
+        redirects: Vec<ShellRedirect>,
+    ) -> Flow {
+        let mutates_cwd = subtree_mutates_cwd(node, self.source);
+        let embedded_cwd = if mutates_cwd {
+            CwdState::unknown()
+        } else {
+            input.clone()
+        };
+        let (first_command, last_command) =
+            self.contribute_embedded_commands(node, &embedded_cwd, &input, redirects);
+        if mutates_cwd {
+            self.unsupported = true;
+            Flow::unknown(first_command, last_command)
+        } else {
+            Flow {
+                success: input.clone(),
+                failure: input,
+                first_command,
+                last_command,
+                mutates_cwd: false,
+            }
+        }
+    }
+
+    /// The cwd to report for commands nested inside a construct whose control
+    /// flow is not modelled: the incoming cwd, unless the construct contains a
+    /// cwd mutation that cannot be ordered against them.
+    fn embedded_cwd(&self, node: Node<'_>, input: &CwdState) -> CwdState {
+        if subtree_mutates_cwd(node, self.source) {
+            CwdState::unknown()
+        } else {
+            input.clone()
+        }
+    }
+
+    /// Contribute every command nested inside `node` without threading cwd
+    /// state through them, and attach `redirects` (applied by the enclosing
+    /// shell, so resolved against `input`) to the first of them.
+    fn contribute_embedded_commands(
+        &mut self,
+        node: Node<'_>,
+        embedded_cwd: &CwdState,
+        input: &CwdState,
+        redirects: Vec<ShellRedirect>,
+    ) -> (Option<usize>, Option<usize>) {
         let start = self.commands.len();
-        self.extract_unknown_commands(node);
+        self.extract_embedded_commands(node, embedded_cwd);
         let first = (self.commands.len() > start).then_some(start);
         let last = self
             .commands
@@ -589,13 +689,25 @@ impl<'a> ShellAnalyzer<'a> {
             .filter(|_| first.is_some());
         let resolved_redirects: Vec<_> = redirects
             .into_iter()
-            .map(|redirect| resolve_redirect(redirect, &CwdState::unknown()))
+            .map(|redirect| resolve_redirect(redirect, input))
             .collect();
         self.attach_redirects(start, first, resolved_redirects);
+        (first, last)
+    }
+
+    fn analyze_unsupported(
+        &mut self,
+        node: Node<'_>,
+        _input: CwdState,
+        redirects: Vec<ShellRedirect>,
+    ) -> Flow {
+        self.unsupported = true;
+        let unknown = CwdState::unknown();
+        let (first, last) = self.contribute_embedded_commands(node, &unknown, &unknown, redirects);
         Flow::unknown(first, last)
     }
 
-    fn extract_unknown_commands(&mut self, node: Node<'_>) {
+    fn extract_embedded_commands(&mut self, node: Node<'_>, cwd: &CwdState) {
         match node.kind() {
             "command" | "simple_command" => {
                 let text = node_text(&node, self.source).trim().to_string();
@@ -604,18 +716,44 @@ impl<'a> ShellAnalyzer<'a> {
                     self.commands.push(ParsedCommand {
                         text,
                         redirections: vec![],
-                        effective_cwd: Resolution::unknown(),
+                        effective_cwd: cwd.clone(),
                         position: index,
                         chain_length: 0,
                         next_operator: None,
                     });
                 }
             }
+            "redirected_statement" => {
+                let start = self.commands.len();
+                let mut redirects = vec![];
+                for i in 0..node.child_count() as u32 {
+                    let Some(child) = node.child(i) else {
+                        continue;
+                    };
+                    if child.kind().contains("redirect") {
+                        collect_redirections(&child, self.source, &mut redirects);
+                    } else if child.is_named() {
+                        self.extract_embedded_commands(child, cwd);
+                    }
+                }
+                let resolved: Vec<_> = redirects
+                    .into_iter()
+                    .map(|redirect| resolve_redirect(redirect, cwd))
+                    .collect();
+                // A redirect applies to the last command of the body it
+                // follows (the final stage of a pipeline, say).
+                let target = self
+                    .commands
+                    .len()
+                    .checked_sub(1)
+                    .filter(|last| *last >= start);
+                self.attach_redirects(start, target, resolved);
+            }
             _ => {
                 for i in 0..node.child_count() as u32 {
                     if let Some(child) = node.child(i) {
                         if child.is_named() {
-                            self.extract_unknown_commands(child);
+                            self.extract_embedded_commands(child, cwd);
                         }
                     }
                 }
@@ -667,6 +805,20 @@ fn statement_children(node: Node<'_>) -> Vec<(Node<'_>, Option<String>)> {
         }
     }
     items
+}
+
+/// Whether any command nested inside `node` can change the shell's cwd.
+fn subtree_mutates_cwd(node: Node<'_>, source: &str) -> bool {
+    match node.kind() {
+        "command" | "simple_command" => {
+            let text = node_text(&node, source);
+            let tokens = crate::tokenizer::tokenize(text.trim()).unwrap_or_default();
+            command_success_state(&tokens, &CwdState::unknown()).1
+        }
+        _ => (0..node.child_count() as u32)
+            .filter_map(|index| node.child(index))
+            .any(|child| subtree_mutates_cwd(child, source)),
+    }
 }
 
 fn command_success_state(tokens: &[String], input: &CwdState) -> (CwdState, bool) {
@@ -1516,5 +1668,192 @@ mod tests {
         assert_eq!(result.commands.len(), 2);
         assert_eq!(result.commands[0].next_operator, Some("&".to_string()));
         assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn declaration_command_is_a_cwd_neutral_no_op() {
+        let result = parse("export FOO=bar && cargo build");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "cargo build");
+        assert_eq!(paths(&result.commands[0].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn declaration_command_with_flags_is_a_no_op() {
+        let result = parse("declare -x FOO=bar; git status");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "git status");
+    }
+
+    #[test]
+    fn unset_command_is_a_no_op() {
+        let result = parse("unset FOO; git status");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "git status");
+    }
+
+    #[test]
+    fn bare_variable_assignment_is_a_cwd_neutral_no_op() {
+        let result = parse("FOO=bar; git status");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "git status");
+        assert_eq!(paths(&result.commands[0].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn assignment_does_not_discard_an_earlier_cd() {
+        let result = parse("cd /tmp && FOO=bar && echo test > test.txt");
+
+        assert!(!result.has_errors);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/tmp"]);
+        assert_eq!(
+            paths(&redirect(&result).target_resolution),
+            ["/tmp/test.txt"]
+        );
+    }
+
+    #[test]
+    fn assignment_contributes_a_substituted_command_with_unknown_cwd_after_cd() {
+        let result = parse("FOO=$(cd /tmp && rm -rf ./x)");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[1].text, "rm -rf ./x");
+        assert_eq!(
+            result.commands[1].effective_cwd.status(),
+            ResolutionStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn negated_command_contributes_its_inner_command() {
+        let result = parse("! grep -q foo x.txt");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "grep -q foo x.txt");
+        assert_eq!(paths(&result.commands[0].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn negated_cd_inverts_the_branch_outcomes() {
+        let result = parse("! cd /tmp && echo test > test.txt");
+
+        assert!(!result.has_errors);
+        assert_eq!(paths(&result.commands[1].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn posix_test_command_is_a_cwd_neutral_no_op() {
+        let result = parse("[ -f x ] && cat ./x");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "cat ./x");
+        assert_eq!(paths(&result.commands[0].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn bracket_test_command_is_a_cwd_neutral_no_op() {
+        let result = parse("[[ -f x ]] && cat ./x");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "cat ./x");
+    }
+
+    #[test]
+    fn for_loop_contributes_its_body_commands() {
+        let result = parse("for f in *.rs; do cat \"$f\"; done");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "cat \"$f\"");
+        assert_eq!(paths(&result.commands[0].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn while_loop_contributes_condition_and_body_commands() {
+        let result = parse("while read l; do echo $l; done");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[0].text, "read l");
+        assert_eq!(result.commands[1].text, "echo $l");
+    }
+
+    #[test]
+    fn case_statement_contributes_branch_commands() {
+        let result = parse("case $x in a) ls;; esac");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "ls");
+    }
+
+    #[test]
+    fn if_statement_without_cd_keeps_the_known_cwd() {
+        let result = parse("if [ -f x ]; then cat ./x; fi");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "cat ./x");
+        assert_eq!(paths(&result.commands[0].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn if_statement_containing_cd_makes_cwd_unknown_and_requires_review() {
+        let result = parse("if cd /tmp; then cat ./x; fi");
+
+        assert!(result.has_errors);
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[1].text, "cat ./x");
+        assert_eq!(
+            result.commands[1].effective_cwd.status(),
+            ResolutionStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn command_after_a_compound_statement_containing_cd_has_unknown_cwd() {
+        let result = parse("if cd /tmp; then true; fi; echo test > test.txt");
+
+        assert_eq!(
+            result.commands.last().unwrap().effective_cwd.status(),
+            ResolutionStatus::Unknown
+        );
+        assert_eq!(
+            redirect(&result).target_resolution.status(),
+            ResolutionStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn function_definition_contributes_its_body_commands() {
+        let result = parse("f() { ls ./here; }");
+
+        assert!(!result.has_errors);
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].text, "ls ./here");
+        assert_eq!(paths(&result.commands[0].effective_cwd), ["/workspace"]);
+    }
+
+    #[test]
+    fn compound_statement_keeps_inner_redirect_targets() {
+        let result = parse("if true; then cat /etc/passwd > secrets.txt; fi");
+
+        assert!(!result.has_errors);
+        assert_eq!(
+            paths(&redirect(&result).target_resolution),
+            ["/workspace/secrets.txt"]
+        );
     }
 }
