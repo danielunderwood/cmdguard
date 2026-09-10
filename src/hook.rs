@@ -166,9 +166,42 @@ fn is_target_entry(entry: &Value, target: HookTarget) -> bool {
             hooks.iter().any(|hook| {
                 hook.get("command")
                     .and_then(Value::as_str)
-                    .is_some_and(|command| command_target(command) == Some(target))
+                    .is_some_and(|command| command_entry_target(command) == Some(target))
             })
         })
+}
+
+/// Determine the hook target a stored command entry corresponds to.
+///
+/// Tries `command_target` (a full clap parse) first. That fails for entries
+/// customized with shell decoration clap can't handle -- e.g. an env prefix
+/// plus trailing redirection appended after our own args by hand-editing
+/// the settings file, such as
+/// `RUST_LOG=debug /path/cmdguard hook run 2>>/tmp/log`. Rather than
+/// treating a parse failure as "not ours" and letting `hook install`
+/// duplicate/clobber the entry, fall back to the same binary detection
+/// `is_our_command` uses, confirm the entry actually invokes `hook run`,
+/// and infer the target from whether `--target codex` appears in the
+/// command string (absent means claude).
+fn command_entry_target(command: &str) -> Option<HookTarget> {
+    if let Some(target) = command_target(command) {
+        return Some(target);
+    }
+    if !is_our_command(command) {
+        return None;
+    }
+    let args = command_args(command)?;
+    let mentions_hook_run = args
+        .windows(2)
+        .any(|pair| pair[0] == "hook" && pair[1] == "run");
+    if !mentions_hook_run {
+        return None;
+    }
+    Some(if command.contains("--target codex") {
+        HookTarget::Codex
+    } else {
+        HookTarget::Claude
+    })
 }
 
 fn strip_our_hooks(mut entry: Value) -> (Option<Value>, usize) {
@@ -561,6 +594,38 @@ mod tests {
     }
 
     #[test]
+    fn test_is_target_entry_recognizes_customized_claude_entry() {
+        // A hand-edited entry: env prefix plus trailing redirection that
+        // command_target's clap parse can't handle (unexpected positional
+        // argument). Confirm this really is the clap-failure path, then
+        // confirm is_target_entry still recognizes it as the claude entry
+        // it obviously is, through the production detection path.
+        let cmd = "RUST_LOG=debug /usr/local/bin/cmdguard hook run 2>>/tmp/cmdguard.log";
+        assert_eq!(command_target(cmd), None);
+        assert!(is_target_entry(&entry(cmd), HookTarget::Claude));
+        assert!(!is_target_entry(&entry(cmd), HookTarget::Codex));
+    }
+
+    #[test]
+    fn test_is_target_entry_recognizes_customized_codex_entry() {
+        let cmd = "RUST_LOG=debug /usr/local/bin/cmdguard hook run --target codex 2>>/tmp/cg.log";
+        assert_eq!(command_target(cmd), None);
+        assert!(is_target_entry(&entry(cmd), HookTarget::Codex));
+        assert!(!is_target_entry(&entry(cmd), HookTarget::Claude));
+    }
+
+    #[test]
+    fn test_is_target_entry_customized_entry_without_hook_run_not_recognized() {
+        // Fallback only fires for entries that actually mention `hook run`;
+        // a customized `hook status` invocation must not be misclassified.
+        let cmd =
+            "RUST_LOG=debug /usr/local/bin/cmdguard hook status --target codex 2>>/tmp/cg.log";
+        assert_eq!(command_target(cmd), None);
+        assert!(!is_target_entry(&entry(cmd), HookTarget::Codex));
+        assert!(!is_target_entry(&entry(cmd), HookTarget::Claude));
+    }
+
+    #[test]
     fn test_is_our_entry_quoted_path_with_spaces() {
         // Path containing a space, properly quoted: must still match.
         assert!(is_our_entry(&entry(
@@ -635,6 +700,75 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let hooks = &settings["hooks"]["PreToolUse"];
         assert_eq!(hooks.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_install_leaves_customized_claude_entry_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        let bin = "/usr/local/bin/cmdguard";
+        let cmd = "RUST_LOG=debug /usr/local/bin/cmdguard hook run 2>>/tmp/cmdguard.log";
+        let settings = json!({"hooks": {"PreToolUse": [entry(cmd)]}});
+        write_settings(&path, &settings).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        // Zero entries added means install() prints "already registered"
+        // and, crucially, install_to never calls write_settings — the file
+        // on disk must be byte-for-byte unchanged.
+        assert_eq!(super::install_to(&path, bin, HookTarget::Claude), Ok(0));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn test_install_leaves_customized_codex_entry_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".codex/hooks.json");
+        let bin = "/usr/local/bin/cmdguard";
+        let cmd = "RUST_LOG=debug /usr/local/bin/cmdguard hook run --target codex 2>>/tmp/cg.log";
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [entry(cmd)],
+                "PermissionRequest": [entry(cmd)],
+            }
+        });
+        write_settings(&path, &settings).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(super::install_to(&path, bin, HookTarget::Codex), Ok(0));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn test_status_reports_customized_claude_entry_as_registered() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        let cmd = "RUST_LOG=debug /usr/local/bin/cmdguard hook run 2>>/tmp/cmdguard.log";
+        let settings = json!({"hooks": {"PreToolUse": [entry(cmd)]}});
+        write_settings(&path, &settings).unwrap();
+
+        assert_eq!(
+            super::registration_status(&path, HookTarget::Claude),
+            Ok(RegistrationStatus::Registered)
+        );
+    }
+
+    #[test]
+    fn test_status_reports_customized_codex_entry_as_registered() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".codex/hooks.json");
+        let cmd = "RUST_LOG=debug /usr/local/bin/cmdguard hook run --target codex 2>>/tmp/cg.log";
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [entry(cmd)],
+                "PermissionRequest": [entry(cmd)],
+            }
+        });
+        write_settings(&path, &settings).unwrap();
+
+        assert_eq!(
+            super::registration_status(&path, HookTarget::Codex),
+            Ok(RegistrationStatus::Registered)
+        );
     }
 
     #[test]
