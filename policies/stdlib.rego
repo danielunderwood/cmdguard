@@ -31,3 +31,12 @@ all_paths_in_project if {
 no_paths if {
 	count(input.paths) == 0
 }
+
+# True when every flag token on the command matched a flag definition.
+#
+# A rule that grants extra latitude should require this: cmdguard cannot reason
+# about the effect of an option it does not model. Only commands whose flags are
+# modelled report unknown flags at all, so this holds trivially for the rest.
+no_unknown_flags if {
+	count(input.unknown_flags) == 0
+}

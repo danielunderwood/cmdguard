@@ -200,14 +200,34 @@ in
       positional = [{ name = "paths", type = "path", variadic = true, optional = true }],
     },
 
+    # sed's options are modelled in full: `allow_sed_in_pipe` only grants the
+    # stdin -> stdout allowance when every option matched a definition, so an
+    # undeclared option costs sed its allowance rather than passing unnoticed.
+    # A flag definition holds one long form, so aliases (--silent) are separate
+    # entries.
     sed = {
       flags = {
         # GNU sed accepts --in-place[=SUFFIX]. Leaving the long form undeclared
         # meant `sed --in-place=.bak f` set no in_place flag, so ask_sed_inplace
         # never fired and allow_sed_in_pipe treated it as stdout-only.
         in_place = { type = "with_optional_arg", short = ["-i"], long = "--in-place" },
-        expression = arg_flag "-e" null,
-        quiet = bool_flag "-n" null,
+        expression = repeat_flag "-e" "--expression",
+        # A script file can contain `w` (write a file) and `e` (run a command).
+        file = arg_flag "-f" "--file",
+        quiet = bool_flag "-n" "--quiet",
+        silent = bool_flag [] "--silent",
+        regexp_extended = bool_flag ["-E", "-r"] "--regexp-extended",
+        separate = bool_flag "-s" "--separate",
+        null_data = bool_flag "-z" "--null-data",
+        unbuffered = bool_flag "-u" "--unbuffered",
+        line_length = arg_flag "-l" "--line-length",
+        posix = bool_flag [] "--posix",
+        debug = bool_flag [] "--debug",
+        sandbox = bool_flag [] "--sandbox",
+        follow_symlinks = bool_flag [] "--follow-symlinks",
+        binary = bool_flag "-b" "--binary",
+        help = bool_flag [] "--help",
+        version = bool_flag [] "--version",
       },
       positional = [
         string_arg "script",

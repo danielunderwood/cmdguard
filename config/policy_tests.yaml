@@ -378,6 +378,33 @@ tests:
     command: "cat file.txt | sed 's/foo/bar/'"
     expect: allow
 
+  # Modelled options don't change the stdin -> stdout shape, so they keep the
+  # pipe allowance.
+  - name: "allow sed -E in a pipe"
+    command: "cat file.txt | sed -E 's/x+/y/'"
+    expect: allow
+
+  - name: "allow sed -n in a pipe"
+    command: "cat file.txt | sed -n '1p'"
+    expect: allow
+
+  # A script file can carry `w` (write a file) or `e` (run a command), so the
+  # pipe allowance does not extend to it.
+  - name: "no pipe allowance for sed -f"
+    command: "cat file.txt | sed -f evil.sed"
+    expect: defer
+
+  # An option cmdguard cannot model is an option whose effect it cannot reason
+  # about; withhold the allowance rather than guess.
+  - name: "no pipe allowance for sed with an unmodelled option"
+    command: "cat file.txt | sed --bogus 's/x/y/'"
+    expect: defer
+
+  # -i.bak is an in-place edit with a backup suffix, not a stdout filter.
+  - name: "ask sed -i.bak in a pipe"
+    command: "cat file.txt | sed -i.bak 's/x/y/' file.txt"
+    expect: ask
+
   # ...but still defer if it's the first command (no pipe in)
   - name: "defer sed at chain start"
     command: "sed 's/foo/bar/' file.txt | cat"
