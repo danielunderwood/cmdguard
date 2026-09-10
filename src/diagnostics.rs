@@ -132,8 +132,9 @@ fn collect_rule_names(files: &[PathBuf]) -> BTreeSet<String> {
         let Ok(contents) = std::fs::read_to_string(path) else {
             continue;
         };
+        let stripped = strip_comments(&contents);
 
-        for captures in rule_re.captures_iter(&contents) {
+        for captures in rule_re.captures_iter(&stripped) {
             names.insert(captures[1].to_string());
         }
     }
@@ -146,32 +147,206 @@ fn lint_policy_source(
     contents: &str,
     base_rule_names: &BTreeSet<String>,
 ) -> Vec<Diagnostic> {
+    // Blank out comments (preserving length/line numbers) so none of the
+    // lints below can mistake commented-out policy text for live rules.
+    let stripped = strip_comments(contents);
     let mut diagnostics = vec![];
-    diagnostics.extend(lint_high_priority_allow_calls(path, contents));
-    diagnostics.extend(lint_high_priority_allow_objects(path, contents));
-    diagnostics.extend(lint_rule_name_collisions(path, contents, base_rule_names));
+    diagnostics.extend(lint_high_priority_allow_calls(path, &stripped));
+    diagnostics.extend(lint_high_priority_allow_objects(path, &stripped));
+    diagnostics.extend(lint_rule_name_collisions(path, &stripped, base_rule_names));
     diagnostics
 }
 
-fn lint_high_priority_allow_calls(path: &Path, contents: &str) -> Vec<Diagnostic> {
-    let allow_at_re =
-        Regex::new(r#"(?s)allow_at\s*\(.*?,\s*([0-9]+)\s*\)"#).expect("valid allow_at regex");
+/// Replace `#` comments (line-start or trailing) with spaces, leaving
+/// newlines and all other byte offsets untouched so callers can still map
+/// positions in the returned string back to line numbers in the original.
+/// `#` characters inside quoted string literals are left alone.
+fn strip_comments(contents: &str) -> String {
+    let bytes = contents.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut in_string: Option<u8> = None;
+    let mut i = 0;
 
-    allow_at_re
-        .captures_iter(contents)
-        .filter_map(|captures| {
-            let priority = captures.get(1)?.as_str().parse::<u32>().ok()?;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(quote) = in_string {
+            if c == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if c == quote {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        match c {
+            b'"' | b'\'' => {
+                in_string = Some(c);
+                i += 1;
+            }
+            b'#' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    out[i] = b' ';
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    String::from_utf8(out).unwrap_or_else(|_| contents.to_string())
+}
+
+/// Find each call site of `name(` in `contents`, respecting word boundaries
+/// (so e.g. `xallow_at(` is not mistaken for a call to `allow_at`).
+/// Returns, for each call, the byte offset of the start of `name`, the byte
+/// offset of its matching closing paren, and the argument-list text between
+/// its own matching parentheses (quote-aware, so nested `(`/`)` inside
+/// string literals don't confuse the depth count and the scan never runs
+/// past this call's own closing paren into later text).
+fn find_call_sites<'a>(contents: &'a str, name: &str) -> Vec<(usize, usize, &'a str)> {
+    let bytes = contents.as_bytes();
+    let mut sites = vec![];
+    let mut search_from = 0;
+
+    while let Some(rel) = contents[search_from..].find(name) {
+        let name_start = search_from + rel;
+        let before_ok = name_start == 0 || !is_ident_byte(bytes[name_start - 1]);
+        let name_end = name_start + name.len();
+
+        if !before_ok {
+            search_from = name_end;
+            continue;
+        }
+
+        let mut idx = name_end;
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+
+        if idx >= bytes.len() || bytes[idx] != b'(' {
+            search_from = name_end;
+            continue;
+        }
+
+        let args_start = idx + 1;
+        match matching_close_paren(contents, args_start) {
+            Some(args_end) => {
+                sites.push((name_start, args_end, &contents[args_start..args_end]));
+                search_from = args_end + 1;
+            }
+            None => {
+                // Unbalanced call; nothing further to salvage from here.
+                break;
+            }
+        }
+    }
+
+    sites
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Given the byte offset just past an opening `(`, return the offset of the
+/// matching `)` (depth-aware, quote-aware). Never crosses into a later,
+/// unrelated call because it only advances through this call's own nesting.
+fn matching_close_paren(contents: &str, start: usize) -> Option<usize> {
+    let bytes = contents.as_bytes();
+    let mut depth = 1i32;
+    let mut i = start;
+    let mut in_string: Option<u8> = None;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(quote) = in_string {
+            if c == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if c == quote {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        match c {
+            b'"' | b'\'' => in_string = Some(c),
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    None
+}
+
+/// Split a call's own argument-list text on top-level commas (quote- and
+/// paren-depth-aware), returning the trimmed segments.
+fn split_top_level_args(args: &str) -> Vec<&str> {
+    let bytes = args.as_bytes();
+    let mut parts = vec![];
+    let mut start = 0;
+    let mut depth = 0i32;
+    let mut in_string: Option<u8> = None;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(quote) = in_string {
+            if c == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if c == quote {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        match c {
+            b'"' | b'\'' => in_string = Some(c),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(args[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(args[start..].trim());
+
+    parts
+}
+
+fn lint_high_priority_allow_calls(path: &Path, contents: &str) -> Vec<Diagnostic> {
+    find_call_sites(contents, "allow_at")
+        .into_iter()
+        .filter_map(|(start, close_paren, args)| {
+            let last_arg = split_top_level_args(args).into_iter().next_back()?;
+            let priority = last_arg.parse::<u32>().ok()?;
             if priority <= 50 {
                 return None;
             }
 
-            let matched = captures.get(0)?;
+            let call_text = &contents[start..=close_paren];
             Some(high_priority_allow_diagnostic(
-                path,
-                contents,
-                matched.start(),
-                matched.as_str(),
-                priority,
+                path, contents, start, call_text, priority,
             ))
         })
         .collect()
@@ -329,6 +504,82 @@ rules["allow_safe"] := allow_at("safe", 25) if {
         );
 
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn allow_at_with_non_literal_priority_does_not_leak_into_next_call() {
+        // Regression: a lazy, unbounded regex used to scan past this call's
+        // own closing paren and pick up the priority literal from the
+        // unrelated deny_at call below it.
+        let diagnostics = lint_policy_source(
+            Path::new("custom.rego"),
+            r#"
+package cmdguard
+import rego.v1
+
+rules["allow_var"] := allow_at("reason", some_prio) if {
+	input.something
+}
+
+rules["deny_thing"] := deny_at("deny it", 100) if {
+	input.other
+}
+"#,
+            &BTreeSet::new(),
+        );
+
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "policy/high-priority-allow"),
+            "expected no high-priority-allow warning, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn commented_out_allow_at_is_ignored() {
+        let diagnostics = lint_policy_source(
+            Path::new("custom.rego"),
+            r#"
+package cmdguard
+import rego.v1
+
+# rules["allow_redirect"] := allow_at("redirect allowed", 99) if {
+#	input.redirections
+# }
+
+rules["allow_safe"] := allow_at("safe", 25) if {
+	input.binary_name == "safe"
+}
+"#,
+            &BTreeSet::new(),
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "expected no findings for commented-out call, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn hash_inside_string_literal_is_not_treated_as_comment() {
+        let diagnostics = lint_policy_source(
+            Path::new("custom.rego"),
+            r#"
+package cmdguard
+import rego.v1
+
+rules["allow_hash"] := allow_at("uses a # inside the reason string", 99) if {
+	input.binary_name == "safe"
+}
+"#,
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "policy/high-priority-allow");
     }
 
     #[test]
