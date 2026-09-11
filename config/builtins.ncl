@@ -68,6 +68,18 @@ let strings_arg = fun arg_name =>
   }
 in
 
+# Create a variadic URL argument
+#
+# A URL value is canonicalized before policies see it, so an allow-list pattern
+# matches one form of the destination rather than however the URL was typed.
+let urls_arg = fun arg_name =>
+  {
+    name = arg_name,
+    type = "url",
+    variadic = true,
+  }
+in
+
 # Create a "last" positional argument (like cp destination)
 let last_arg = fun arg_name arg_type =>
   {
@@ -609,17 +621,87 @@ in
     # curl
     # -------------------------------------------------------------------------
     curl = {
+      # Modelling curl's options is what makes allowing curl possible at all: an
+      # option cmdguard cannot see is an option that can redirect the request or
+      # touch a local file, and network.rego refuses to allow a curl command
+      # that carries an unmodelled flag.
+      #
+      # Options that policy only needs to *detect* are declared with `arg_flag`
+      # rather than `repeat_flag`: a repeatable flag whose value is missing or
+      # starts with a dash is dropped from `parsed_flags` entirely, while a
+      # `with_arg` flag still records its presence. `repeat_flag` is reserved
+      # for the flags whose every value has to be inspected.
       flags = {
         silent = bool_flag "-s" "--silent",
-        output = arg_flag "-o" "--output",
-        location = bool_flag "-L" "--location",
-        header = repeat_flag "-H" "--header",
-        data = arg_flag "-d" "--data",
+        show_error = bool_flag "-S" "--show-error",
+        insecure = bool_flag "-k" "--insecure",
         request = arg_flag "-X" "--request",
         user = arg_flag "-u" "--user",
-        insecure = bool_flag "-k" "--insecure",
+        disable = bool_flag "-q" "--disable",
+        url = repeat_flag [] "--url",
+        next = bool_flag "-:" "--next",
+
+        # Redirect or remap the destination
+        location = bool_flag "-L" "--location",
+        location_trusted = bool_flag [] "--location-trusted",
+        proto = arg_flag [] "--proto",
+        proto_redir = arg_flag [] "--proto-redir",
+        proto_default = arg_flag [] "--proto-default",
+        config = arg_flag "-K" "--config",
+        connect_to = arg_flag [] "--connect-to",
+        resolve = arg_flag [] "--resolve",
+        proxy = arg_flag "-x" "--proxy",
+        preproxy = arg_flag [] "--preproxy",
+        socks4 = arg_flag [] "--socks4",
+        socks4a = arg_flag [] "--socks4a",
+        socks5 = arg_flag [] "--socks5",
+        socks5_hostname = arg_flag [] "--socks5-hostname",
+        doh_url = arg_flag [] "--doh-url",
+        unix_socket = arg_flag [] "--unix-socket",
+        abstract_unix_socket = arg_flag [] "--abstract-unix-socket",
+        interface = arg_flag [] "--interface",
+
+        # Write a local file
+        output = arg_flag "-o" "--output",
+        remote_name = bool_flag "-O" "--remote-name",
+        remote_header_name = bool_flag "-J" "--remote-header-name",
+        remote_name_all = bool_flag [] "--remote-name-all",
+        output_dir = arg_flag [] "--output-dir",
+        create_dirs = bool_flag [] "--create-dirs",
+        dump_header = arg_flag "-D" "--dump-header",
+        cookie_jar = arg_flag "-c" "--cookie-jar",
+        trace = arg_flag [] "--trace",
+        trace_ascii = arg_flag [] "--trace-ascii",
+        stderr = arg_flag [] "--stderr",
+        etag_save = arg_flag [] "--etag-save",
+
+        # Read a local file
+        upload_file = arg_flag "-T" "--upload-file",
+        cookie = arg_flag "-b" "--cookie",
+        etag_compare = arg_flag [] "--etag-compare",
+        netrc = bool_flag "-n" "--netrc",
+        netrc_file = arg_flag [] "--netrc-file",
+        cacert = arg_flag [] "--cacert",
+        capath = arg_flag [] "--capath",
+        cert = arg_flag "-E" "--cert",
+        key = arg_flag [] "--key",
+
+        # Read a local file when the value starts with `@`
+        header = repeat_flag "-H" "--header",
+        data = repeat_flag "-d" "--data",
+        data_ascii = repeat_flag [] "--data-ascii",
+        data_binary = repeat_flag [] "--data-binary",
+        data_raw = repeat_flag [] "--data-raw",
+        data_urlencode = repeat_flag [] "--data-urlencode",
+        form = repeat_flag "-F" "--form",
+        form_string = repeat_flag [] "--form-string",
+
+        # Writes a local file itself: `-w '%output{file}'` (curl 7.83+)
+        write_out = arg_flag "-w" "--write-out",
       },
-      positional = [last_arg "url" "string"],
+      # curl accepts multiple bare URLs. Keep the established `url` field name,
+      # but expose every value so policy can require that all targets are safe.
+      positional = [urls_arg "url"],
     },
 
     # -------------------------------------------------------------------------

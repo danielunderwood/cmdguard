@@ -90,6 +90,13 @@ pub struct PolicyInput {
     /// Access as: input.positional.url[0].raw
     #[serde(skip_serializing_if = "Option::is_none")]
     pub positional: Option<serde_json::Value>,
+    /// Every URL the command declared, canonicalized: the URL-typed positional
+    /// arguments and curl's `--url` values, each as
+    /// `{raw, type, canonical, scheme, host, port, path}` or
+    /// `{raw, type, rejected}` when the token could not be canonicalized.
+    ///
+    /// Always serialized, so `count(input.urls)` is defined for every input.
+    pub urls: Vec<crate::command_parser::PositionalValue>,
     /// Subcommand if present (e.g., "push" for "git push")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subcommand: Option<String>,
@@ -463,6 +470,7 @@ mod tests {
             parsed_flags: None,
             positional_args: None,
             positional: None,
+            urls: vec![],
             subcommand: None,
             unknown_flags: vec![],
             python_analysis: None,

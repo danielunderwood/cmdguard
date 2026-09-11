@@ -8,6 +8,7 @@ use crate::command_defs::{
     SubcommandDef,
 };
 use crate::resolver::TrustZonePaths;
+use crate::urls::{canonicalize_url, CanonicalUrl};
 
 /// Parsed flag value
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -29,6 +30,15 @@ pub struct PositionalValue {
     pub trust_zone: Option<String>,
     #[serde(rename = "type")]
     pub value_type: String,
+    /// A URL-typed value that parsed: its canonical form and parts, flattened
+    /// into the record so policies read `url.canonical` rather than
+    /// `url.url.canonical`.
+    #[serde(flatten)]
+    pub url: Option<CanonicalUrl>,
+    /// Why a URL-typed value could not be canonicalized. Its presence is what
+    /// tells a policy the value cannot be matched against a pattern.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<String>,
 }
 
 /// A group of positional arguments
@@ -632,6 +642,8 @@ fn process_positional_args(
                     resolved: None,
                     trust_zone: None,
                     value_type: "string".to_string(),
+                    url: None,
+                    rejected: None,
                 })
                 .collect(),
         }];
@@ -708,12 +720,65 @@ fn process_positional_args(
                     resolved: None,
                     trust_zone: None,
                     value_type: "string".to_string(),
+                    url: None,
+                    rejected: None,
                 })
                 .collect(),
         });
     }
 
     result
+}
+
+/// Build a URL-typed value from a raw token.
+///
+/// A token that cannot be canonicalized still becomes a record, carrying the
+/// reason instead of a canonical form: a policy has to be able to tell "no URL
+/// here" from "a URL cmdguard refuses to vouch for".
+pub fn url_value(raw: &str) -> PositionalValue {
+    let (url, rejected) = match canonicalize_url(raw) {
+        Ok(url) => (Some(url), None),
+        Err(rejection) => (None, Some(rejection.reason)),
+    };
+
+    PositionalValue {
+        raw: raw.to_string(),
+        resolved: None,
+        trust_zone: None,
+        value_type: "url".to_string(),
+        url,
+        rejected,
+    }
+}
+
+/// Every URL a command declared, as one list for policies (`input.urls`).
+///
+/// Positional URL arguments carry their canonical form already, because the
+/// command definition types them. Flag values do not: `parsed_flags` holds
+/// plain strings, and giving every flag definition a value type to change that
+/// would touch every command. curl is the only command whose flag can carry a
+/// URL (`--url`), so it is named here instead.
+pub fn collect_urls(parsed: &ParsedCommand, binary_name: &str) -> Vec<PositionalValue> {
+    let mut urls: Vec<PositionalValue> = parsed
+        .positional_args
+        .iter()
+        .flat_map(|arg| arg.values.iter())
+        .filter(|value| value.value_type == "url")
+        .cloned()
+        .collect();
+
+    if binary_name == "curl" {
+        let raw_values: &[String] = match parsed.parsed_flags.get("url") {
+            Some(FlagValue::Array(values)) => values,
+            Some(FlagValue::String(value)) => std::slice::from_ref(value),
+            // `--url` without a usable value: nothing to canonicalize. The
+            // policy notices the missing value separately.
+            _ => &[],
+        };
+        urls.extend(raw_values.iter().map(|raw| url_value(raw)));
+    }
+
+    urls
 }
 
 /// Create a positional arg from values with proper type handling
@@ -732,13 +797,18 @@ fn create_positional_arg(
                 resolved: None,
                 trust_zone: None,
                 value_type: "string".to_string(),
+                url: None,
+                rejected: None,
             },
             ArgType::Number => PositionalValue {
                 raw,
                 resolved: None,
                 trust_zone: None,
                 value_type: "number".to_string(),
+                url: None,
+                rejected: None,
             },
+            ArgType::Url => url_value(&raw),
         })
         .collect();
 
@@ -797,6 +867,8 @@ fn resolve_path_arg(raw: &str, project_root: Option<&Path>) -> PositionalValue {
         resolved: Some(resolved.to_string_lossy().to_string()),
         trust_zone: Some(trust_zone),
         value_type: "path".to_string(),
+        url: None,
+        rejected: None,
     }
 }
 
@@ -926,6 +998,8 @@ fn parse_without_definition(
                         resolved: None,
                         trust_zone: None,
                         value_type: "string".to_string(),
+                        url: None,
+                        rejected: None,
                     })
                     .collect(),
             }]
@@ -1267,10 +1341,14 @@ mod tests {
                         "header".to_string(),
                         make_flag(&["-H"], Some("--header"), FlagType::Repeatable),
                     ),
+                    (
+                        "url".to_string(),
+                        make_flag(&[], Some("--url"), FlagType::Repeatable),
+                    ),
                 ]),
                 positional: vec![PositionalDef {
                     name: "url".to_string(),
-                    arg_type: ArgType::String,
+                    arg_type: ArgType::Url,
                     position: None,
                     variadic: false,
                     last: true,
@@ -2125,5 +2203,98 @@ mod tests {
                 result.unknown_flags
             );
         }
+    }
+
+    #[test]
+    fn test_url_arguments_are_canonicalized() {
+        let defs = test_definitions();
+        let result = parse_command(
+            &to_tokens("curl --url HTTP://LOCALHOST:03000/a/../x?q=1#f localhost:3000/y"),
+            &defs,
+            None,
+        );
+
+        // Both the bare URL and every `--url` value, in one list for policies.
+        let urls = collect_urls(&result, "curl");
+        let canonical: Vec<&str> = urls
+            .iter()
+            .map(|value| {
+                value
+                    .url
+                    .as_ref()
+                    .expect("canonical URL")
+                    .canonical
+                    .as_str()
+            })
+            .collect();
+        assert_eq!(
+            canonical,
+            vec!["http://localhost:3000/y", "http://localhost:3000/x?q=1"]
+        );
+        assert!(urls.iter().all(|value| value.value_type == "url"));
+        assert!(urls.iter().all(|value| value.rejected.is_none()));
+
+        // The raw token is kept: guards that look for shell expansions need it.
+        assert_eq!(urls[1].raw, "HTTP://LOCALHOST:03000/a/../x?q=1#f");
+    }
+
+    #[test]
+    fn test_url_arguments_that_cannot_be_canonicalized_record_the_reason() {
+        let defs = test_definitions();
+        let result = parse_command(
+            &to_tokens("curl --url http://localhost:3000@evil.example/ ftp.localhost:3000/x"),
+            &defs,
+            None,
+        );
+
+        let urls = collect_urls(&result, "curl");
+        let rejected: Vec<Option<&str>> =
+            urls.iter().map(|value| value.rejected.as_deref()).collect();
+        assert_eq!(rejected, vec![Some("scheme"), Some("userinfo")]);
+        assert!(urls.iter().all(|value| value.url.is_none()));
+    }
+
+    #[test]
+    fn test_url_values_serialize_the_canonical_fields() {
+        let allowed = serde_json::to_value(url_value("https://localhost:443/x")).unwrap();
+        assert_eq!(
+            allowed,
+            serde_json::json!({
+                "raw": "https://localhost:443/x",
+                "type": "url",
+                "canonical": "https://localhost/x",
+                "scheme": "https",
+                "host": "localhost",
+                "path": "/x",
+            }),
+            "a default port is omitted, not reported as null"
+        );
+
+        let rejected = serde_json::to_value(url_value("http://[::1]:3000/")).unwrap();
+        assert_eq!(
+            rejected,
+            serde_json::json!({
+                "raw": "http://[::1]:3000/",
+                "type": "url",
+                "rejected": "glob",
+            })
+        );
+    }
+
+    #[test]
+    fn test_urls_are_collected_only_for_url_typed_values() {
+        let defs = test_definitions();
+
+        // `wget`'s URLs are string-typed here, and a `--url` value belongs to
+        // curl only: neither contributes a URL record.
+        let wget = parse_command(&to_tokens("wget http://localhost:3000/x"), &defs, None);
+        assert!(collect_urls(&wget, "wget").is_empty());
+
+        let curl = parse_command(
+            &to_tokens("curl --url http://localhost:3000/x"),
+            &defs,
+            None,
+        );
+        assert!(collect_urls(&curl, "git").is_empty());
     }
 }

@@ -19,6 +19,7 @@ mod query;
 mod resolver;
 mod test_runner;
 mod tokenizer;
+mod urls;
 
 use clap::Parser;
 use cli::{Cli, Commands, HookTarget, LintFailOn};
@@ -760,6 +761,16 @@ fn print_command_evaluation(
             for value in &arg.values {
                 if let Some(zone) = &value.trust_zone {
                     println!("      - {} ({}, {})", value.raw, value.value_type, zone);
+                } else if let Some(url) = &value.url {
+                    println!(
+                        "      - {} ({} -> {})",
+                        value.raw, value.value_type, url.canonical
+                    );
+                } else if let Some(reason) = &value.rejected {
+                    println!(
+                        "      - {} ({}, rejected: {})",
+                        value.raw, value.value_type, reason
+                    );
                 } else {
                     println!("      - {} ({})", value.raw, value.value_type);
                 }
@@ -789,6 +800,7 @@ fn print_command_evaluation(
     let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
     let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
     let positional_map_json = serde_json::to_value(parsed_cmd.positional_as_map()).ok();
+    let urls = command_parser::collect_urls(&parsed_cmd, &resolved.binary_name);
 
     // Check for python -c and analyze inline code
     let python_analysis = analyze_python_if_applicable(&resolved.binary_name, &extracted.command);
@@ -817,6 +829,7 @@ fn print_command_evaluation(
         parsed_flags: parsed_flags_json,
         positional_args: positional_args_json,
         positional: positional_map_json,
+        urls,
         subcommand: parsed_cmd.subcommand,
         unknown_flags: parsed_cmd.unknown_flags,
         python_analysis,

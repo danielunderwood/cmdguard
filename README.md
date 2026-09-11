@@ -191,7 +191,56 @@ import rego.v1
 allowed_with_args["make"] := {"build", "test", "clean", "lint"}
 ```
 
-These are automatically dispatched by stdlib. No rule body needed.
+For curl, contribute regular expressions to an incremental set:
+
+```rego
+allowed_curl_patterns contains `^http://localhost:3000($|/)`
+```
+
+Every pattern is anchored at the start before it is matched, so it must
+describe the URL from its first character. End a host pattern with `($|/)`, or
+`^http://localhost:3000` also matches `http://localhost:30000/`.
+
+Patterns match the URL's canonical form, `scheme://host[:port]/path?query`:
+scheme and host lowercased, a default port removed, dot segments resolved and
+the fragment dropped, so `HTTP://LOCALHOST:03000/a/../x#f` is matched as
+`http://localhost:3000/x`. A URL written without a scheme is treated as
+`http://`, the way curl guesses it, so `localhost:3000/x` matches the pattern
+above. A URL that cannot be reduced to one http(s) destination is never
+allowed, whatever the patterns say: credentials in the URL
+(`http://localhost:3000@evil.example/` requests evil.example), a scheme other
+than http(s) -- including the scheme curl guesses from a host such as
+`ftp.example.com` -- whitespace, a backslash, or a glob character.
+
+curl is allowed only when every bare URL and every `--url` value matches a
+pattern *and* nothing else on the command line can move the request or touch a
+local file. It keeps asking for a flag cmdguard does not model, a wrapper or
+`VAR=value` prefix, a redirected destination (`-L`, `--config`, `--connect-to`,
+`--resolve`, proxies, `--doh-url`, Unix sockets), a local file written or read
+(`-o`, `-O`, `-T`, `-c`, `-b`, `-w`, `--trace`, `--netrc-file`, `--cacert`,
+...), a value that reads one (`-d @f`, `-H @f`, `-F field=@f`,
+`--data-urlencode name@f`), or a URL the shell or curl would expand before the
+request (`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`). A command
+substitution anywhere on the line blocks the allow too, not only in the URL:
+the shell runs `curl -H "X: $(cat /etc/passwd)" URL` before curl ever starts. A
+plain `$NAME` still allows, so `curl -H "Authorization: Bearer $TOKEN" URL`
+keeps working. Other safety asks, including shell output redirection, retain
+precedence.
+
+Two consequences worth knowing. An IPv6 literal URL such as `http://[::1]:3000/`
+can never be allowed: `[` and `]` count as glob characters, so such a URL always
+reads as dynamic -- use the hostname form instead. And this checks the URLs
+written on the command line only; curl also reads `~/.curlrc` implicitly, so
+pass `-q` (or `--disable`) as curl's first argument when the policy has to
+constrain the connection curl actually makes rather than only the declared URLs.
+
+These are automatically dispatched by the base policies. No rule body or
+custom priority is needed. Like every table here, they have to live in a file
+cmdguard loads: in the synced base layout that is
+`~/.config/cmdguard/policies/custom.rego` or any `*.rego` beside it, while a
+flat `--policy-dir DIR` (what `cmdguard eval`/`cmdguard test` use against a
+checkout's `config/`) loads only the top-level `*.rego` files of `DIR`, so
+there the pattern belongs in a `*.rego` file directly in that directory.
 
 ### Exclusion Tables
 

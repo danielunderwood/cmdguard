@@ -20,6 +20,8 @@ pub enum ArgType {
     String,
     Path,
     Number,
+    /// A URL: canonicalized for policy matching, see `crate::urls`.
+    Url,
 }
 
 /// Definition for a single flag

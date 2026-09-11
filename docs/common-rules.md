@@ -52,6 +52,78 @@ rules["deny_psql_drop"] := deny("DROP statements blocked in psql") if {
 
 ---
 
+## Curl URLs
+
+Allow curl only when every URL written on the command line targets a local
+service by contributing a regular expression to the built-in set:
+
+```rego
+package cmdguard
+
+import rego.v1
+
+allowed_curl_patterns contains `^http://localhost:3000($|/)`
+```
+
+Put this in a file cmdguard loads. With the synced base layout that is
+`~/.config/cmdguard/policies/custom.rego` or any `*.rego` beside it; with a flat
+`--policy-dir DIR` (`cmdguard eval`/`cmdguard test` against a checkout's
+`config/`) only the top-level `*.rego` files of `DIR` are loaded, so the pattern
+has to sit directly in that directory.
+
+Set membership matches the data: each entry is a regex, and `contains` lets
+multiple policy files contribute patterns without replacing a list or storing
+dummy boolean values. Each pattern is anchored at the start before it is
+matched -- `regex.match` otherwise searches anywhere in the URL -- so it must
+describe the URL from its first character, and a host pattern should end with
+`($|/)`, or `^http://localhost:3000` also matches `http://localhost:30000/`.
+
+A pattern is matched against the URL's canonical form,
+`scheme://host[:port]/path?query`: cmdguard parses each URL the way curl would
+and matches the result, with scheme and host lowercased, a default port
+removed, dot segments resolved and the fragment dropped. So one pattern covers
+`HTTP://LOCALHOST:03000/x`, `http://localhost:3000/a/../x` and
+`http://localhost:3000/x#frag` alike, and a URL written without a scheme is
+treated as `http://` the way curl guesses it, so `localhost:3000/x` matches
+`^http://localhost:3000($|/)` too.
+
+A URL that cannot be reduced to a single http(s) destination is never allowed,
+whatever the patterns say. That covers credentials in the URL --
+`http://localhost:3000@evil.example/` names an allowed-looking host that the
+request never goes to, because `localhost:3000` is a username and password
+there -- a scheme other than http(s), including the one curl guesses from a
+host such as `ftp.example.com`, and whitespace, a backslash or a glob
+character in the token.
+
+The base policy requires at least one declared URL and checks every bare URL and
+repeated `--url` value. It keeps asking when a URL does not match, when the
+command carries a flag cmdguard does not model, when a wrapper or `VAR=value`
+prefix could redirect the request, when an option such as `-L`, `--config`,
+`--connect-to`, `--resolve`, a proxy, `--doh-url` or a Unix socket can remap the
+destination, when an option writes or reads a local file (`-o`, `-O`, `-T`,
+`-c`, `-b`, `-w` -- its format string can write one with `%output{file}` --
+`--trace`, `--netrc-file`, `--cacert`, or a value that reads one: `-d @f`,
+`-H @f`, `-F field=@f`, `--data-urlencode name@f`), and when a URL token
+contains something the shell or curl expands before the request
+(`$(...)`, backticks, a leading `~`, `{a,b}`, `[1-9]`, `*`), and when any
+argument -- not only the URL -- contains a command substitution (`$(...)`,
+backticks, `${...}`), because the shell runs it before curl starts:
+`curl -H "X: $(cat /etc/passwd)" URL` reaches an allowed URL with the file's
+contents in a header. A plain `$NAME` is deliberately still allowed so that
+`curl -H "Authorization: Bearer $TOKEN" URL` keeps working. Higher-priority
+safety asks such as shell output redirection still win.
+
+One shape can never be allowed: an IPv6 literal URL such as `http://[::1]:3000/`
+always reads as dynamic, because `[` and `]` are treated as glob characters. Use
+the hostname form instead.
+
+This checks URLs present in the command only. Curl can also load `~/.curlrc`
+implicitly. Requiring `-q` or `--disable` as the first curl option disables that
+file when the policy must constrain the runtime connection rather than only the
+declared URLs.
+
+---
+
 ## Jira CLI
 
 Allow read-only Jira operations. The [go-jira](https://github.com/ankitpokhrel/jira-cli) CLI uses positional subcommands.
