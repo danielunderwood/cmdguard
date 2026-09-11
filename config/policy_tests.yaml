@@ -357,10 +357,53 @@ tests:
     command: "sed -i 's/foo/bar/' file.txt"
     expect: ask
 
+  # The long form must be recognized too. While --in-place was undeclared it
+  # parsed as an unknown flag, so ask_sed_inplace never fired.
+  - name: "ask sed --in-place"
+    command: "sed --in-place 's/foo/bar/' file.txt"
+    expect: ask
+
+  - name: "ask sed --in-place with suffix"
+    command: "sed --in-place=.bak 's/foo/bar/' file.txt"
+    expect: ask
+
+  # ...and an in-place edit inside a pipe must not be mistaken for the
+  # stdin -> stdout pattern that allow_sed_in_pipe exists to permit.
+  - name: "ask sed --in-place in a pipe"
+    command: "cat file.txt | sed --in-place=.bak 's/foo/bar/' file.txt"
+    expect: ask
+
   # sed in a pipe just transforms stdin -> stdout; allow without prompting.
   - name: "allow sed in a pipe"
     command: "cat file.txt | sed 's/foo/bar/'"
     expect: allow
+
+  # Modelled options don't change the stdin -> stdout shape, so they keep the
+  # pipe allowance.
+  - name: "allow sed -E in a pipe"
+    command: "cat file.txt | sed -E 's/x+/y/'"
+    expect: allow
+
+  - name: "allow sed -n in a pipe"
+    command: "cat file.txt | sed -n '1p'"
+    expect: allow
+
+  # A script file can carry `w` (write a file) or `e` (run a command), so the
+  # pipe allowance does not extend to it.
+  - name: "no pipe allowance for sed -f"
+    command: "cat file.txt | sed -f evil.sed"
+    expect: defer
+
+  # An option cmdguard cannot model is an option whose effect it cannot reason
+  # about; withhold the allowance rather than guess.
+  - name: "no pipe allowance for sed with an unmodelled option"
+    command: "cat file.txt | sed --bogus 's/x/y/'"
+    expect: defer
+
+  # -i.bak is an in-place edit with a backup suffix, not a stdout filter.
+  - name: "ask sed -i.bak in a pipe"
+    command: "cat file.txt | sed -i.bak 's/x/y/' file.txt"
+    expect: ask
 
   # ...but still defer if it's the first command (no pipe in)
   - name: "defer sed at chain start"

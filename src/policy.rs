@@ -93,6 +93,15 @@ pub struct PolicyInput {
     /// Subcommand if present (e.g., "push" for "git push")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subcommand: Option<String>,
+    /// Flag tokens that matched no flag definition; see
+    /// `ParsedCommand::unknown_flags` for when they are recorded.
+    ///
+    /// A rule that grants extra latitude (allowing a command that would
+    /// otherwise ask) should require this to be empty. cmdguard cannot reason
+    /// about the effect of an option it does not model, and for tools like curl
+    /// an unmodelled option can redirect the request or write a file. Always
+    /// serialized, so `count(input.unknown_flags)` is defined for every input.
+    pub unknown_flags: Vec<String>,
     /// Python code analysis (for python -c commands)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_analysis: Option<PythonAnalysisInput>,
@@ -457,6 +466,7 @@ mod tests {
             positional_args: None,
             positional: None,
             subcommand: None,
+            unknown_flags: vec![],
             python_analysis: None,
         }
     }

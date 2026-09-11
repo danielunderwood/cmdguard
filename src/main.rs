@@ -638,6 +638,7 @@ fn print_command_evaluation(
             parsed_flags: std::collections::HashMap::new(),
             positional_args: vec![],
             subcommand: None,
+            unknown_flags: vec![],
         }
     };
 
@@ -683,6 +684,16 @@ fn print_command_evaluation(
         println!("    (none)");
     }
 
+    // Flag tokens cmdguard could not match to a definition
+    println!("  Unknown flags:");
+    if parsed_cmd.unknown_flags.is_empty() {
+        println!("    (none)");
+    } else {
+        for flag in &parsed_cmd.unknown_flags {
+            println!("    {}", flag);
+        }
+    }
+
     // Serialize to JSON for PolicyInput
     let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
     let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
@@ -716,6 +727,7 @@ fn print_command_evaluation(
         positional_args: positional_args_json,
         positional: positional_map_json,
         subcommand: parsed_cmd.subcommand,
+        unknown_flags: parsed_cmd.unknown_flags,
         python_analysis,
     };
 

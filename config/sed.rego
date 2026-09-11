@@ -13,8 +13,14 @@ rules["ask_sed_inplace"] := ask("sed -i modifies files in place") if {
 # harmless from the gate's perspective. GNU sed can still execute commands
 # via the `e` script flag, so we keep ask_sed_inplace as the in-place
 # guard and rely on this rule only for the read-then-transform pattern.
+#
+# The allowance is only as good as cmdguard's model of the command line: it
+# needs every option accounted for (an unmodelled one could be -i spelled a way
+# we don't know) and no -f, whose script file can carry `w` and `e` commands.
 rules["allow_sed_in_pipe"] := allow("sed in a pipe (stdin -> stdout)") if {
 	input.binary_name == "sed"
 	input.prev_operator == "|"
 	not input.parsed_flags.in_place
+	not input.parsed_flags.file
+	no_unknown_flags
 }
