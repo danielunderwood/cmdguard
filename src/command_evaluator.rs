@@ -824,12 +824,10 @@ allowed_curl_patterns contains `^http://127\.0\.0\.1:3000($|/)`
     }
 
     #[test]
-    fn test_allowed_curl_patterns_are_anchored_at_the_start() {
+    fn test_allowed_curl_patterns_match_the_canonical_url() {
         let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
         let policy_dir = TempDir::new().unwrap();
-        let policy_path = policy_dir.path().join("unanchored-curl.rego");
-        // Deliberately unanchored: `regex.match` searches anywhere in the
-        // string, so the policy has to anchor the pattern itself.
+        let policy_path = policy_dir.path().join("localhost-curl.rego");
         fs::write(
             &policy_path,
             r#"
@@ -837,7 +835,7 @@ package cmdguard
 
 import rego.v1
 
-allowed_curl_patterns contains `localhost:3000`
+allowed_curl_patterns contains `^http://localhost:3000($|/)`
 "#,
         )
         .unwrap();
@@ -856,14 +854,93 @@ allowed_curl_patterns contains `localhost:3000`
         let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cases = [
-            // The pattern is live: it matches from the first character.
-            ("curl localhost:3000/allowed", Decision::Allow),
-            // ... and only from the first character.
+            // --- spellings of the pattern's own destination ----------------------
+            // The pattern describes the canonical URL, so every way of writing
+            // the same request matches it: case, a padded port, dot segments, a
+            // fragment the server never sees, curl's guessed scheme, an empty
+            // path.
+            ("curl HTTP://LOCALHOST:3000/x", Decision::Allow),
+            ("curl http://localhost:03000/x", Decision::Allow),
+            ("curl 'http://localhost:3000/a/../x?q=1#f'", Decision::Allow),
+            ("curl localhost:3000/x", Decision::Allow),
+            ("curl http://localhost:3000", Decision::Allow),
+            // --- URLs that only look like the pattern's destination ---------------
+            // `localhost:3000` is a username and password here; the request
+            // goes to evil.com.
+            ("curl http://localhost:3000@evil.com/", Decision::Ask),
+            // `3000.evil.com` is not a port, so this is not a URL curl can
+            // fetch either.
+            ("curl http://localhost:3000.evil.com/x", Decision::Ask),
+            // The fragment is not sent, so it cannot make evil.com allowed.
             (
-                "curl 'http://evil.example/?q=localhost:3000'",
+                "curl 'http://evil.com#http://localhost:3000/'",
                 Decision::Ask,
             ),
-            ("curl http://localhost:3000.evil.example/x", Decision::Ask),
+            // The same host as localhost usually is, but not the host the
+            // pattern names.
+            ("curl http://127.1:3000/x", Decision::Ask),
+            // --- URLs cmdguard refuses to canonicalize ----------------------------
+            (r"curl 'http://localhost:3000\@evil.com'", Decision::Ask),
+            ("curl ftp.localhost:3000/x", Decision::Ask),
+            ("curl file:///etc/passwd", Decision::Ask),
+            ("curl http://[::1]:3000/", Decision::Ask),
+            // --- every URL has to match, `--url` values included -------------------
+            (
+                "curl --url HTTP://LOCALHOST:3000/x --url http://evil.com/",
+                Decision::Ask,
+            ),
+        ];
+
+        for (command, expected) in cases {
+            let parsed = parse_command(command);
+            assert!(!parsed.has_errors, "unexpected parse error for {command}");
+            let result = evaluator.resolve_compound(&parsed.commands, &context);
+            assert_eq!(result.decision, expected, "unexpected result for {command}");
+        }
+    }
+
+    #[test]
+    fn test_allowed_curl_patterns_are_anchored_at_the_start() {
+        let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config");
+        let policy_dir = TempDir::new().unwrap();
+        let policy_path = policy_dir.path().join("unanchored-curl.rego");
+        // Deliberately unanchored: `regex.match` searches anywhere in the
+        // string, so the policy has to anchor the pattern itself.
+        fs::write(
+            &policy_path,
+            r#"
+package cmdguard
+
+import rego.v1
+
+allowed_curl_patterns contains `http://localhost:3000`
+"#,
+        )
+        .unwrap();
+
+        let mut engine = PolicyEngine::new();
+        engine.load_policies_with_layout(&config_dir).unwrap();
+        engine.load_policy_file(&policy_path).unwrap();
+
+        let mut nickel_config = NickelConfig::load(&config_dir);
+        let mut command_defs = CommandDefinitions::builtin();
+        command_defs.merge(nickel_config.get_command_definitions());
+
+        let cwd = "/tmp";
+        let cwd_path = PathBuf::from(cwd);
+        let context = create_test_context(cwd, &cwd_path);
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
+
+        let cases = [
+            // The pattern is live: it matches from the first character of the
+            // canonical URL, which is what a schemeless token becomes.
+            ("curl localhost:3000/allowed", Decision::Allow),
+            // ... and only from the first character: an unanchored pattern
+            // would otherwise match this request to evil.example.
+            (
+                "curl 'http://evil.example/?q=http://localhost:3000/'",
+                Decision::Ask,
+            ),
         ];
 
         for (command, expected) in cases {

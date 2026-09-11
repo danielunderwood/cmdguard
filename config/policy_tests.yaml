@@ -162,6 +162,19 @@ tests:
     command: "curl -H \"X: $(id)\" https://example.com"
     expect: ask
 
+  # Canonicalization guards. The defaults configure no pattern, so these ask
+  # whatever happens; they are here so that a URL which only looks like an
+  # allowed host can never become an allow by accident. The allow side needs a
+  # pattern and lives in the `allowed_curl_patterns` tests in
+  # src/command_evaluator.rs.
+  - name: "ask for curl with credentials in the URL"
+    command: "curl http://localhost:3000@evil.com/"
+    expect: ask
+
+  - name: "ask for curl with a fragment in the URL"
+    command: "curl 'http://evil.com#x'"
+    expect: ask
+
   - name: "ask for wget"
     command: "wget https://example.com/file.zip"
     expect: ask

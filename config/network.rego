@@ -66,16 +66,27 @@ _curl_argument_is_dynamic if {
 	contains(token, form)
 }
 
+# Every URL the command declared, canonicalized: the bare URL arguments and
+# every `--url` value. Each record carries `canonical` when cmdguard could
+# resolve the token to a single http(s) destination, and `rejected` with a
+# short reason when it could not.
+_curl_urls := input.urls
+
 _curl_url_allowed(url) if {
-	not _curl_url_is_dynamic(url)
-	_curl_url_matches_allowed_pattern(url)
+	not _curl_url_is_dynamic(url.raw)
+
+	# A URL cmdguard could not canonicalize - userinfo, a non-http scheme, a
+	# glob, whitespace - has no canonical form to match, and must never allow.
+	not url.rejected
+	_curl_url_matches_allowed_pattern(url.canonical)
 }
 
 _curl_urls_allowed if {
-	every url in object.get(input.positional, "url", []) {
-		_curl_url_allowed(url.raw)
-	}
-	every url in object.get(input.parsed_flags, "url", []) {
+	# `every` holds vacuously over an empty collection, so a command whose URLs
+	# cmdguard could not collect must not reach the loop below.
+	count(_curl_urls) > 0
+
+	every url in _curl_urls {
 		_curl_url_allowed(url)
 	}
 }
