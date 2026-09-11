@@ -76,7 +76,24 @@ multiple policy files contribute patterns without replacing a list or storing
 dummy boolean values. Each pattern is anchored at the start before it is
 matched -- `regex.match` otherwise searches anywhere in the URL -- so it must
 describe the URL from its first character, and a host pattern should end with
-`($|/)` so that `http://localhost:3000.evil.example/` cannot match it.
+`($|/)`, or `^http://localhost:3000` also matches `http://localhost:30000/`.
+
+A pattern is matched against the URL's canonical form,
+`scheme://host[:port]/path?query`: cmdguard parses each URL the way curl would
+and matches the result, with scheme and host lowercased, a default port
+removed, dot segments resolved and the fragment dropped. So one pattern covers
+`HTTP://LOCALHOST:03000/x`, `http://localhost:3000/a/../x` and
+`http://localhost:3000/x#frag` alike, and a URL written without a scheme is
+treated as `http://` the way curl guesses it, so `localhost:3000/x` matches
+`^http://localhost:3000($|/)` too.
+
+A URL that cannot be reduced to a single http(s) destination is never allowed,
+whatever the patterns say. That covers credentials in the URL --
+`http://localhost:3000@evil.example/` names an allowed-looking host that the
+request never goes to, because `localhost:3000` is a username and password
+there -- a scheme other than http(s), including the one curl guesses from a
+host such as `ftp.example.com`, and whitespace, a backslash or a glob
+character in the token.
 
 The base policy requires at least one declared URL and checks every bare URL and
 repeated `--url` value. It keeps asking when a URL does not match, when the

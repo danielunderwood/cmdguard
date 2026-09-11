@@ -7,9 +7,14 @@ import rego.v1
 #
 #   allowed_curl_patterns contains `^http://localhost:3000($|/)`
 #
-# Patterns are anchored at the start before matching (see
-# `_curl_url_matches_allowed_pattern`), so end a host pattern with `($|/)` to
-# stop `http://localhost:3000.evil.example/` from matching it.
+# Patterns are matched against the URL's canonical form
+# (`scheme://host[:port]/path?query`: scheme and host lowercased, a default port
+# and the fragment dropped, dot segments resolved, a missing scheme read as
+# `http://` the way curl guesses it), and anchored at the start before matching
+# (see `_curl_url_matches_allowed_pattern`), so end a host pattern with `($|/)`
+# to stop `http://localhost:30000/` from matching it. A URL cmdguard cannot
+# canonicalize - credentials, a non-http(s) scheme, whitespace, a backslash, a
+# glob - is never allowed, whatever the patterns say.
 #
 # Keep this empty by default so curl continues to ask until configured.
 default allowed_curl_patterns := set()
@@ -23,9 +28,9 @@ _curl_has_url if {
 }
 
 # `regex.match` searches the whole string, so anchor the author's pattern at the
-# start before using it. Without this, `localhost:3000` would also match
-# `http://evil.example/?q=localhost:3000`. The pattern goes in a non-capturing
-# group so that a top-level alternation stays anchored too.
+# start before using it. Without this, `http://localhost:3000` would also match
+# `http://evil.example/?q=http://localhost:3000/`. The pattern goes in a
+# non-capturing group so that a top-level alternation stays anchored too.
 #
 # The empty pattern is rejected: anchored it becomes `^(?:)`, which matches
 # every URL, so a typo or an empty variable would allow the whole internet.

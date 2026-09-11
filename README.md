@@ -199,7 +199,18 @@ allowed_curl_patterns contains `^http://localhost:3000($|/)`
 
 Every pattern is anchored at the start before it is matched, so it must
 describe the URL from its first character. End a host pattern with `($|/)`, or
-`http://localhost:3000.evil.example/` matches it too.
+`^http://localhost:3000` also matches `http://localhost:30000/`.
+
+Patterns match the URL's canonical form, `scheme://host[:port]/path?query`:
+scheme and host lowercased, a default port removed, dot segments resolved and
+the fragment dropped, so `HTTP://LOCALHOST:03000/a/../x#f` is matched as
+`http://localhost:3000/x`. A URL written without a scheme is treated as
+`http://`, the way curl guesses it, so `localhost:3000/x` matches the pattern
+above. A URL that cannot be reduced to one http(s) destination is never
+allowed, whatever the patterns say: credentials in the URL
+(`http://localhost:3000@evil.example/` requests evil.example), a scheme other
+than http(s) -- including the scheme curl guesses from a host such as
+`ftp.example.com` -- whitespace, a backslash, or a glob character.
 
 curl is allowed only when every bare URL and every `--url` value matches a
 pattern *and* nothing else on the command line can move the request or touch a

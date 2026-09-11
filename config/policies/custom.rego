@@ -16,8 +16,11 @@ import rego.v1
 # matching ask rules:
 #   allowed_redirect_targets["/dev/null"] := true
 #
-# Allow curl when every declared URL matches a regular expression (matched from
-# the start of the URL; end it with ($|/) so the host cannot be extended):
+# Allow curl when every declared URL matches a regular expression. Patterns
+# are matched from the start of the URL's canonical form --
+# `scheme://host[:port]/path`, scheme and host lowercased, a default port and
+# the fragment removed -- so end a host pattern with ($|/), or
+# `http://localhost:30000/` matches it too:
 #   allowed_curl_patterns contains `^http://localhost:3000($|/)`
 #
 # Add a conditional rule:
