@@ -3,6 +3,7 @@ mod cli;
 mod command_defs;
 mod command_evaluator;
 mod command_parser;
+mod diagnostics;
 mod extractor;
 mod flags;
 mod hook;
@@ -20,9 +21,10 @@ mod test_runner;
 mod tokenizer;
 
 use clap::Parser;
-use cli::{Cli, Commands, HookTarget};
+use cli::{Cli, Commands, HookTarget, LintFailOn};
 use command_defs::CommandDefinitions;
 use command_evaluator::{CommandEvaluator, DeferMode, EvaluationContext};
+use diagnostics::{Diagnostic, Severity};
 use extractor::extract_command;
 use flags::expand_flags;
 use input::parse_input;
@@ -60,6 +62,12 @@ fn main() {
         }
         Some(Commands::Validate { policy_dir }) => {
             run_validate(policy_dir);
+        }
+        Some(Commands::Lint {
+            policy_dir,
+            fail_on,
+        }) => {
+            run_lint(policy_dir, fail_on);
         }
         Some(Commands::AnalyzePython { code }) => {
             run_analyze_python(&code);
@@ -101,67 +109,31 @@ fn main() {
     }
 }
 
-/// List `.rego` filenames in `dir`, sorted, returning Err if `dir` exists but
-/// can't be read. A non-existent directory returns an empty list.
-fn read_rego_filenames(dir: &Path) -> std::io::Result<Vec<String>> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut names: Vec<String> = std::fs::read_dir(dir)?
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("rego") {
-                path.file_name().map(|n| n.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
-        .collect();
-    names.sort();
-    Ok(names)
-}
-
 fn run_status(policy_dir: Option<PathBuf>) {
     let policy_dir = get_policy_dir(policy_dir);
-    let base_dir = policy_dir.join("base");
-    let policies_dir = policy_dir.join("policies");
 
     println!("Policy directory: {}", policy_dir.display());
+    let (base_files, user_files) = match diagnostics::loaded_policy_file_sets(&policy_dir) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("Error listing policies: {}", e);
+            return;
+        }
+    };
+
+    if base_sync::base_is_stale(&policy_dir) {
+        println!("Base policies: out of date (run `cmdguard base sync`)");
+    } else if !base_files.is_empty() {
+        println!("Base policies: synced");
+    } else {
+        println!("Base policies: flat layout or not installed");
+    }
     println!();
 
     // List loaded files (sorted for deterministic output)
     println!("Loaded policy files:");
-    let mut file_count = 0;
-
-    for (label, dir) in [("base", &base_dir), ("policies", &policies_dir)] {
-        let names = match read_rego_filenames(dir) {
-            Ok(names) => names,
-            Err(e) => {
-                eprintln!("Warning: failed to list {}: {}", dir.display(), e);
-                continue;
-            }
-        };
-        for name in names {
-            println!("  {}/{}", label, name);
-            file_count += 1;
-        }
-    }
-
-    // Fallback: flat directory (legacy layout)
-    if file_count == 0 && policy_dir.exists() {
-        match read_rego_filenames(&policy_dir) {
-            Ok(names) => {
-                for name in names {
-                    println!("  {}", name);
-                    file_count += 1;
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to list {}: {}", policy_dir.display(), e);
-            }
-        }
-    }
+    let mut file_count = print_policy_files(&policy_dir, &base_files);
+    file_count += print_policy_files(&policy_dir, &user_files);
 
     if file_count == 0 {
         println!("  (none)");
@@ -175,32 +147,57 @@ fn run_status(policy_dir: Option<PathBuf>) {
         return;
     }
 
-    // Show tables
-    println!("Tables:");
+    // Show public extension tables.
+    println!("Extension tables:");
     let allowed = engine.query_allowed_subcommands();
-    if !allowed.is_empty() {
-        print!("  allowed_subcommands: ");
-        let entries: Vec<String> = allowed
-            .iter()
-            .map(|(binary, subcmds)| format!("{}({})", binary, subcmds.len()))
-            .collect();
-        println!("{}", entries.join(", "));
-    }
-
+    let allowed_with_args = engine.query_string_set_table("allowed_with_args");
     let denied = engine.query_denied_subcommands();
-    if !denied.is_empty() {
-        print!("  denied_subcommands: ");
-        let entries: Vec<String> = denied
-            .iter()
-            .map(|(binary, subcmds)| format!("{}({})", binary, subcmds.len()))
-            .collect();
-        println!("{}", entries.join(", "));
-    }
+    let denied_with_args = engine.query_string_set_table("denied_with_args");
+    let redirect_targets = engine.query_boolean_key_table("allowed_redirect_targets");
 
-    if allowed.is_empty() && denied.is_empty() {
+    let printed = print_count_table("allowed_subcommands", &allowed)
+        + print_count_table("allowed_with_args", &allowed_with_args)
+        + print_count_table("denied_subcommands", &denied)
+        + print_count_table("denied_with_args", &denied_with_args)
+        + print_value_table("allowed_redirect_targets", &redirect_targets);
+
+    if printed == 0 {
         println!("  (none)");
     }
     println!();
+}
+
+fn print_policy_files(policy_dir: &Path, files: &[PathBuf]) -> usize {
+    for path in files {
+        let display_path = path
+            .strip_prefix(policy_dir)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| path.display().to_string());
+        println!("  {}", display_path);
+    }
+    files.len()
+}
+
+fn print_count_table(name: &str, entries: &[(String, Vec<String>)]) -> usize {
+    if entries.is_empty() {
+        return 0;
+    }
+
+    let values: Vec<String> = entries
+        .iter()
+        .map(|(key, values)| format!("{}({})", key, values.len()))
+        .collect();
+    println!("  {}: {}", name, values.join(", "));
+    1
+}
+
+fn print_value_table(name: &str, values: &[String]) -> usize {
+    if values.is_empty() {
+        return 0;
+    }
+
+    println!("  {}: {}", name, values.join(", "));
+    1
 }
 
 fn run_validate(policy_dir: Option<PathBuf>) {
@@ -244,6 +241,100 @@ fn run_validate(policy_dir: Option<PathBuf>) {
         println!("Config has errors.");
         std::process::exit(1);
     }
+}
+
+fn run_lint(policy_dir: Option<PathBuf>, fail_on: LintFailOn) {
+    let policy_dir = get_policy_dir(policy_dir);
+    let mut diagnostics = vec![];
+
+    if base_sync::base_is_stale(&policy_dir) {
+        diagnostics.push(
+            Diagnostic::warning("base/stale", "base policies are out of date")
+                .with_help("Run `cmdguard base sync` to refresh the shipped base policy bundle."),
+        );
+    }
+
+    let nickel_result = NickelConfig::validate(&policy_dir);
+    for error in nickel_result.errors {
+        diagnostics.push(Diagnostic::error("config/nickel", error));
+    }
+    for warning in nickel_result.warnings {
+        if warning == "No commands.ncl file found" {
+            continue;
+        }
+        diagnostics.push(Diagnostic::warning("config/nickel", warning));
+    }
+
+    // Detect the project root the same way the hook path does, so
+    // project-local `.cmdguard/` policies are loaded and linted too.
+    let cwd_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let project_root_detected = detect_project_root(&cwd_path);
+
+    let mut engine = PolicyEngine::new();
+    if let Err(e) = load_all_policies(&mut engine, &policy_dir, project_root_detected.as_ref()) {
+        diagnostics.push(Diagnostic::error("policy/load-error", e));
+    }
+
+    match diagnostics::loaded_policy_file_sets(&policy_dir) {
+        Ok((base_files, mut user_files)) => {
+            if let Some(project_policy_dir) = get_project_policy_dir(project_root_detected.as_ref())
+            {
+                match diagnostics::collect_policy_files(&project_policy_dir) {
+                    Ok(mut project_files) => user_files.append(&mut project_files),
+                    Err(e) => diagnostics.push(Diagnostic::error("policy/read-error", e)),
+                }
+            }
+            diagnostics.extend(diagnostics::lint_policy_sources(&base_files, &user_files));
+        }
+        Err(e) => diagnostics.push(Diagnostic::error("policy/read-error", e)),
+    }
+
+    print_lint_diagnostics(&diagnostics);
+
+    let failed = diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == Severity::Error
+            || (fail_on == LintFailOn::Warning && diagnostic.severity == Severity::Warning)
+    });
+
+    if failed {
+        std::process::exit(1);
+    }
+}
+
+fn print_lint_diagnostics(diagnostics: &[Diagnostic]) {
+    if diagnostics.is_empty() {
+        println!("No lint findings.");
+        return;
+    }
+
+    let errors = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let warnings = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .count();
+
+    for diagnostic in diagnostics {
+        match &diagnostic.location {
+            Some(location) => println!(
+                "{}[{}] {}:{}",
+                diagnostic.severity.label(),
+                diagnostic.code,
+                location.path.display(),
+                location.line
+            ),
+            None => println!("{}[{}]", diagnostic.severity.label(), diagnostic.code),
+        }
+        println!("  {}", diagnostic.message);
+        if let Some(help) = &diagnostic.help {
+            println!("  help: {}", help);
+        }
+        println!();
+    }
+
+    println!("Summary: {} errors, {} warnings", errors, warnings);
 }
 
 fn run_analyze_python(code: &str) {
