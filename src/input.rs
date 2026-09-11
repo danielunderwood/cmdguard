@@ -5,6 +5,8 @@ pub struct HookInput {
     pub tool_name: String,
     pub tool_input: ToolInput,
     #[serde(default)]
+    pub hook_event_name: Option<String>,
+    #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
@@ -36,6 +38,13 @@ mod tests {
         let json = r#"{"tool_name":"Bash","tool_input":{"command":"ls"},"cwd":"/home/user"}"#;
         let input = parse_input(json).unwrap();
         assert_eq!(input.cwd, Some("/home/user".to_string()));
+    }
+
+    #[test]
+    fn test_parse_codex_event_name() {
+        let json = r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"git status"}}"#;
+        let input = parse_input(json).unwrap();
+        assert_eq!(input.hook_event_name, Some("PermissionRequest".to_string()));
     }
 
     #[test]
