@@ -636,6 +636,7 @@ impl NickelConfig {
             "string" => ArgType::String,
             "path" => ArgType::Path,
             "number" => ArgType::Number,
+            "url" => ArgType::Url,
             _ => ArgType::String,
         };
 

@@ -157,6 +157,7 @@ impl<'a> CommandEvaluator<'a> {
         let parsed_flags_json = serde_json::to_value(&parsed_cmd.parsed_flags).ok();
         let positional_args_json = serde_json::to_value(&parsed_cmd.positional_args).ok();
         let positional_map_json = serde_json::to_value(parsed_cmd.positional_as_map()).ok();
+        let urls = command_parser::collect_urls(&parsed_cmd, &resolved.binary_name);
 
         // Check for python -c and analyze inline code
         let python_analysis =
@@ -187,6 +188,7 @@ impl<'a> CommandEvaluator<'a> {
             parsed_flags: parsed_flags_json,
             positional_args: positional_args_json,
             positional: positional_map_json,
+            urls,
             subcommand: parsed_cmd.subcommand,
             unknown_flags: parsed_cmd.unknown_flags,
             python_analysis,

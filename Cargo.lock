@@ -314,6 +314,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-python",
+ "url",
 ]
 
 [[package]]

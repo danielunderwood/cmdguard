@@ -68,6 +68,18 @@ let strings_arg = fun arg_name =>
   }
 in
 
+# Create a variadic URL argument
+#
+# A URL value is canonicalized before policies see it, so an allow-list pattern
+# matches one form of the destination rather than however the URL was typed.
+let urls_arg = fun arg_name =>
+  {
+    name = arg_name,
+    type = "url",
+    variadic = true,
+  }
+in
+
 # Create a "last" positional argument (like cp destination)
 let last_arg = fun arg_name arg_type =>
   {
@@ -689,7 +701,7 @@ in
       },
       # curl accepts multiple bare URLs. Keep the established `url` field name,
       # but expose every value so policy can require that all targets are safe.
-      positional = [strings_arg "url"],
+      positional = [urls_arg "url"],
     },
 
     # -------------------------------------------------------------------------
