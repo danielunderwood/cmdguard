@@ -11,6 +11,8 @@ This is a practical tradeoff. A full sandbox (seccomp, containers, VMs) provides
 ## What cmdguard Does
 
 - Parses compound commands (`&&`, `||`, `;`, `|`) and evaluates each segment
+- Derives a conservative effective working directory for each segment and
+  resolves relative path and redirection targets against it
 - Unwraps wrappers (`sudo`, `nix develop --command`, `docker run`, env vars) to find the real command
 - Resolves binary paths and classifies them into trust zones
 - Parses flags and positional arguments using command schemas
@@ -77,7 +79,27 @@ cmdguard sees `git push` and evaluates it normally. The base policy prompts for 
 
 **Mitigation:** This is a low-probability vector for most AI agent use cases. For high-security environments, consider sandboxing that restricts environment inheritance.
 
-### Subshell and Eval
+### Working Directory Analysis
+
+cmdguard models literal absolute `cd` commands across common shell control
+flow. It keeps subshell and background directory changes isolated, propagates
+brace-group changes, and preserves multiple possible directories after
+fallible sequential changes. Relative `cd`, expansions, `pushd`/`popd`, shell
+state mutation, and cwd-changing pipelines produce an unknown state rather
+than an optimistic path.
+
+The derived cwd is also used for relative executables, relative `PATH` entries,
+positional path arguments, and redirection targets. Shell-expanded positional
+paths and process substitutions are not treated as known project paths;
+process substitutions require confirmation because nested commands remain
+opaque.
+
+Resolved paths are nominal lexical paths, not filesystem capabilities. Symlink
+changes and time-of-check/time-of-use races remain possible after evaluation.
+Use a container, VM, jail, chroot, or another execution sandbox when a hard
+filesystem boundary is required.
+
+### Dynamic Shell Evaluation
 
 Commands can spawn subshells in ways that are hard to statically analyze:
 
@@ -86,7 +108,7 @@ $(echo "rm -rf /")
 eval "rm -rf /"
 ```
 
-Command substitution inside arguments and `eval` constructs are not recursively evaluated. cmdguard sees the outer command but not what it dynamically generates.
+Command substitution inside arguments and `eval` constructs are not recursively evaluated. cmdguard sees the outer command but not what it dynamically generates. Structural subshells are recognized for cwd propagation, but their dynamically generated content remains opaque.
 
 **Mitigation:** Deny or ask for `eval` and be cautious with commands that accept shell expressions as arguments.
 

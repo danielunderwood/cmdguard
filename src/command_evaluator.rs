@@ -10,12 +10,12 @@ use crate::flags::expand_flags;
 use crate::nickel_config::NickelConfig;
 use crate::output::{Decision, HookOutput};
 use crate::parser::ParsedCommand;
-use crate::paths::detect_paths;
+use crate::paths::detect_paths_for_cwds;
 use crate::policy::{PatternInput, PolicyEngine, PolicyInput, PolicyResult, PythonAnalysisInput};
 use crate::python_analyzer;
-use crate::resolver::resolve_command;
+use crate::resolver::resolve_command_with_cwd;
 use crate::tokenizer;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
 /// How a winning `Defer` decision is rendered.
@@ -83,7 +83,6 @@ pub struct CommandEvaluator<'a> {
 /// Configuration for how to evaluate commands
 pub struct EvaluationContext<'a> {
     pub cwd: &'a str,
-    pub cwd_path: &'a Path,
     pub session_id: &'a str,
     pub project_root_str: &'a str,
     pub project_root_path: Option<&'a Path>,
@@ -140,16 +139,26 @@ impl<'a> CommandEvaluator<'a> {
         // Expand flags
         let flags_expanded = expand_flags(&extracted.command);
 
-        // Detect paths
-        let paths = detect_paths(&extracted.command, context.cwd_path);
+        let effective_cwd_paths = cmd.effective_cwd.candidate_values();
+        let effective_cwd_candidates = effective_cwd_paths.as_deref();
+
+        // Detect paths against every possible cwd. Unknown relative paths stay
+        // explicitly unresolved rather than falling back to the hook cwd.
+        let paths = detect_paths_for_cwds(&extracted.command, effective_cwd_candidates);
 
         // Resolve command binary and trust zone
-        let resolved = resolve_command(&extracted.command[0], context.project_root_path);
+        let effective_cwd = cmd.effective_cwd.known_value().map(PathBuf::as_path);
+        let resolved = resolve_command_with_cwd(
+            &extracted.command[0],
+            effective_cwd,
+            context.project_root_path,
+        );
 
         // Parse command for structured flags and args
-        let parsed_cmd = command_parser::parse_command(
+        let parsed_cmd = command_parser::parse_command_with_cwd(
             &extracted.command,
             self.command_defs,
+            effective_cwd,
             context.project_root_path,
         );
 
@@ -173,6 +182,7 @@ impl<'a> CommandEvaluator<'a> {
             paths,
             redirections: cmd.redirections.clone(),
             cwd: context.cwd.to_string(),
+            effective_cwd: cmd.effective_cwd.clone(),
             project_root: context.project_root_str.to_string(),
             session_id: context.session_id.to_string(),
             chain_position: Some(cmd.position),
@@ -370,14 +380,13 @@ impl<'a> CommandEvaluator<'a> {
 mod tests {
     use super::*;
     use crate::parser::parse_command;
-    use std::fs;
     use std::path::PathBuf;
+    use std::{fs, os::unix::fs::PermissionsExt};
     use tempfile::TempDir;
 
-    fn create_test_context<'a>(cwd: &'a str, cwd_path: &'a Path) -> EvaluationContext<'a> {
+    fn create_test_context(cwd: &str) -> EvaluationContext<'_> {
         EvaluationContext {
             cwd,
-            cwd_path,
             session_id: "test",
             project_root_str: cwd,
             project_root_path: None,
@@ -394,13 +403,13 @@ mod tests {
         let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cwd = "/tmp";
-        let cwd_path = PathBuf::from(cwd);
-        let context = create_test_context(cwd, &cwd_path);
+        let context = create_test_context(cwd);
 
         // Empty command text
         let cmd = ParsedCommand {
             text: "".to_string(),
             redirections: vec![],
+            effective_cwd: crate::parser::Resolution::known(PathBuf::from(cwd)),
             position: 0,
             chain_length: 1,
             next_operator: None,
@@ -421,8 +430,7 @@ mod tests {
         let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cwd = "/tmp";
-        let cwd_path = PathBuf::from(cwd);
-        let context = create_test_context(cwd, &cwd_path);
+        let context = create_test_context(cwd);
 
         let result = evaluator.evaluate_compound(&[], true, &context, DeferMode::Prompt);
         assert_eq!(result.decision(), Decision::Ask);
@@ -504,9 +512,9 @@ mod tests {
 
         let cwd = "/tmp";
         let cwd_path = PathBuf::from(cwd);
-        let context = create_test_context(cwd, &cwd_path);
+        let context = create_test_context(cwd);
 
-        let parse_result = parse_command("echo hello");
+        let parse_result = parse_command("echo hello", &cwd_path);
         // With no policies, an unmatched command defers; under Prompt mode
         // that surfaces as an explicit Ask.
         let result = evaluator.evaluate_compound(
@@ -560,7 +568,7 @@ allowed_curl_patterns contains `^http://127\.0\.0\.1:3000($|/)`
 
         let cwd = "/tmp";
         let cwd_path = PathBuf::from(cwd);
-        let context = create_test_context(cwd, &cwd_path);
+        let context = create_test_context(cwd);
         let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cases = [
@@ -816,7 +824,7 @@ allowed_curl_patterns contains `^http://127\.0\.0\.1:3000($|/)`
         ];
 
         for (command, expected) in cases {
-            let parsed = parse_command(command);
+            let parsed = parse_command(command, &cwd_path);
             assert!(!parsed.has_errors, "unexpected parse error for {command}");
             let result = evaluator.resolve_compound(&parsed.commands, &context);
             assert_eq!(result.decision, expected, "unexpected result for {command}");
@@ -850,7 +858,7 @@ allowed_curl_patterns contains `^http://localhost:3000($|/)`
 
         let cwd = "/tmp";
         let cwd_path = PathBuf::from(cwd);
-        let context = create_test_context(cwd, &cwd_path);
+        let context = create_test_context(cwd);
         let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cases = [
@@ -892,7 +900,7 @@ allowed_curl_patterns contains `^http://localhost:3000($|/)`
         ];
 
         for (command, expected) in cases {
-            let parsed = parse_command(command);
+            let parsed = parse_command(command, &cwd_path);
             assert!(!parsed.has_errors, "unexpected parse error for {command}");
             let result = evaluator.resolve_compound(&parsed.commands, &context);
             assert_eq!(result.decision, expected, "unexpected result for {command}");
@@ -928,7 +936,7 @@ allowed_curl_patterns contains `http://localhost:3000`
 
         let cwd = "/tmp";
         let cwd_path = PathBuf::from(cwd);
-        let context = create_test_context(cwd, &cwd_path);
+        let context = create_test_context(cwd);
         let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cases = [
@@ -944,7 +952,7 @@ allowed_curl_patterns contains `http://localhost:3000`
         ];
 
         for (command, expected) in cases {
-            let parsed = parse_command(command);
+            let parsed = parse_command(command, &cwd_path);
             assert!(!parsed.has_errors, "unexpected parse error for {command}");
             let result = evaluator.resolve_compound(&parsed.commands, &context);
             assert_eq!(result.decision, expected, "unexpected result for {command}");
@@ -980,7 +988,7 @@ allowed_curl_patterns contains ""
 
         let cwd = "/tmp";
         let cwd_path = PathBuf::from(cwd);
-        let context = create_test_context(cwd, &cwd_path);
+        let context = create_test_context(cwd);
         let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
 
         let cases = [
@@ -989,10 +997,45 @@ allowed_curl_patterns contains ""
         ];
 
         for (command, expected) in cases {
-            let parsed = parse_command(command);
+            let parsed = parse_command(command, &cwd_path);
             assert!(!parsed.has_errors, "unexpected parse error for {command}");
             let result = evaluator.resolve_compound(&parsed.commands, &context);
             assert_eq!(result.decision, expected, "unexpected result for {command}");
         }
+    }
+
+    #[test]
+    fn relative_project_shaped_binary_after_cd_is_not_trusted() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        let outside = temp.path().join("outside");
+        for root in [&project, &outside] {
+            let binary = root.join("target/debug/tool");
+            fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            fs::write(&binary, "#!/bin/sh\n").unwrap();
+            let mut permissions = fs::metadata(&binary).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&binary, permissions).unwrap();
+        }
+
+        let mut engine = PolicyEngine::new();
+        engine
+            .load_policies_from_dir(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config"))
+            .unwrap();
+        let command_defs = CommandDefinitions::builtin();
+        let mut nickel_config = NickelConfig::empty();
+        let command = format!("cd {} && ./target/debug/tool", outside.to_string_lossy());
+        let parsed = parse_command(&command, &project);
+        let context = EvaluationContext {
+            cwd: project.to_str().unwrap(),
+            session_id: "test",
+            project_root_str: project.to_str().unwrap(),
+            project_root_path: Some(&project),
+        };
+        let mut evaluator = CommandEvaluator::new(&mut engine, &command_defs, &mut nickel_config);
+
+        let result = evaluator.evaluate_single(&parsed.commands[1], &context, Some("&&".into()));
+        assert_ne!(result.decision, Decision::Allow);
+        assert_ne!(result.rule.as_deref(), Some("project_associated_binary"));
     }
 }

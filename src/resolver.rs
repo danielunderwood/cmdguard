@@ -175,7 +175,20 @@ fn classify_trust_zone(
 }
 
 /// Resolve a command to its binary location and classify trust zone
+#[cfg(test)]
 pub fn resolve_command(command: &str, project_root: Option<&Path>) -> ResolvedCommand {
+    let cwd = env::current_dir().ok();
+    resolve_command_with_cwd(command, cwd.as_deref(), project_root)
+}
+
+/// Resolve a command using the shell-derived cwd for direct relative paths and
+/// relative PATH entries. When that cwd is ambiguous or unknown, callers pass
+/// `None`; cwd-dependent resolution then remains untrusted.
+pub fn resolve_command_with_cwd(
+    command: &str,
+    effective_cwd: Option<&Path>,
+    project_root: Option<&Path>,
+) -> ResolvedCommand {
     let command_as_typed = command.to_string();
     let binary_name = Path::new(command)
         .file_name()
@@ -183,7 +196,7 @@ pub fn resolve_command(command: &str, project_root: Option<&Path>) -> ResolvedCo
         .unwrap_or_else(|| command.to_string());
 
     // Find the command in PATH
-    let found_path = find_in_path(command);
+    let found_path = find_in_path_with_cwd(command, effective_cwd);
 
     // Get zone paths for classification
     let zone_paths = TrustZonePaths::defaults();
@@ -273,10 +286,21 @@ fn validate_project_root(path: &Path) -> Option<PathBuf> {
 /// Returns None if not found
 ///
 /// If command contains '/', treats it as a direct path (not searched in PATH)
+#[cfg(test)]
 pub fn find_in_path(command: &str) -> Option<PathBuf> {
+    let cwd = env::current_dir().ok();
+    find_in_path_with_cwd(command, cwd.as_deref())
+}
+
+fn find_in_path_with_cwd(command: &str, effective_cwd: Option<&Path>) -> Option<PathBuf> {
     // If command contains a path separator, treat as direct path
     if command.contains('/') {
         let path = PathBuf::from(command);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            effective_cwd?.join(path)
+        };
         if is_executable(&path) {
             return Some(path);
         }
@@ -288,6 +312,14 @@ pub fn find_in_path(command: &str) -> Option<PathBuf> {
 
     // Search each directory in PATH
     for dir in env::split_paths(&path_var) {
+        let dir = if dir.is_absolute() {
+            dir
+        } else {
+            // An empty or relative PATH entry is interpreted against the
+            // shell's cwd. Do not skip it and accidentally trust a later
+            // absolute match when the cwd is not known.
+            effective_cwd?.join(dir)
+        };
         let candidate = dir.join(command);
         if is_executable(&candidate) {
             return Some(candidate);
@@ -312,6 +344,7 @@ fn is_executable(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::env;
+    use std::fs;
 
     #[test]
     fn test_detect_project_root_in_git_repo() {
@@ -474,6 +507,45 @@ mod tests {
             assert_eq!(result.binary_name, "ls");
             assert!(result.resolved_path.is_some());
         }
+    }
+
+    #[test]
+    fn relative_executable_uses_effective_cwd_not_process_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let effective = temp.path().join("outside");
+        let project_binary = project.join("target/debug/tool");
+        let effective_binary = effective.join("target/debug/tool");
+        for binary in [&project_binary, &effective_binary] {
+            fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            fs::write(binary, "#!/bin/sh\n").unwrap();
+            let mut permissions = fs::metadata(binary).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(binary, permissions).unwrap();
+        }
+
+        let result =
+            resolve_command_with_cwd("./target/debug/tool", Some(&effective), Some(&project));
+
+        assert_eq!(
+            result.resolved_path.as_deref(),
+            Some(
+                effective_binary
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(result.resolved_trust_zone, TrustZone::Unknown);
+    }
+
+    #[test]
+    fn relative_executable_is_unresolved_when_effective_cwd_is_unknown() {
+        let result = resolve_command_with_cwd("./target/debug/tool", None, None);
+
+        assert!(result.resolved_path.is_none());
+        assert_eq!(result.resolved_trust_zone, TrustZone::Unknown);
     }
 
     #[test]

@@ -277,6 +277,15 @@ import rego.v1
 allowed_redirect_targets["/dev/null"] := true
 ```
 
+Redirect table keys are absolute nominal paths. Relative targets are resolved
+against each command's shell-derived effective working directory. If control
+flow leaves multiple possible directories, every possible target must be
+listed; dynamic or otherwise unknown targets still prompt. A redirect that
+names a file carries a `target_resolution` using the same bundled
+`{status, candidates}` shape as `effective_cwd`; redirects whose target is not
+a path (fd duplication such as `2>&1`, heredocs, here-strings) carry no
+`target_resolution` at all.
+
 ### Custom Rules
 
 For conditional logic, write named rules:
@@ -368,23 +377,30 @@ Your policies receive structured input for each command:
   "binary_name": "rm",
   "resolved_path": "/bin/rm",
   "resolved_trust_zone": "system",
-  "subcommand": null,
   "parsed_flags": {
     "recursive": true,
     "force": true
   },
   "unknown_flags": [],
   "positional": {
-    "targets": [{"raw": "./temp", "resolved": "/project/temp", "trust_zone": "project"}]
+    "targets": [{"raw": "./temp", "resolved": "/home/user/project/temp", "resolution_known": true, "trust_zone": "project"}]
   },
-  "paths": [{"raw": "./temp", "resolved": "/project/temp", "exists": true, "is_dir": true}],
+  "paths": [{"raw": "./temp", "resolved": "/home/user/project/temp", "resolution_known": true, "exists": true, "is_dir": true}],
+  "redirections": [],
   "cwd": "/home/user/project",
+  "effective_cwd": {
+    "status": "known",
+    "candidates": ["/home/user/project"]
+  },
   "project_root": "/home/user/project",
-  "chain_position": 1,
-  "chain_length": 1,
-  "chain_operator": null
+  "chain_position": 0,
+  "chain_length": 1
 }
 ```
+
+`chain_position` is zero-based. Optional fields are omitted when they have
+no value rather than serialized as `null`, so `subcommand`, `chain_operator`
+and `prev_operator` are absent above.
 
 `unknown_flags` holds the flag tokens that matched no flag definition, in
 the order they were typed. It is only recorded where flags are modelled at
@@ -402,6 +418,16 @@ rules["allow_sed_in_pipe"] := allow("sed in a pipe (stdin -> stdout)") if {
     no_unknown_flags
 }
 ```
+
+`cwd` is the stable invocation directory supplied by the hook.
+`effective_cwd` is the per-command nominal shell state. Its bundled `status`
+and `candidates` representation prevents contradictory resolution data.
+cmdguard follows
+literal absolute `cd` operations through `&&`, `||`, `;`, subshells, brace
+groups, and background execution. Multiple possible directories are reported
+as `ambiguous`; dynamic or unsupported directory changes are `unknown`.
+Relative executable paths and relative path arguments use the effective cwd.
+Shell-expanded paths are left unresolved so project-scoped rules fail closed.
 
 ### Trust Zones
 

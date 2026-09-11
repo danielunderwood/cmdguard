@@ -12,8 +12,9 @@ import rego.v1
 # Add an allow rule for a tool not in base:
 #   allowed_with_args["make"] := {"build", "test", "clean"}
 #
-# Allow shell output redirects to specific targets without suppressing other
-# matching ask rules:
+# Allow shell output redirects to specific absolute nominal targets without
+# suppressing other ask rules. Every candidate must be listed when cwd is
+# ambiguous; unknown targets still ask:
 #   allowed_redirect_targets["/dev/null"] := true
 #
 # Allow curl when every declared URL matches a regular expression. Patterns

@@ -96,8 +96,10 @@ impl TestRunner {
     fn run_single_test(&mut self, test: &TestCase) -> TestResult {
         use crate::parser::parse_command;
 
-        // Parse for compound commands
-        let parse_result = parse_command(&test.command);
+        let cwd_path = PathBuf::from(&test.cwd);
+
+        // Parse for compound commands and derive per-command cwd state.
+        let parse_result = parse_command(&test.command, &cwd_path);
 
         // If has errors, be conservative
         if parse_result.has_errors {
@@ -113,10 +115,8 @@ impl TestRunner {
         }
 
         // Set up evaluation context
-        let cwd_path = PathBuf::from(&test.cwd);
         let context = EvaluationContext {
             cwd: &test.cwd,
-            cwd_path: &cwd_path,
             session_id: "test",
             project_root_str: &test.cwd,
             project_root_path: None,

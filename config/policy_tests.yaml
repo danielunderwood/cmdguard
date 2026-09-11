@@ -63,6 +63,13 @@ tests:
     command: "bash -c 'git status'"
     expect: allow
 
+  # `env --chdir=/etc` runs the command elsewhere: it is an option, not a
+  # NAME=value assignment, so it must not be unwrapped into a trusted
+  # in-project `touch`.
+  - name: "defer env with an option that changes directory"
+    command: "env --chdir=/etc touch ./x"
+    expect: defer
+
   # ==========================================================================
   # Cargo Commands
   # ==========================================================================
@@ -249,6 +256,25 @@ tests:
     command: "cargo build && unknown-cmd && cargo test"
     expect: defer
 
+  # Subshells: every statement inside the parentheses is evaluated
+  - name: "ask dangerous second statement in subshell"
+    command: "(git status; rm -rf /)"
+    expect: ask
+
+  - name: "ask dangerous statement in piped subshell"
+    command: "(git status; rm -rf /) | cat"
+    expect: ask
+
+  # A newline terminates a statement just like `;`: the trailing `&` belongs
+  # to `touch`, not to the newline-terminated `cd`, so the cd is in effect.
+  - name: "ask touch after newline-terminated cd with later background operator"
+    command: "cd /tmp\ntouch ./new-file.txt & git status"
+    expect: ask
+
+  - name: "ask touch after newline-terminated cd inside brace group"
+    command: "{ cd /tmp\ntouch ./new-file.txt & }"
+    expect: ask
+
   # With redirects
   - name: "ask for shell output redirect"
     command: "git log > /tmp/log.txt"
@@ -264,6 +290,125 @@ tests:
 
   - name: "ask for exfil-style local write redirect"
     command: "cat /etc/passwd > secrets.txt"
+    expect: ask
+
+  # ==========================================================================
+  # Shell Constructs
+  # ==========================================================================
+
+  # Assignments, declarations and test commands are cwd no-ops that contribute
+  # no command of their own; the rest of the chain is still evaluated.
+  - name: "allow command after export declaration"
+    command: "export FOO=bar && cargo build"
+    expect: allow
+
+  - name: "allow command after bare assignment"
+    command: "FOO=bar; git status"
+    expect: allow
+
+  - name: "allow command after unset"
+    command: "unset FOO; git status"
+    expect: allow
+
+  - name: "allow command guarded by posix test"
+    command: "[ -f x ] && cat ./x"
+    expect: allow
+
+  - name: "allow command guarded by bracket test"
+    command: "[[ -f x ]] && cat ./x"
+    expect: allow
+
+  # `!` contributes the command it negates.
+  - name: "allow negated command"
+    command: "! grep -q foo x.txt"
+    expect: allow
+
+  # Loops, conditionals and case contribute every command they contain.
+  - name: "allow for loop body command"
+    command: 'for f in *.rs; do cat "$f"; done'
+    expect: allow
+
+  - name: "allow while loop condition and body commands"
+    command: 'while read l; do echo $l; done'
+    expect: allow
+
+  - name: "allow case branch command"
+    command: 'case $x in a) ls;; esac'
+    expect: allow
+
+  - name: "deny dangerous command inside a for loop"
+    command: 'for f in *.rs; do rm -rf /; done'
+    expect: ask
+
+  # A construct that contributes no command of its own still carries its
+  # redirects: the write must stay visible to policy.
+  - name: "ask redirect on a test command in a chain"
+    command: "cargo build && [ -f x ] > secrets.txt"
+    expect: ask
+
+  - name: "ask redirect on a leading test command"
+    command: "[ -f x ] > secrets.txt; cargo build"
+    expect: ask
+
+  - name: "ask redirect on a declaration"
+    command: "cargo build && unset FOO > secrets.txt"
+    expect: ask
+
+  - name: "ask redirect attached to a function definition"
+    command: "f() { :; } > secrets.txt"
+    expect: ask
+
+  # tree-sitter-bash nests a redirect that follows a heredoc marker inside the
+  # heredoc node; the write must not be lost.
+  - name: "ask redirect following a heredoc marker"
+    command: "cat <<EOF > secrets.txt\nhi\nEOF"
+    expect: ask
+
+  # A redirect destination is `repeat1(_literal)` in the grammar, so arguments
+  # written after it end up inside the redirect node instead of the command.
+  - name: "ask redirect that swallowed command arguments"
+    command: "find . > /dev/null -delete"
+    expect: ask
+
+  - name: "ask redirect written before command arguments"
+    command: "cat > ./out.txt /etc/passwd"
+    expect: ask
+
+  # `time` times the pipeline that follows it, so a timed cd still moves the
+  # shell.
+  - name: "ask touch after timed cd outside project"
+    command: "time cd /tmp && touch ./new-file.txt"
+    expect: ask
+
+  - name: "ask touch after timed assignment-prefixed cd"
+    command: "time FOO=bar cd /tmp && touch ./x"
+    expect: ask
+
+  # A `;`-terminated cd may fail, so the cwd after it is ambiguous; the point
+  # is that `time` does not turn the cd into a no-op.
+  - name: "defer cat after a timed cd"
+    command: "time cd /tmp; cat ./x"
+    expect: defer
+
+  # tree-sitter-bash has no `time` keyword, so these parse as a command whose
+  # name is a bash reserved word: the tree does not describe what bash runs.
+  - name: "ask timed brace group containing cd"
+    command: "time { cd /tmp; } && touch ./new-file.txt"
+    expect: ask
+
+  - name: "ask timed negated cd"
+    command: "time ! cd /tmp; touch ./x"
+    expect: ask
+
+  # A redirect may precede the command name; the cd must still be seen.
+  - name: "ask touch after a cd behind a leading redirect"
+    command: ">/dev/null cd /tmp && touch ./x"
+    expect: ask
+
+  # A cd inside a conditional or loop body cannot be followed, so the cwd of
+  # every command in the construct is unknown and the chain is flagged.
+  - name: "ask conditional containing cd"
+    command: "if cd /tmp; then cat ./x; fi"
     expect: ask
 
   # ==========================================================================
@@ -356,6 +501,30 @@ tests:
   - name: "allow touch in project"
     command: "touch ./new-file.txt"
     expect: allow
+
+  - name: "ask touch after successful cd outside project"
+    command: "cd /tmp && touch ./new-file.txt"
+    expect: ask
+
+  - name: "subshell cd does not escape to following touch"
+    command: "(cd /tmp) && touch ./new-file.txt"
+    expect: allow
+
+  - name: "ask touch after fallible sequential cd"
+    command: "cd /tmp; touch ./new-file.txt"
+    expect: ask
+
+  - name: "ask touch after dynamic cd"
+    command: 'cd "$TARGET" && touch ./new-file.txt'
+    expect: ask
+
+  - name: "ask touch with command-substituted path"
+    command: 'touch "./$(printf ../../../../tmp/cmdguard_probe)"'
+    expect: ask
+
+  - name: "ask process substitution with nested redirect"
+    command: "echo test > >(cat > /tmp/cmdguard_probe)"
+    expect: ask
 
   - name: "ask touch outside project"
     command: "touch /etc/cmdguard_probe"
