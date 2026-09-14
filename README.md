@@ -1,31 +1,5 @@
 # cmdguard
 
-## Nix
-
-The flake exports `packages.default` and a Home Manager module:
-
-```nix
-{
-  inputs.cmdguard.url = "github:danielunderwood/cmdguard";
-
-  imports = [ inputs.cmdguard.homeManagerModules.default ];
-  programs.cmdguard = {
-    enable = true;
-    hookTargets = [ "claude" "codex" ];
-  };
-}
-```
-
-The module refreshes shipped base policies and registers only cmdguard's own
-hook entries, preserving user policies and unrelated agent hooks.
-
-Before disabling the module, remove its managed hooks from each enabled target:
-
-```console
-cmdguard hook uninstall --target claude
-cmdguard hook uninstall --target codex
-```
-
 Policy-driven permission control for AI coding agents. cmdguard evaluates shell commands against [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/) policies and integrates with Claude Code and Codex lifecycle hooks.
 
 **See also:** [Security Model](docs/security-model.md) | [Common Rules Recipes](docs/common-rules.md)
@@ -95,6 +69,103 @@ cmdguard hook install                  # Claude Code (default)
 ```
 
 [releases]: https://github.com/danielunderwood/cmdguard/releases
+
+### Option C: Nix
+
+The flake exports `packages.default` and a Home Manager module. The module
+installs the binary, refreshes the shipped base policies, and registers only
+cmdguard's own hook entries, leaving unrelated agent hooks and your own policies
+alone:
+
+```nix
+{
+  inputs.cmdguard.url = "github:danielunderwood/cmdguard";
+
+  imports = [ inputs.cmdguard.homeModules.default ];
+  programs.cmdguard = {
+    enable = true;
+    hookTargets = [ "claude" "codex" ];
+  };
+}
+```
+
+It can also manage rules declaratively. Policies are written as individual
+files, so hand-maintained rules in the same directory keep working:
+
+```nix
+programs.cmdguard = {
+  enable = true;
+  hookTargets = [ "claude" "codex" ];
+
+  # -> <configDir>/policies/work.rego
+  policies.work = ''
+    package cmdguard
+
+    import rego.v1
+
+    denied_subcommands["terraform"] := {"apply", "destroy"}
+  '';
+
+  # A path is used as-is, so policies can live in their own files.
+  policies.shared = ./cmdguard/shared.rego;
+
+  # -> <configDir>/commands.ncl, validated during activation
+  commands = ./cmdguard/commands.ncl;
+
+  # -> <configDir>/policy_tests.yaml, run during activation
+  policyTests = ''
+    tests:
+      - name: "deny terraform apply"
+        command: "terraform apply"
+        expect: deny
+  '';
+};
+```
+
+Activation runs `cmdguard lint` (and `validate`/`test` when those options are
+set) before touching hooks, so a broken rule set fails the switch instead of
+reaching your agents. Set `lintPolicies = false` to opt out.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `package` | this flake's `packages.default` | cmdguard build to install |
+| `configDir` | `~/.config/cmdguard` | Policy directory, also pinned into the hooks |
+| `syncBasePolicies` | `true` | Run `base sync` during activation |
+| `policies` | `{}` | Rego written to `policies/<name>.rego` |
+| `commands` | `null` | Nickel written to `commands.ncl` |
+| `policyTests` | `null` | Tests written to `policy_tests.yaml` and run during activation |
+| `lintPolicies` | managed rules present | Fail activation on lint errors |
+| `hookTargets` | `[ "claude" ]` | Agent hook protocols to register |
+| `activationAfter` | `[ "writeBoundary" ]` | Activation entries that must finish first |
+
+`configDir` deliberately ignores `xdg.configHome`. Agents started from a GUI
+hand their hooks no `XDG_CONFIG_HOME`, so cmdguard's own resolution would fall
+back to `~/.config/cmdguard` there while picking the XDG path in a terminal; the
+module pins one directory into the registered hook command so both see the same
+policies. Set it to `"${config.xdg.configHome}/cmdguard"` if you want the XDG
+location regardless.
+
+Before disabling the module, remove its managed hooks from each enabled target:
+
+```console
+cmdguard hook uninstall --target claude
+cmdguard hook uninstall --target codex
+```
+
+#### Binary cache
+
+CI builds `packages.default` and the flake checks on Linux and macOS and pushes
+them to Cachix, so consumers do not have to compile cmdguard themselves:
+
+```nix
+nix.settings = {
+  extra-substituters = [ "https://cmdguard.cachix.org" ];
+  extra-trusted-public-keys = [ "cmdguard.cachix.org-1:REPLACE_WITH_PUBLIC_KEY" ];
+};
+```
+
+A flake's own `nixConfig` does not propagate to flakes that depend on it, so this
+has to live in the consuming system or user configuration.
 
 After installation, cmdguard is active. Test it:
 
