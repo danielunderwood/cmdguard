@@ -81,7 +81,8 @@ cd cmdguard
 `install.sh` runs three steps:
 
 1. `cargo build --release` and copies to `~/.local/bin/cmdguard`
-2. `cmdguard base sync` writes base policies to `~/.config/cmdguard/base/`
+2. `cmdguard base sync` writes base policies to `base/` in the [config
+   directory](#directory-structure) it prints
 3. `cmdguard hook install` registers the binary in `~/.claude/settings.json`
 
 Or via cargo directly:
@@ -106,15 +107,21 @@ cmdguard eval "curl example.com"         # -> ask
 ### Upgrading
 
 After upgrading the `cmdguard` binary, re-run `cmdguard base sync` to refresh
-the shipped base policies in `~/.config/cmdguard/base/`. cmdguard warns on
+the shipped base policies in the config directory's `base/`. cmdguard warns on
 stderr when the on-disk base policies differ from the binary's embedded
 bundle; the warning clears once you sync. Releases that don't change base
 policies won't warn.
 
 ## Directory Structure
 
+The config directory is `$XDG_CONFIG_HOME/cmdguard` when `XDG_CONFIG_HOME` is
+set to an absolute path, and `~/.config/cmdguard` otherwise — the same layout on
+every platform. Whichever of the two already exists wins over that preference,
+so setting or unsetting the variable never orphans policies you already have.
+`--policy-dir` overrides both.
+
 ```
-~/.config/cmdguard/
+$XDG_CONFIG_HOME/cmdguard/  (or ~/.config/cmdguard/)
   base/                          # Shipped policies (managed by cmdguard base sync)
     stdlib.rego                  # Decision helpers, table dispatch, priority resolution
     safe.rego                    # Always-safe read-only commands (cat, ls, grep, ...)
@@ -496,6 +503,7 @@ cmdguard test my_tests.yaml --verbose
 
 # Manage base policies
 cmdguard base sync                             # Write/update base policies
+cmdguard base sync --policy-dir ~/policies     # Into a specific directory
 
 # Show loaded policies and tables
 cmdguard status
@@ -512,6 +520,10 @@ cmdguard hook status --target claude           # Check only Claude Code
 cmdguard hook install --target codex           # Register both hooks in ~/.codex/hooks.json
 cmdguard hook uninstall --target codex
 cmdguard hook status --target codex            # Check only Codex
+
+# Pin the registered hook to a policy directory instead of letting it resolve
+# one from the environment the agent happens to start with
+cmdguard hook install --policy-dir ~/.config/cmdguard
 
 # Validate Nickel configuration
 cmdguard validate

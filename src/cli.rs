@@ -22,7 +22,7 @@ pub enum Commands {
         #[arg(short, long)]
         verbose: bool,
 
-        /// Policy directory (default: ~/.config/cmdguard)
+        /// Policy directory (default: $XDG_CONFIG_HOME/cmdguard, else ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
     },
@@ -47,14 +47,14 @@ pub enum Commands {
 
     /// Validate Nickel configuration file
     Validate {
-        /// Policy directory (default: ~/.config/cmdguard)
+        /// Policy directory (default: $XDG_CONFIG_HOME/cmdguard, else ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
     },
 
     /// Check policy configuration for sharp edges
     Lint {
-        /// Policy directory (default: ~/.config/cmdguard)
+        /// Policy directory (default: $XDG_CONFIG_HOME/cmdguard, else ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
 
@@ -109,7 +109,7 @@ pub enum Commands {
 
     /// Show loaded policies, rules, and tables
     Status {
-        /// Policy directory (default: ~/.config/cmdguard)
+        /// Policy directory (default: $XDG_CONFIG_HOME/cmdguard, else ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
     },
@@ -128,6 +128,12 @@ pub enum HookAction {
         /// Agent hook protocol to install
         #[arg(long, value_enum, default_value_t = HookTarget::Claude)]
         target: HookTarget,
+
+        /// Pin the registered hook to this policy directory. Without it the
+        /// hook resolves the directory from its own environment, which an
+        /// agent may not launch with.
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
     },
     /// Remove cmdguard from hooks
     Uninstall {
@@ -143,7 +149,7 @@ pub enum HookAction {
     },
     /// Read a hook payload from stdin and emit a permission decision.
     Run {
-        /// Policy directory (default: ~/.config/cmdguard)
+        /// Policy directory (default: $XDG_CONFIG_HOME/cmdguard, else ~/.config/cmdguard)
         #[arg(short, long)]
         policy_dir: Option<PathBuf>,
 
@@ -161,8 +167,12 @@ pub enum HookTarget {
 
 #[derive(Subcommand)]
 pub enum BaseAction {
-    /// Write embedded base policies to ~/.config/cmdguard/base/
-    Sync,
+    /// Write embedded base policies to the config directory's base/
+    Sync {
+        /// Policy directory (default: $XDG_CONFIG_HOME/cmdguard, else ~/.config/cmdguard)
+        #[arg(short, long)]
+        policy_dir: Option<PathBuf>,
+    },
 }
 
 #[cfg(test)]
