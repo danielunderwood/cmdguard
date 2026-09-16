@@ -29,6 +29,45 @@
           pkgs = nixpkgs.legacyPackages.${system};
           pkgs-stable = nixpkgs-stable.legacyPackages.${system};
           manifest = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package;
+
+          # Shared fixture for every Home Manager check below, so a new
+          # configuration costs one `mkHome` call rather than a copy of the
+          # whole scaffold.
+          hmHome = if pkgs.stdenv.hostPlatform.isDarwin then "/Users/check" else "/home/check";
+          hmConfigDir = "${hmHome}/.config/cmdguard";
+          # Same quoting the module applies, so the expectations below hold
+          # whether or not lib decides this path needs quotes.
+          hmDirArg = pkgs.lib.escapeShellArg hmConfigDir;
+          # A stub keeps eval-level checks about module logic; checks that need
+          # real behavior pass the built package instead.
+          hmStub = pkgs.writeShellScriptBin "cmdguard" "exit 0";
+          examplePolicy = ''
+            package cmdguard
+
+            import rego.v1
+
+            denied_subcommands["git"] := {"push"}
+          '';
+          mkHome =
+            cmdguardCfg:
+            home-manager.lib.homeManagerConfiguration {
+              inherit pkgs;
+              modules = [
+                self.homeManagerModules.default
+                {
+                  home = {
+                    username = "check";
+                    homeDirectory = hmHome;
+                    stateVersion = "24.11";
+                  };
+                  programs.cmdguard = {
+                    enable = true;
+                    package = hmStub;
+                  }
+                  // cmdguardCfg;
+                }
+              ];
+            };
         in
         {
           packages.default = pkgs.rustPlatform.buildRustPackage {
@@ -54,50 +93,22 @@
 
           checks.home-manager-module =
             let
-              homeDirectory = if pkgs.stdenv.hostPlatform.isDarwin then "/Users/check" else "/home/check";
-              configDir = "${homeDirectory}/.config/cmdguard";
-              # Same quoting the module applies, so the expectations below hold
-              # whether or not lib decides this path needs quotes.
-              dirArg = pkgs.lib.escapeShellArg configDir;
-              # A stub keeps the check about module logic; the real package is
-              # covered by `nix build .#default`.
-              stub = pkgs.writeShellScriptBin "cmdguard" "exit 0";
-              home = home-manager.lib.homeManagerConfiguration {
-                inherit pkgs;
-                modules = [
-                  self.homeManagerModules.default
-                  {
-                    home = {
-                      username = "check";
-                      inherit homeDirectory;
-                      stateVersion = "24.11";
-                    };
-                    programs.cmdguard = {
-                      enable = true;
-                      package = stub;
-                      hookTargets = [
-                        "claude"
-                        "codex"
-                      ];
-                      policies.example = ''
-                        package cmdguard
-
-                        import rego.v1
-
-                        denied_subcommands["git"] := {"push"}
-                      '';
-                      commands = ''
-                        {
-                          wrappers = {},
-                          commands = {},
-                        }
-                      '';
-                      policyTests = ''
-                        tests: []
-                      '';
-                    };
-                  }
+              dirArg = hmDirArg;
+              home = mkHome {
+                hookTargets = [
+                  "claude"
+                  "codex"
                 ];
+                policies.example = examplePolicy;
+                commands = ''
+                  {
+                    wrappers = {},
+                    commands = {},
+                  }
+                '';
+                policyTests = ''
+                  tests: []
+                '';
               };
               declaredTargets = pkgs.lib.mapAttrsToList (_: file: file.target) home.config.home.file;
               entry = home.config.home.activation.cmdguard;
@@ -151,6 +162,133 @@
                     exit 1
                   }
                 done
+
+                touch $out
+              '';
+
+          # Activation must touch only the targets it manages. Asserting the
+          # absence of `hook uninstall` is the point: the grep-for-presence
+          # check above passes just as happily when activation also tears down
+          # every other target on the way through.
+          checks.home-manager-hook-targets =
+            let
+              home = mkHome { hookTargets = [ "claude" ]; };
+            in
+            pkgs.runCommand "cmdguard-home-manager-hook-targets"
+              { activation = home.config.home.activation.cmdguard.data; }
+              ''
+                printf '%s\n' "$activation" > activation.sh
+
+                reject() {
+                  if grep -qF -- "$1" activation.sh; then
+                    echo "activation must never contain: $1" >&2
+                    cat activation.sh >&2
+                    exit 1
+                  fi
+                }
+
+                # Activation cannot tell a hook this module wrote from one the
+                # user wrote, so it must not remove hooks at all.
+                reject "hook uninstall"
+                # codex is not in hookTargets, so nothing may address it.
+                reject "--target codex"
+
+                grep -qF -- "hook install --target claude" activation.sh || {
+                  echo "the claude hook is not registered" >&2
+                  cat activation.sh >&2
+                  exit 1
+                }
+
+                touch $out
+              '';
+
+          # Runs the activation script for real, against the built binary and a
+          # writable home. The grep-based check above only proves which command
+          # lines were emitted; this one proves what they do to an agent's
+          # settings file, which is where the destructive bugs lived.
+          checks.home-manager-activation =
+            let
+              home = mkHome {
+                package = self.packages.${system}.default;
+                hookTargets = [ "claude" ];
+                policies.example = examplePolicy;
+              };
+            in
+            pkgs.runCommand "cmdguard-home-manager-activation"
+              {
+                nativeBuildInputs = [ pkgs.jq ];
+                activation = home.config.home.activation.cmdguard.data;
+                generation = home.activationPackage;
+              }
+              ''
+                export HOME="$TMPDIR/check-home"
+                mkdir -p "$HOME"
+
+                # Home Manager links managed files before this entry runs
+                # (activationDeps includes linkGeneration); reproduce that.
+                cp -RL "$generation/home-files/." "$HOME/"
+                chmod -R u+w "$HOME"
+
+                # The generation bakes in an absolute home directory. Retarget
+                # it at the sandbox's writable home so the check needs no
+                # privileged paths and behaves the same on Linux and Darwin.
+                printf '%s\n' "$activation" | sed "s|${hmHome}|$HOME|g" > activation.sh
+
+                # A hook the user installed by hand, with decoration cmdguard
+                # never emits. Nothing in this activation addresses codex, so it
+                # must come out byte for byte identical.
+                mkdir -p "$HOME/.codex"
+                cat > "$HOME/.codex/hooks.json" <<'JSON'
+                {"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[{"type":"command","command":"RUST_LOG=debug /usr/local/bin/cmdguard hook run --target codex 2>>/tmp/cg.log"}]}]}}
+                JSON
+                cp "$HOME/.codex/hooks.json" expected-codex.json
+
+                # An unrelated use of the binary in the agent cmdguard *does*
+                # manage. Refreshing our own entry must not collect it.
+                mkdir -p "$HOME/.claude"
+                cat > "$HOME/.claude/settings.json" <<'JSON'
+                {"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/usr/local/bin/cmdguard eval \"$CMD\" >> /tmp/audit.log"}]}]}}
+                JSON
+
+                # Stand in for Home Manager's own `run` helper.
+                run() { "$@"; }
+                . ./activation.sh
+
+                fail() { echo "$1" >&2; shift; "$@" >&2 || true; exit 1; }
+
+                ls "$HOME/.config/cmdguard/base/"*.rego > /dev/null 2>&1 \
+                  || fail "base policies were not synced" ls -R "$HOME/.config/cmdguard"
+
+                test -f "$HOME/.config/cmdguard/policies/example.rego" \
+                  || fail "the managed policy is not in the config dir" ls -R "$HOME/.config/cmdguard"
+
+                command=$(jq -r '[.hooks.PreToolUse[].hooks[].command] | map(select(test("hook run"))) | .[0]' \
+                  "$HOME/.claude/settings.json")
+                case "$command" in
+                  *"--policy-dir"*) ;;
+                  *) fail "the registered hook carries no --policy-dir pin: $command" \
+                       cat "$HOME/.claude/settings.json" ;;
+                esac
+                case "$command" in
+                  "$HOME/.config/cmdguard"*|*"$HOME/.config/cmdguard"*) ;;
+                  *) fail "the hook is pinned somewhere other than the managed config dir: $command" \
+                       cat "$HOME/.claude/settings.json" ;;
+                esac
+
+                jq -e '[.hooks.PreToolUse[].hooks[].command] | any(test("audit\\.log"))' \
+                  "$HOME/.claude/settings.json" > /dev/null \
+                  || fail "an unrelated cmdguard invocation was deleted" cat "$HOME/.claude/settings.json"
+
+                cmp -s expected-codex.json "$HOME/.codex/hooks.json" \
+                  || fail "a hand-installed codex hook was modified" \
+                       diff expected-codex.json "$HOME/.codex/hooks.json"
+
+                # A switch that changes nothing must rewrite nothing.
+                cp "$HOME/.claude/settings.json" before-resettle.json
+                . ./activation.sh
+                cmp -s before-resettle.json "$HOME/.claude/settings.json" \
+                  || fail "a second activation rewrote settings.json" \
+                       diff before-resettle.json "$HOME/.claude/settings.json"
 
                 touch $out
               '';
