@@ -187,19 +187,22 @@ cmdguard hook uninstall --target codex
 CI builds `packages.default` and the flake checks on Linux and macOS and pushes
 them to Cachix, so consumers do not have to compile cmdguard themselves:
 
-```bash
-cachix use cmdguard
+```nix
+nix.settings = {
+  extra-substituters = [ "https://cmdguard.cachix.org" ];
+  extra-trusted-public-keys = [
+    "cmdguard.cachix.org-1:PZTI4eAHd6H8tcZEGQ3E3KiaVTDQZSy1ec237PZdKp8="
+  ];
+};
 ```
 
-That writes both the substituter and its public key into your Nix
-configuration. To wire it up by hand, the substituter is
-`https://cmdguard.cachix.org` and `cachix use --mode nixos-config cmdguard`
-prints the matching `extra-trusted-public-keys` entry — take the key from there
-rather than copying one out of a README, so it always matches the cache that is
-actually signing.
+`cachix use cmdguard` writes the same two settings imperatively instead.
 
 A flake's own `nixConfig` does not propagate to flakes that depend on it, so this
-has to live in the consuming system or user configuration.
+has to live in the consuming system or user configuration. On a multi-user Nix
+install, substituters set in a user's own configuration are ignored unless that
+user is trusted, so set them system-wide (NixOS or nix-darwin `nix.settings`, or
+`/etc/nix/nix.conf`) if the cache is not being used.
 
 After installation, cmdguard is active. Test it:
 
