@@ -2,7 +2,7 @@
 //!
 //! `$XDG_CONFIG_HOME/cmdguard` is preferred when that variable points somewhere
 //! usable, otherwise `~/.config/cmdguard`. Both candidates are probed for an
-//! existing directory first: a config dir that resolves to a path cmdguard was
+//! existing *install* first: a config dir that resolves to a path cmdguard was
 //! not installed into cannot load any policy, and a policy load error degrades
 //! every Claude decision to "ask" and blocks every Codex call, so switching
 //! silently is worse than ignoring the variable.
@@ -19,17 +19,37 @@ pub fn global_config_dir() -> PathBuf {
     resolve(
         std::env::var_os(XDG_CONFIG_HOME).map(PathBuf::from),
         dirs::home_dir(),
-        |path| path.is_dir(),
+        is_populated_config_dir,
     )
 }
 
-/// Precedence rules behind [`global_config_dir`], with directory probing
+/// Whether `dir` holds an install cmdguard could actually load rules from.
+///
+/// Mirrors `PolicyEngine::load_policies_with_layout`: either the `base/` +
+/// `policies/` layout or a flat directory of `.rego` files. Mere existence is
+/// deliberately not enough. An empty `cmdguard/` left behind by a dotfiles
+/// manager would otherwise outrank a fully populated install, and because
+/// loading an existing-but-ruleless directory succeeds, enforcement would be
+/// silently disabled rather than reported as an error.
+fn is_populated_config_dir(dir: &Path) -> bool {
+    contains_rego(dir) || contains_rego(&dir.join("base")) || contains_rego(&dir.join("policies"))
+}
+
+fn contains_rego(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("rego"))
+    })
+}
+
+/// Precedence rules behind [`global_config_dir`], with install probing
 /// injected so they can be tested without touching the filesystem or mutating
 /// process-wide environment state (`set_var` races other tests).
 fn resolve(
     xdg_config_home: Option<PathBuf>,
     home: Option<PathBuf>,
-    is_dir: impl Fn(&Path) -> bool,
+    is_installed: impl Fn(&Path) -> bool,
 ) -> PathBuf {
     // The XDG spec requires a relative (or empty) value to be treated as unset.
     let xdg = xdg_config_home
@@ -37,11 +57,13 @@ fn resolve(
         .map(|dir| dir.join("cmdguard"));
     let legacy = home.map(|dir| dir.join(".config").join("cmdguard"));
 
-    // An existing install wins over preference order, in either direction:
-    // setting XDG_CONFIG_HOME must not orphan `~/.config/cmdguard`, and
-    // unsetting it must not orphan a dir that was created under it.
+    // An existing install wins over preference order, so setting
+    // XDG_CONFIG_HOME does not orphan a populated `~/.config/cmdguard`. The
+    // reverse is not achievable: once the variable is unset its value is
+    // unknowable, so an install made under it is reachable only by setting the
+    // variable again.
     for candidate in [xdg.as_ref(), legacy.as_ref()].into_iter().flatten() {
-        if is_dir(candidate) {
+        if is_installed(candidate) {
             return candidate.clone();
         }
     }
@@ -88,9 +110,11 @@ mod tests {
     }
 
     #[test]
-    fn existing_xdg_dir_survives_xdg_being_unset() {
-        // The variable is gone from this process, but the dir it pointed at is
-        // not: `~/.config/cmdguard` is absent, so nothing is orphaned.
+    fn unsetting_xdg_does_strand_an_install_made_under_it() {
+        // Documents a real limitation rather than a guarantee: with the
+        // variable unset there is nothing left to point at `/home/u/xdg`, so
+        // that install becomes unreachable until it is set again. Naming this
+        // the other way round would claim behavior `resolve` cannot implement.
         let resolved = resolve(None, Some(path("/home/u")), only("/home/u/xdg/cmdguard"));
         assert_eq!(resolved, path("/home/u/.config/cmdguard"));
     }
@@ -132,5 +156,73 @@ mod tests {
     #[test]
     fn falls_back_to_system_dir_without_home_or_xdg() {
         assert_eq!(resolve(None, None, none_exist), path(SYSTEM_CONFIG_DIR));
+    }
+
+    // --- probing for an actually-installed config dir ---
+
+    fn tmp() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn empty_dir_is_not_populated() {
+        let dir = tmp();
+        assert!(!is_populated_config_dir(dir.path()));
+    }
+
+    #[test]
+    fn missing_dir_is_not_populated() {
+        let dir = tmp();
+        assert!(!is_populated_config_dir(&dir.path().join("absent")));
+    }
+
+    #[test]
+    fn base_layout_with_rego_is_populated() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.path().join("base")).unwrap();
+        std::fs::write(dir.path().join("base/core.rego"), "package cmdguard\n").unwrap();
+        assert!(is_populated_config_dir(dir.path()));
+    }
+
+    #[test]
+    fn policies_dir_with_rego_is_populated() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.path().join("policies")).unwrap();
+        std::fs::write(
+            dir.path().join("policies/custom.rego"),
+            "package cmdguard\n",
+        )
+        .unwrap();
+        assert!(is_populated_config_dir(dir.path()));
+    }
+
+    #[test]
+    fn flat_rego_layout_is_populated() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("rules.rego"), "package cmdguard\n").unwrap();
+        assert!(is_populated_config_dir(dir.path()));
+    }
+
+    #[test]
+    fn commands_ncl_alone_is_not_populated() {
+        // Nothing here yields a rule, so this dir cannot serve as the config
+        // dir; treating it as installed is what silently disables enforcement.
+        let dir = tmp();
+        std::fs::write(dir.path().join("commands.ncl"), "{}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("policies")).unwrap();
+        assert!(!is_populated_config_dir(dir.path()));
+    }
+
+    #[test]
+    fn empty_xdg_dir_does_not_outrank_populated_legacy_dir() {
+        // The regression: `$XDG_CONFIG_HOME/cmdguard` exists but holds no
+        // policy, while `~/.config/cmdguard` is a full install. Probing for
+        // mere existence picks the empty one and loads zero rules.
+        let resolved = resolve(
+            Some(path("/home/u/xdg")),
+            Some(path("/home/u")),
+            only("/home/u/.config/cmdguard"),
+        );
+        assert_eq!(resolved, path("/home/u/.config/cmdguard"));
     }
 }
