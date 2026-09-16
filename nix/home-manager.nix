@@ -153,14 +153,16 @@ in
     };
 
     hookTargets = lib.mkOption {
-      type = lib.types.listOf (
-        lib.types.enum [
-          "claude"
-          "codex"
-        ]
-      );
+      type = lib.types.listOf (lib.types.enum supportedTargets);
       default = [ "claude" ];
-      description = "Coding-agent hook protocols registered during Home Manager activation.";
+      description = ''
+        Coding-agent hook protocols registered during Home Manager activation.
+
+        Removing a target does not unregister it: activation cannot distinguish
+        a hook this module installed from one you installed yourself, so it
+        never removes hooks. Run `cmdguard hook uninstall --target <name>` once
+        to drop a target you no longer list here.
+      '';
     };
 
     activationAfter = lib.mkOption {
@@ -188,8 +190,18 @@ in
 
     home.file = managedFiles;
 
-    # The installer preserves unrelated hooks and user policies. Reinstalling
-    # our entries also replaces stale immutable-store paths after an upgrade.
+    # `hook install` refreshes cmdguard's own entries in place, so a stale
+    # immutable-store path from the previous generation is replaced without
+    # disturbing anything else in the agent's settings, and a switch that
+    # changes nothing rewrites no file.
+    #
+    # Targets are deliberately never uninstalled here. Activation cannot tell a
+    # registration this module wrote last generation from one the user made by
+    # hand, so uninstalling every supported target on each switch would delete
+    # hand-installed hooks and leave a window in which no hook is registered at
+    # all. Dropping a target from `hookTargets` therefore leaves its existing
+    # hook in place; run `cmdguard hook uninstall --target <name>` once to
+    # remove it.
     home.activation.cmdguard = lib.hm.dag.entryAfter activationDeps ''
       ${lib.optionalString cfg.syncBasePolicies ''
         run ${cmdguard} base sync --policy-dir ${policyDirArg}
@@ -204,11 +216,8 @@ in
         run ${cmdguard} test --policy-dir ${policyDirArg}
       ''}
       ${lib.concatMapStringsSep "\n" (target: ''
-        run ${cmdguard} hook uninstall --target ${target}
-        ${lib.optionalString (lib.elem target cfg.hookTargets) ''
-          run ${cmdguard} hook install --target ${target} --policy-dir ${policyDirArg}
-        ''}
-      '') supportedTargets}
+        run ${cmdguard} hook install --target ${target} --policy-dir ${policyDirArg}
+      '') cfg.hookTargets}
     '';
   };
 }
