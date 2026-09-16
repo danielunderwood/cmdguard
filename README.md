@@ -77,11 +77,38 @@ installs the binary, refreshes the shipped base policies, and registers only
 cmdguard's own hook entries, leaving unrelated agent hooks and your own policies
 alone:
 
-```nix
-{
-  inputs.cmdguard.url = "github:danielunderwood/cmdguard";
+Add the flake as an input and pass its module to your Home Manager
+configuration:
 
-  imports = [ inputs.cmdguard.homeModules.default ];
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    cmdguard.url = "github:danielunderwood/cmdguard";
+  };
+
+  outputs =
+    { nixpkgs, home-manager, cmdguard, ... }:
+    {
+      homeConfigurations."you" = home-manager.lib.homeManagerConfiguration {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        modules = [
+          cmdguard.homeModules.default
+          ./home.nix
+        ];
+      };
+    };
+}
+```
+
+```nix
+# home.nix
+{
   programs.cmdguard = {
     enable = true;
     hookTargets = [ "claude" "codex" ];
@@ -145,7 +172,10 @@ module pins one directory into the registered hook command so both see the same
 policies. Set it to `"${config.xdg.configHome}/cmdguard"` if you want the XDG
 location regardless.
 
-Before disabling the module, remove its managed hooks from each enabled target:
+Activation never removes hooks: it cannot tell a registration the module wrote
+from one you wrote by hand, so removing every supported target on each switch
+would delete hooks it does not own. Before disabling the module — or after
+dropping a target from `hookTargets` — unregister it yourself:
 
 ```console
 cmdguard hook uninstall --target claude
@@ -157,12 +187,16 @@ cmdguard hook uninstall --target codex
 CI builds `packages.default` and the flake checks on Linux and macOS and pushes
 them to Cachix, so consumers do not have to compile cmdguard themselves:
 
-```nix
-nix.settings = {
-  extra-substituters = [ "https://cmdguard.cachix.org" ];
-  extra-trusted-public-keys = [ "cmdguard.cachix.org-1:REPLACE_WITH_PUBLIC_KEY" ];
-};
+```bash
+cachix use cmdguard
 ```
+
+That writes both the substituter and its public key into your Nix
+configuration. To wire it up by hand, the substituter is
+`https://cmdguard.cachix.org` and `cachix use --mode nixos-config cmdguard`
+prints the matching `extra-trusted-public-keys` entry — take the key from there
+rather than copying one out of a README, so it always matches the cache that is
+actually signing.
 
 A flake's own `nixConfig` does not propagate to flakes that depend on it, so this
 has to live in the consuming system or user configuration.
@@ -187,9 +221,15 @@ policies won't warn.
 
 The config directory is `$XDG_CONFIG_HOME/cmdguard` when `XDG_CONFIG_HOME` is
 set to an absolute path, and `~/.config/cmdguard` otherwise — the same layout on
-every platform. Whichever of the two already exists wins over that preference,
-so setting or unsetting the variable never orphans policies you already have.
-`--policy-dir` overrides both.
+every platform. Whichever of the two already holds policies wins over that
+preference, so setting the variable does not orphan an existing
+`~/.config/cmdguard`. An empty directory does not count: it would otherwise
+shadow a real install and silently load no rules at all.
+
+The reverse does not hold. Once `XDG_CONFIG_HOME` is unset its value is gone, so
+policies installed under it are only reachable by setting it again. `--policy-dir`
+overrides both, and `cmdguard hook install` pins the hook to whichever directory
+it resolved, so a GUI-launched agent reads the same policies your terminal does.
 
 ```
 $XDG_CONFIG_HOME/cmdguard/  (or ~/.config/cmdguard/)
