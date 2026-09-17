@@ -89,6 +89,8 @@ configuration:
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Unlike home-manager, don't make cmdguard follow your nixpkgs: the binary
+    # cache only has builds made with cmdguard's own (see "Binary cache").
     cmdguard.url = "github:danielunderwood/cmdguard";
   };
 
@@ -203,6 +205,12 @@ has to live in the consuming system or user configuration. On a multi-user Nix
 install, substituters set in a user's own configuration are ignored unless that
 user is trusted, so set them system-wide (NixOS or nix-darwin `nix.settings`, or
 `/etc/nix/nix.conf`) if the cache is not being used.
+
+The cache only has builds made with cmdguard's own pinned `nixpkgs`, for
+x86_64-linux and aarch64-darwin. Setting
+`inputs.cmdguard.inputs.nixpkgs.follows = "nixpkgs"` builds cmdguard against
+your nixpkgs instead, which the cache has no build for, so it compiles locally,
+as it also does on any other platform.
 
 After installation, cmdguard is active. Test it:
 
