@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub fn run(action: HookAction) {
     match action {
-        HookAction::Install { target } => install(target),
+        HookAction::Install { target, policy_dir } => install(target, policy_dir),
         HookAction::Uninstall { target } => uninstall(target),
         HookAction::Status { target } => status(target),
         // The Run arm is handled directly in main.rs (it calls into the
@@ -62,23 +62,49 @@ fn write_settings(path: &Path, settings: &Value) -> Result<(), String> {
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
 }
 
-fn make_hook_entry(bin_path: &str, target: HookTarget, event: &str) -> Value {
-    // Shell-quote the binary path so install paths with spaces or shell
-    // metacharacters are emitted as a single shell token. Without this,
-    // a path like `/Users/foo bar/cmdguard` would be split by Claude
-    // Code's shell into multiple args and the hook would silently fail.
-    // try_quote can fail on bytes that are unrepresentable in shell (NULs);
-    // fall back to the unquoted form rather than failing install — the
-    // shell would have rejected such a path anyway.
-    let quoted_bin = shlex::try_quote(bin_path)
+/// Shell-quote a path so install paths with spaces or shell metacharacters are
+/// emitted as a single shell token. Without this, a path like
+/// `/Users/foo bar/cmdguard` would be split by Claude Code's shell into
+/// multiple args and the hook would silently fail. try_quote can fail on bytes
+/// that are unrepresentable in shell (NULs); fall back to the unquoted form
+/// rather than failing install — the shell would have rejected such a path
+/// anyway.
+fn shell_quote(value: &str) -> String {
+    shlex::try_quote(value)
         .map(|c| c.into_owned())
-        .unwrap_or_else(|_| bin_path.to_string());
+        .unwrap_or_else(|_| value.to_string())
+}
+
+/// The `cmdguard hook run` command line written into an agent's settings.
+fn hook_command(bin_path: &str, target: HookTarget, policy_dir: Option<&Path>) -> String {
+    let mut command = shell_quote(bin_path);
+    command.push_str(" hook run");
+    if target == HookTarget::Codex {
+        command.push_str(" --target codex");
+    }
+    // Pinning the directory matters most for agents launched from a GUI, which
+    // hand the hook no XDG_CONFIG_HOME and so would resolve a different config
+    // directory than the one the install was aimed at.
+    if let Some(dir) = policy_dir {
+        command.push_str(" --policy-dir ");
+        command.push_str(&shell_quote(&dir.to_string_lossy()));
+    }
+    command
+}
+
+fn make_hook_entry(
+    bin_path: &str,
+    target: HookTarget,
+    event: &str,
+    policy_dir: Option<&Path>,
+) -> Value {
+    let command = hook_command(bin_path, target, policy_dir);
     match target {
         HookTarget::Claude => json!({
             "matcher": "Bash",
             "hooks": [{
                 "type": "command",
-                "command": format!("{} hook run", quoted_bin)
+                "command": command
             }]
         }),
         HookTarget::Codex => {
@@ -90,7 +116,7 @@ fn make_hook_entry(bin_path: &str, target: HookTarget, event: &str) -> Value {
                 "matcher": "^Bash$",
                 "hooks": [{
                     "type": "command",
-                    "command": format!("{} hook run --target codex", quoted_bin),
+                    "command": command,
                     "statusMessage": status_message
                 }]
             })
@@ -159,15 +185,45 @@ fn is_our_entry(entry: &Value) -> bool {
 }
 
 fn is_target_entry(entry: &Value, target: HookTarget) -> bool {
+    our_command_for(entry, target).is_some()
+}
+
+/// Whether `command` is exactly what `hook_command` would emit for the binary
+/// and `--policy-dir` it names — i.e. it carries no hand-added decoration such
+/// as an env prefix or a redirection. Only such an entry can be regenerated
+/// without silently dropping a user's edits.
+fn is_plain_our_command(command: &str, target: HookTarget) -> bool {
+    let Some(args) = command_args(command) else {
+        return false;
+    };
+    let Ok(cli) = Cli::try_parse_from(&args) else {
+        return false;
+    };
+    let Some(Commands::Hook {
+        action:
+            HookAction::Run {
+                target: parsed_target,
+                policy_dir,
+            },
+    }) = cli.command
+    else {
+        return false;
+    };
+    let Some(bin) = args.first() else {
+        return false;
+    };
+    parsed_target == target && hook_command(bin, parsed_target, policy_dir.as_deref()) == command
+}
+
+/// The command of the entry's hook that is ours and speaks `target`'s protocol.
+fn our_command_for(entry: &Value, target: HookTarget) -> Option<String> {
     entry
         .get("hooks")
-        .and_then(Value::as_array)
-        .is_some_and(|hooks| {
-            hooks.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|command| command_entry_target(command) == Some(target))
-            })
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|hook| {
+            let command = hook.get("command").and_then(Value::as_str)?;
+            (command_entry_target(command) == Some(target)).then(|| command.to_string())
         })
 }
 
@@ -181,8 +237,8 @@ fn is_target_entry(entry: &Value, target: HookTarget) -> bool {
 /// treating a parse failure as "not ours" and letting `hook install`
 /// duplicate/clobber the entry, fall back to the same binary detection
 /// `is_our_command` uses, confirm the entry actually invokes `hook run`,
-/// and infer the target from whether `--target codex` appears in the
-/// command string (absent means claude).
+/// and infer the target from the `--target` flag among its tokens (absent
+/// means claude).
 fn command_entry_target(command: &str) -> Option<HookTarget> {
     if let Some(target) = command_target(command) {
         return Some(target);
@@ -197,11 +253,92 @@ fn command_entry_target(command: &str) -> Option<HookTarget> {
     if !mentions_hook_run {
         return None;
     }
-    Some(if command.contains("--target codex") {
-        HookTarget::Codex
-    } else {
-        HookTarget::Claude
+    Some(match target_flag_value(&args) {
+        Some("codex") => HookTarget::Codex,
+        _ => HookTarget::Claude,
     })
+}
+
+/// The value of a `--target` flag among already-tokenized args, accepting both
+/// the `--target codex` and `--target=codex` spellings clap allows.
+///
+/// Scanning tokens rather than substring-matching the raw command matters in
+/// both directions: `--target=codex` would otherwise read as Claude, and a
+/// policy directory named `/x/--target codex` would otherwise read as Codex.
+fn target_flag_value(args: &[String]) -> Option<&str> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(value) = arg.strip_prefix("--target=") {
+            return Some(value);
+        }
+        if arg == "--target" {
+            return iter.next().map(String::as_str);
+        }
+        // Step over the value of a flag that takes one, so a directory whose
+        // name happens to contain `--target` is never read as a flag.
+        if arg == "--policy-dir" || arg == "-p" {
+            iter.next();
+        }
+    }
+    None
+}
+
+/// Whether `command` is a cmdguard *registration*: a `hook run` entry of
+/// either target, or the legacy bare `…/cmdguard` form that predates the
+/// subcommand. Any other use of the binary — a user's own hook running
+/// `cmdguard eval …`, say — is not a registration and must survive both
+/// install and uninstall.
+fn is_our_registration(command: &str) -> bool {
+    command_entry_target(command).is_some()
+        || command_args(command).is_some_and(|args| args.len() == 1)
+}
+
+/// The `--policy-dir` an existing registration already carries, if any.
+fn parsed_policy_dir(command: &str) -> Option<PathBuf> {
+    let args = command_args(command)?;
+    if let Ok(cli) = Cli::try_parse_from(&args) {
+        if let Some(Commands::Hook {
+            action: HookAction::Run { policy_dir, .. },
+        }) = cli.command
+        {
+            return policy_dir;
+        }
+    }
+    // A hand-decorated entry (env prefix, trailing redirection) does not parse
+    // as a clean command line, but its pin still has to be visible — otherwise
+    // a bare reinstall would treat it as unpinned and overwrite it.
+    policy_dir_flag_value(&args).map(PathBuf::from)
+}
+
+/// The value of a `--policy-dir` flag among already-tokenized args, accepting
+/// the `--policy-dir X`, `--policy-dir=X` and `-p X` spellings clap allows.
+fn policy_dir_flag_value(args: &[String]) -> Option<&str> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(value) = arg.strip_prefix("--policy-dir=") {
+            return Some(value);
+        }
+        if arg == "--policy-dir" || arg == "-p" {
+            return iter.next().map(String::as_str);
+        }
+        // Step over the value of the other flag that takes one.
+        if arg == "--target" {
+            iter.next();
+        }
+    }
+    None
+}
+
+/// Make `dir` absolute against the current working directory.
+///
+/// A relative `--policy-dir` would be written into the agent's settings
+/// verbatim and then resolved by the *agent's* process, against whatever
+/// directory the user happened to open. That silently repoints the guard at a
+/// directory the installer never saw — including a `policies/` committed
+/// inside a repository, which would let checked-in rules decide what cmdguard
+/// allows.
+fn absolutize(dir: &Path) -> PathBuf {
+    std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf())
 }
 
 fn strip_our_hooks(mut entry: Value) -> (Option<Value>, usize) {
@@ -213,7 +350,7 @@ fn strip_our_hooks(mut entry: Value) -> (Option<Value>, usize) {
         !hook
             .get("command")
             .and_then(Value::as_str)
-            .is_some_and(is_our_command)
+            .is_some_and(is_our_registration)
     });
     let removed = original_len - hooks.len();
     if removed > 0 && hooks.is_empty() {
@@ -221,6 +358,91 @@ fn strip_our_hooks(mut entry: Value) -> (Option<Value>, usize) {
     } else {
         (Some(entry), removed)
     }
+}
+
+/// Drop registrations in this agent's file that are not ours for `target`: an
+/// entry speaking the other agent's wire protocol (which would emit decisions
+/// this agent cannot read) and the legacy bare form this install supersedes.
+/// Our own `target` entries are refreshed in place instead, and non-registration
+/// uses of the binary are left alone.
+fn strip_superseded_registrations(mut entry: Value, target: HookTarget) -> Option<Value> {
+    let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+        return Some(entry);
+    };
+    let original_len = hooks.len();
+    hooks.retain(|hook| {
+        let Some(command) = hook.get("command").and_then(Value::as_str) else {
+            return true;
+        };
+        !is_our_registration(command) || command_entry_target(command) == Some(target)
+    });
+    if original_len > hooks.len() && hooks.is_empty() {
+        return None;
+    }
+    Some(entry)
+}
+
+/// Rewrite the exact command string `from` to `to` inside `entry`, leaving
+/// every other field of the entry and of the hook untouched. Regenerating the
+/// entry instead would silently discard a widened `matcher`, a `timeout`, and
+/// any key a user added by hand.
+fn replace_command(entry: &mut Value, from: &str, to: &str) {
+    let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for hook in hooks.iter_mut() {
+        if hook.get("command").and_then(Value::as_str) == Some(from) {
+            hook["command"] = Value::String(to.to_string());
+        }
+    }
+}
+
+/// Bring one event's entries in line with `bin` and `policy_dir`, preserving
+/// everything the installer did not write.
+fn refresh_entries(
+    entries: Vec<Value>,
+    bin: &str,
+    target: HookTarget,
+    event: &str,
+    policy_dir: Option<&Path>,
+) -> Vec<Value> {
+    let mut result: Vec<Value> = Vec::with_capacity(entries.len());
+    let mut found_ours = false;
+
+    for entry in entries {
+        let Some(mut entry) = strip_superseded_registrations(entry, target) else {
+            continue;
+        };
+
+        if let Some(command) = our_command_for(&entry, target) {
+            found_ours = true;
+            // A hand-decorated entry (env prefix, redirection) is left exactly
+            // as it is: regenerating it would drop the decoration. Each entry
+            // is judged on its own, so one decorated or already-current
+            // sibling cannot freeze the refresh of a stale one.
+            if is_plain_our_command(&command, target) {
+                // Without an explicit --policy-dir, keep whatever pin the
+                // entry already carries rather than silently unpinning it.
+                let pin = match policy_dir {
+                    Some(dir) => Some(dir.to_path_buf()),
+                    None => parsed_policy_dir(&command),
+                };
+                let desired = hook_command(bin, target, pin.as_deref());
+                replace_command(&mut entry, &command, &desired);
+            }
+        }
+
+        // Refreshing entries that differed only by binary path leaves byte
+        // identical copies behind; collapse those, and only those.
+        if !result.contains(&entry) {
+            result.push(entry);
+        }
+    }
+
+    if !found_ours {
+        result.push(make_hook_entry(bin, target, event, policy_dir));
+    }
+    result
 }
 
 fn remove_our_hooks(entries: Vec<Value>) -> (Vec<Value>, usize) {
@@ -243,7 +465,12 @@ fn target_events(target: HookTarget) -> &'static [&'static str] {
     }
 }
 
-fn install_to(path: &Path, bin: &str, target: HookTarget) -> Result<usize, String> {
+fn install_to(
+    path: &Path,
+    bin: &str,
+    target: HookTarget,
+    policy_dir: Option<&Path>,
+) -> Result<usize, String> {
     let mut settings = read_settings(path)?;
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
@@ -253,6 +480,11 @@ fn install_to(path: &Path, bin: &str, target: HookTarget) -> Result<usize, Strin
             path.display()
         ));
     }
+
+    // Resolve the pin here, once, against the installer's cwd — the agent that
+    // later runs the hook has a different one.
+    let policy_dir = policy_dir.map(absolutize);
+    let policy_dir = policy_dir.as_deref();
 
     let mut changed = 0;
     for event in target_events(target) {
@@ -266,16 +498,16 @@ fn install_to(path: &Path, bin: &str, target: HookTarget) -> Result<usize, Strin
             })?,
             None => Vec::new(),
         };
-        if entries.iter().any(|entry| is_target_entry(entry, target)) {
-            continue;
+        // Reinstalling refreshes our own entries so a moved binary or a changed
+        // --policy-dir takes effect. Comparing the result structurally keeps a
+        // steady-state reinstall a true no-op, so repeated runs (a Home
+        // Manager switch, say) neither rewrite the file nor report a change.
+        let before = Value::Array(entries.clone());
+        let after = Value::Array(refresh_entries(entries, bin, target, event, policy_dir));
+        if after != before {
+            settings["hooks"][*event] = after;
+            changed += 1;
         }
-
-        // Replace stale cmdguard entries that use another target's wire
-        // protocol; leaving both active could emit invalid decisions.
-        let (mut entries, _) = remove_our_hooks(entries);
-        entries.push(make_hook_entry(bin, target, event));
-        settings["hooks"][*event] = Value::Array(entries);
-        changed += 1;
     }
 
     if changed > 0 {
@@ -402,12 +634,44 @@ fn overview_is_healthy(statuses: &[Result<RegistrationStatus, String>]) -> bool 
         })
 }
 
-fn install(target: HookTarget) {
+/// Whether a registration for `target` already carries a `--policy-dir`, which
+/// a bare reinstall must preserve rather than silently replace.
+fn has_pinned_registration(path: &Path, target: HookTarget) -> bool {
+    let Ok(settings) = read_settings(path) else {
+        return false;
+    };
+    target_events(target).iter().any(|event| {
+        settings
+            .get("hooks")
+            .and_then(|hooks| hooks.get(*event))
+            .and_then(Value::as_array)
+            .is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    our_command_for(entry, target)
+                        .and_then(|command| parsed_policy_dir(&command))
+                        .is_some()
+                })
+            })
+    })
+}
+
+fn install(target: HookTarget, policy_dir: Option<PathBuf>) {
     let path = settings_path(target);
-    let added = install_to(&path, &binary_path(), target).unwrap_or_else(|e| {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
+    // A bare `hook install` — what install.sh and the README both run — pins
+    // the registration to the config directory this process resolves. An
+    // unpinned hook resolves that directory from the *agent's* environment
+    // instead, and a GUI-launched agent carries no XDG_CONFIG_HOME, so it would
+    // read a different directory than the install targeted, or none at all.
+    // An existing explicit pin is left alone; only fresh or still-unpinned
+    // registrations adopt the default.
+    let policy_dir = policy_dir.or_else(|| {
+        (!has_pinned_registration(&path, target)).then(crate::config_dir::global_config_dir)
     });
+    let added =
+        install_to(&path, &binary_path(), target, policy_dir.as_deref()).unwrap_or_else(|e| {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        });
     if added == 0 {
         println!("Hooks already registered in {}", path.display());
     } else {
@@ -506,7 +770,7 @@ mod tests {
     }
 
     fn install_to(path: &Path, bin: &str) {
-        super::install_to(path, bin, HookTarget::Claude).unwrap();
+        super::install_to(path, bin, HookTarget::Claude, None).unwrap();
     }
 
     fn uninstall_from(path: &Path) -> bool {
@@ -676,6 +940,7 @@ mod tests {
             "/Users/Some User/bin/cmdguard",
             HookTarget::Claude,
             "PreToolUse",
+            None,
         );
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
         // Round-trip: the entry we just generated must be detectable as
@@ -702,6 +967,138 @@ mod tests {
         assert_eq!(hooks.as_array().unwrap().len(), 1);
     }
 
+    fn claude_command(path: &Path) -> String {
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn test_install_pins_policy_dir_in_command() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        let dir = PathBuf::from("/home/u/.config/cmdguard");
+
+        super::install_to(
+            &path,
+            "/usr/local/bin/cmdguard",
+            HookTarget::Claude,
+            Some(&dir),
+        )
+        .unwrap();
+
+        assert_eq!(
+            claude_command(&path),
+            "/usr/local/bin/cmdguard hook run --policy-dir /home/u/.config/cmdguard"
+        );
+    }
+
+    #[test]
+    fn test_install_shell_quotes_spaced_policy_dir() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        let dir = PathBuf::from("/home/Some User/.config/cmdguard");
+
+        super::install_to(
+            &path,
+            "/usr/local/bin/cmdguard",
+            HookTarget::Claude,
+            Some(&dir),
+        )
+        .unwrap();
+
+        let command = claude_command(&path);
+        // Round-trip through the tokenizer: the dir must survive as one arg,
+        // otherwise the hook would run against a truncated path.
+        let args = command_args(&command).unwrap();
+        assert_eq!(args.last().unwrap(), "/home/Some User/.config/cmdguard");
+        assert!(is_plain_our_command(&command, HookTarget::Claude));
+    }
+
+    #[test]
+    fn test_reinstall_with_same_policy_dir_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        let bin = "/usr/local/bin/cmdguard";
+        let dir = PathBuf::from("/home/u/.config/cmdguard");
+
+        super::install_to(&path, bin, HookTarget::Claude, Some(&dir)).unwrap();
+        assert_eq!(
+            super::install_to(&path, bin, HookTarget::Claude, Some(&dir)),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn test_reinstall_refreshes_changed_policy_dir() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        let bin = "/usr/local/bin/cmdguard";
+
+        super::install_to(
+            &path,
+            bin,
+            HookTarget::Claude,
+            Some(Path::new("/old/cmdguard")),
+        )
+        .unwrap();
+        super::install_to(
+            &path,
+            bin,
+            HookTarget::Claude,
+            Some(Path::new("/new/cmdguard")),
+        )
+        .unwrap();
+
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Refreshed in place: exactly one entry, pointing at the new dir.
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            claude_command(&path),
+            "/usr/local/bin/cmdguard hook run --policy-dir /new/cmdguard"
+        );
+    }
+
+    #[test]
+    fn test_reinstall_refreshes_moved_binary() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+
+        install_to(&path, "/nix/store/old-cmdguard/bin/cmdguard");
+        install_to(&path, "/nix/store/new-cmdguard/bin/cmdguard");
+
+        assert_eq!(
+            claude_command(&path),
+            "/nix/store/new-cmdguard/bin/cmdguard hook run"
+        );
+    }
+
+    #[test]
+    fn test_reinstall_preserves_decorated_entry_with_moved_binary() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        // Decoration clap cannot reproduce: rewriting would drop the env
+        // prefix and the redirection the user added by hand.
+        let cmd = "RUST_LOG=debug /nix/store/old-cmdguard/bin/cmdguard hook run 2>>/tmp/cg.log";
+        write_settings(&path, &json!({"hooks": {"PreToolUse": [entry(cmd)]}})).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(
+            super::install_to(
+                &path,
+                "/nix/store/new-cmdguard/bin/cmdguard",
+                HookTarget::Claude,
+                None
+            ),
+            Ok(0)
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
     #[test]
     fn test_install_leaves_customized_claude_entry_untouched() {
         let tmp = TempDir::new().unwrap();
@@ -715,7 +1112,10 @@ mod tests {
         // Zero entries added means install() prints "already registered"
         // and, crucially, install_to never calls write_settings — the file
         // on disk must be byte-for-byte unchanged.
-        assert_eq!(super::install_to(&path, bin, HookTarget::Claude), Ok(0));
+        assert_eq!(
+            super::install_to(&path, bin, HookTarget::Claude, None),
+            Ok(0)
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 
@@ -734,7 +1134,10 @@ mod tests {
         write_settings(&path, &settings).unwrap();
         let before = std::fs::read_to_string(&path).unwrap();
 
-        assert_eq!(super::install_to(&path, bin, HookTarget::Codex), Ok(0));
+        assert_eq!(
+            super::install_to(&path, bin, HookTarget::Codex, None),
+            Ok(0)
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 
@@ -811,8 +1214,8 @@ mod tests {
         let original = "{ this is not valid json\n";
         std::fs::write(&path, original).unwrap();
 
-        let error =
-            super::install_to(&path, "/usr/local/bin/cmdguard", HookTarget::Claude).unwrap_err();
+        let error = super::install_to(&path, "/usr/local/bin/cmdguard", HookTarget::Claude, None)
+            .unwrap_err();
 
         assert!(error.contains("Could not parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
@@ -826,8 +1229,8 @@ mod tests {
         let original = r#"{"hooks":{"PreToolUse":{"matcher":"Bash"}}}"#;
         std::fs::write(&path, original).unwrap();
 
-        let error =
-            super::install_to(&path, "/usr/local/bin/cmdguard", HookTarget::Claude).unwrap_err();
+        let error = super::install_to(&path, "/usr/local/bin/cmdguard", HookTarget::Claude, None)
+            .unwrap_err();
 
         assert!(error.contains("non-array `hooks.PreToolUse`"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
@@ -943,7 +1346,7 @@ mod tests {
         let bin = "/usr/local/bin/cmdguard";
         let settings = json!({
             "hooks": {
-                "PreToolUse": [make_hook_entry(bin, HookTarget::Codex, "PreToolUse")]
+                "PreToolUse": [make_hook_entry(bin, HookTarget::Codex, "PreToolUse", None)]
             }
         });
         write_settings(&path, &settings).unwrap();
@@ -988,7 +1391,10 @@ mod tests {
         let path = tmp.path().join(".codex/hooks.json");
         let bin = "/usr/local/bin/cmdguard";
 
-        assert_eq!(super::install_to(&path, bin, HookTarget::Codex), Ok(2));
+        assert_eq!(
+            super::install_to(&path, bin, HookTarget::Codex, None),
+            Ok(2)
+        );
         assert_eq!(
             super::registered_events(&path, HookTarget::Codex),
             Ok(vec!["PreToolUse", "PermissionRequest"])
@@ -1013,10 +1419,13 @@ mod tests {
 
         let mut settings = json!({"hooks": {}});
         settings["hooks"]["PreToolUse"] =
-            json!([make_hook_entry(bin, HookTarget::Codex, "PreToolUse")]);
+            json!([make_hook_entry(bin, HookTarget::Codex, "PreToolUse", None)]);
         write_settings(&path, &settings).unwrap();
 
-        assert_eq!(super::install_to(&path, bin, HookTarget::Codex), Ok(1));
+        assert_eq!(
+            super::install_to(&path, bin, HookTarget::Codex, None),
+            Ok(1)
+        );
         assert_eq!(
             super::registered_events(&path, HookTarget::Codex),
             Ok(vec!["PreToolUse", "PermissionRequest"])
@@ -1030,12 +1439,15 @@ mod tests {
         let bin = "/usr/local/bin/cmdguard";
         let settings = json!({
             "hooks": {
-                "PreToolUse": [make_hook_entry(bin, HookTarget::Claude, "PreToolUse")]
+                "PreToolUse": [make_hook_entry(bin, HookTarget::Claude, "PreToolUse", None)]
             }
         });
         write_settings(&path, &settings).unwrap();
 
-        assert_eq!(super::install_to(&path, bin, HookTarget::Codex), Ok(2));
+        assert_eq!(
+            super::install_to(&path, bin, HookTarget::Codex, None),
+            Ok(2)
+        );
         let settings = read_settings(&path).unwrap();
         let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
@@ -1047,7 +1459,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(".codex/hooks.json");
         let bin = "/usr/local/bin/cmdguard";
-        super::install_to(&path, bin, HookTarget::Codex).unwrap();
+        super::install_to(&path, bin, HookTarget::Codex, None).unwrap();
 
         let mut settings = read_settings(&path).unwrap();
         settings["hooks"]["PreToolUse"]
@@ -1067,5 +1479,250 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    // --- refresh must not destroy what it did not create ---
+
+    fn seed(path: &Path, event: &str, entries: Value) {
+        super::write_settings(path, &json!({ "hooks": { event: entries } })).unwrap();
+    }
+
+    fn settings_of(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn commands_of(path: &Path, event: &str) -> Vec<String> {
+        settings_of(path)["hooks"][event]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|e| {
+                e["hooks"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|h| h["command"].as_str().map(str::to_string))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn refresh_preserves_an_unrelated_cmdguard_invocation() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        seed(
+            &path,
+            "PreToolUse",
+            json!([
+                entry("/old/cmdguard hook run"),
+                entry("/usr/local/bin/cmdguard eval \"$CMD\" >> ~/audit.log"),
+            ]),
+        );
+
+        super::install_to(&path, "/new/cmdguard", HookTarget::Claude, None).unwrap();
+
+        let commands = commands_of(&path, "PreToolUse");
+        assert!(
+            commands.iter().any(|c| c.contains("audit.log")),
+            "an unrelated `cmdguard eval` entry was deleted: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn refresh_preserves_matcher_and_extra_entry_keys() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        seed(
+            &path,
+            "PreToolUse",
+            json!([{
+                "matcher": "Bash|Write",
+                "note": "mine",
+                "hooks": [{"type": "command", "command": "/old/cmdguard hook run", "timeout": 30}]
+            }]),
+        );
+
+        super::install_to(&path, "/new/cmdguard", HookTarget::Claude, None).unwrap();
+
+        let settings = settings_of(&path);
+        let refreshed = &settings["hooks"]["PreToolUse"][0];
+        assert_eq!(refreshed["matcher"], "Bash|Write", "matcher was reset");
+        assert_eq!(refreshed["note"], "mine", "custom key was dropped");
+        assert_eq!(refreshed["hooks"][0]["timeout"], 30, "timeout was dropped");
+        assert_eq!(
+            refreshed["hooks"][0]["command"], "/new/cmdguard hook run",
+            "binary path was not refreshed"
+        );
+    }
+
+    #[test]
+    fn bare_install_keeps_an_existing_policy_dir_pin() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        super::install_to(
+            &path,
+            "/b/cmdguard",
+            HookTarget::Claude,
+            Some(Path::new("/tmp/pinned")),
+        )
+        .unwrap();
+
+        super::install_to(&path, "/b/cmdguard", HookTarget::Claude, None).unwrap();
+
+        let commands = commands_of(&path, "PreToolUse");
+        assert_eq!(
+            commands,
+            vec!["/b/cmdguard hook run --policy-dir /tmp/pinned".to_string()],
+            "a bare reinstall silently dropped the pin"
+        );
+    }
+
+    #[test]
+    fn refresh_updates_every_stale_plain_entry() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        seed(
+            &path,
+            "PreToolUse",
+            json!([
+                entry("/nix/store/AAA/cmdguard hook run --policy-dir /cfg"),
+                entry("/nix/store/BBB/cmdguard hook run --policy-dir /cfg"),
+            ]),
+        );
+
+        super::install_to(
+            &path,
+            "/nix/store/BBB/cmdguard",
+            HookTarget::Claude,
+            Some(Path::new("/cfg")),
+        )
+        .unwrap();
+
+        let commands = commands_of(&path, "PreToolUse");
+        assert!(
+            !commands.iter().any(|c| c.contains("AAA")),
+            "a garbage-collected store path was left registered: {commands:?}"
+        );
+        assert_eq!(commands.len(), 1, "duplicates were not collapsed");
+    }
+
+    #[test]
+    fn refresh_updates_plain_entry_beside_a_decorated_sibling() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        seed(
+            &path,
+            "PreToolUse",
+            json!([
+                entry("/old/cmdguard hook run"),
+                entry("RUST_LOG=debug /old/cmdguard hook run 2>>/tmp/l"),
+            ]),
+        );
+
+        super::install_to(&path, "/new/cmdguard", HookTarget::Claude, None).unwrap();
+
+        let commands = commands_of(&path, "PreToolUse");
+        assert!(
+            commands.contains(&"/new/cmdguard hook run".to_string()),
+            "the plain entry still points at a moved binary: {commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| c == "RUST_LOG=debug /old/cmdguard hook run 2>>/tmp/l"),
+            "the hand-decorated entry was rewritten: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn equals_spelled_target_flag_is_classified_as_codex() {
+        assert_eq!(
+            command_entry_target("RUST_LOG=debug /b/cmdguard hook run --target=codex 2>>/tmp/l"),
+            Some(HookTarget::Codex)
+        );
+    }
+
+    #[test]
+    fn policy_dir_containing_target_text_stays_claude() {
+        assert_eq!(
+            command_entry_target(
+                "RUST_LOG=debug /b/cmdguard hook run --policy-dir '/x/--target codex' 2>>/tmp/l"
+            ),
+            Some(HookTarget::Claude)
+        );
+    }
+
+    #[test]
+    fn install_absolutizes_a_relative_policy_dir() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+
+        super::install_to(
+            &path,
+            "/b/cmdguard",
+            HookTarget::Claude,
+            Some(Path::new("./policies")),
+        )
+        .unwrap();
+
+        let command = commands_of(&path, "PreToolUse").remove(0);
+        assert!(
+            !command.contains("./policies"),
+            "a relative --policy-dir was written verbatim, so the hook resolves \
+             policies from whatever directory the agent happens to run in: {command}"
+        );
+        assert!(
+            command.contains("--policy-dir /"),
+            "policy dir was not absolutized: {command}"
+        );
+    }
+
+    // --- a bare `hook install` must still produce a pinned hook ---
+
+    #[test]
+    fn pinned_registration_is_detected() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        super::install_to(
+            &path,
+            "/b/cmdguard",
+            HookTarget::Claude,
+            Some(Path::new("/tmp/pinned")),
+        )
+        .unwrap();
+        assert!(has_pinned_registration(&path, HookTarget::Claude));
+    }
+
+    #[test]
+    fn unpinned_registration_is_not_treated_as_pinned() {
+        // The upgrade path: an install made before hooks carried a pin should
+        // be adopted by the next bare `hook install`, not left resolving its
+        // config dir from whatever environment the agent was launched with.
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        super::install_to(&path, "/b/cmdguard", HookTarget::Claude, None).unwrap();
+        assert!(!has_pinned_registration(&path, HookTarget::Claude));
+    }
+
+    #[test]
+    fn missing_settings_file_has_no_pinned_registration() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        assert!(!has_pinned_registration(&path, HookTarget::Claude));
+    }
+
+    #[test]
+    fn a_decorated_entrys_pin_counts_as_pinned() {
+        let tmp = TempDir::new().unwrap();
+        let path = setup_env(&tmp);
+        seed(
+            &path,
+            "PreToolUse",
+            json!([entry(
+                "RUST_LOG=debug /b/cmdguard hook run --policy-dir /tmp/pinned 2>>/tmp/l"
+            )]),
+        );
+        assert!(has_pinned_registration(&path, HookTarget::Claude));
     }
 }

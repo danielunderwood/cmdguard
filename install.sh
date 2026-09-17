@@ -34,5 +34,7 @@ echo ""
 echo "Make sure ~/.local/bin is in your PATH. Add this to your shell profile if needed:"
 echo '  export PATH="$HOME/.local/bin:$PATH"'
 echo ""
-echo "Base policies: $HOME/.config/cmdguard/base/"
-echo "Your overrides: $HOME/.config/cmdguard/policies/custom.rego"
+# Paths are not echoed here: `base sync` above prints the config directory it
+# resolved, and duplicating the XDG_CONFIG_HOME precedence in shell would drift
+# from src/config_dir.rs.
+echo "Base policies and your policies/custom.rego live in the config directory printed above."

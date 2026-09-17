@@ -3,6 +3,7 @@ mod cli;
 mod command_defs;
 mod command_evaluator;
 mod command_parser;
+mod config_dir;
 mod diagnostics;
 mod extractor;
 mod flags;
@@ -90,7 +91,7 @@ fn main() {
             other => hook::run(other),
         },
         Some(Commands::Base { action }) => match action {
-            cli::BaseAction::Sync => base_sync::run(get_policy_dir(None)),
+            cli::BaseAction::Sync { policy_dir } => base_sync::run(get_policy_dir(policy_dir)),
         },
         Some(Commands::Status { policy_dir }) => {
             run_status(policy_dir);
@@ -489,12 +490,9 @@ fn extract_python_c_code(command: &[String]) -> Option<String> {
 }
 
 fn get_policy_dir(override_dir: Option<PathBuf>) -> PathBuf {
-    override_dir.unwrap_or_else(|| {
-        // Always use ~/.config/cmdguard for consistency across platforms
-        dirs::home_dir()
-            .map(|d| d.join(".config/cmdguard"))
-            .unwrap_or_else(|| PathBuf::from("/etc/cmdguard"))
-    })
+    // `~/.config` rather than a platform config dir on purpose: the layout is
+    // identical on every OS. See config_dir for the XDG_CONFIG_HOME rules.
+    override_dir.unwrap_or_else(config_dir::global_config_dir)
 }
 
 /// Get the project-local policy directory if it exists

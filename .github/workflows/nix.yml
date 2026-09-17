@@ -1,0 +1,59 @@
+name: Nix
+
+on:
+  # Must cover every path in the package fileset in flake.nix. A change to
+  # any of them yields a new store path, and a commit this workflow skips is
+  # never built or pushed, so anyone pinning it compiles cmdguard locally.
+  push:
+    branches: [main]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "nix/**"
+      - "src/**"
+      - "config/**"
+      - "policies/**"
+      - "tests/**"
+      - "Cargo.*"
+      - ".github/workflows/nix.yml"
+  pull_request:
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "nix/**"
+      - "src/**"
+      - "config/**"
+      - "policies/**"
+      - "tests/**"
+      - "Cargo.*"
+      - ".github/workflows/nix.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cmdguard
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # Forks cannot read the token, so they consume the cache read-only
+          # instead of failing the job on a push attempt.
+          skipPush: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+
+      # Builds the binary the Home Manager module installs, running the test
+      # suite through cargoCheckHook as a side effect.
+      - run: nix build .#default -L
+
+      # Evaluates and builds checks, including the Home Manager module.
+      - run: nix flake check -L

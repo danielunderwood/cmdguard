@@ -55,7 +55,8 @@ cd cmdguard
 `install.sh` runs three steps:
 
 1. `cargo build --release` and copies to `~/.local/bin/cmdguard`
-2. `cmdguard base sync` writes base policies to `~/.config/cmdguard/base/`
+2. `cmdguard base sync` writes base policies to `base/` in the [config
+   directory](#directory-structure) it prints
 3. `cmdguard hook install` registers the binary in `~/.claude/settings.json`
 
 Or via cargo directly:
@@ -69,6 +70,148 @@ cmdguard hook install                  # Claude Code (default)
 
 [releases]: https://github.com/danielunderwood/cmdguard/releases
 
+### Option C: Nix
+
+The flake exports `packages.default` and a Home Manager module. The module
+installs the binary, refreshes the shipped base policies, and registers only
+cmdguard's own hook entries, leaving unrelated agent hooks and your own policies
+alone:
+
+Add the flake as an input and pass its module to your Home Manager
+configuration:
+
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # Unlike home-manager, don't make cmdguard follow your nixpkgs: the binary
+    # cache only has builds made with cmdguard's own (see "Binary cache").
+    cmdguard.url = "github:danielunderwood/cmdguard";
+  };
+
+  outputs =
+    { nixpkgs, home-manager, cmdguard, ... }:
+    {
+      homeConfigurations."you" = home-manager.lib.homeManagerConfiguration {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        modules = [
+          cmdguard.homeModules.default
+          ./home.nix
+        ];
+      };
+    };
+}
+```
+
+```nix
+# home.nix
+{
+  programs.cmdguard = {
+    enable = true;
+    hookTargets = [ "claude" "codex" ];
+  };
+}
+```
+
+It can also manage rules declaratively. Policies are written as individual
+files, so hand-maintained rules in the same directory keep working:
+
+```nix
+programs.cmdguard = {
+  enable = true;
+  hookTargets = [ "claude" "codex" ];
+
+  # -> <configDir>/policies/work.rego
+  policies.work = ''
+    package cmdguard
+
+    import rego.v1
+
+    denied_subcommands["terraform"] := {"apply", "destroy"}
+  '';
+
+  # A path is used as-is, so policies can live in their own files.
+  policies.shared = ./cmdguard/shared.rego;
+
+  # -> <configDir>/commands.ncl, validated during activation
+  commands = ./cmdguard/commands.ncl;
+
+  # -> <configDir>/policy_tests.yaml, run during activation
+  policyTests = ''
+    tests:
+      - name: "deny terraform apply"
+        command: "terraform apply"
+        expect: deny
+  '';
+};
+```
+
+Activation runs `cmdguard lint` (and `validate`/`test` when those options are
+set) before touching hooks, so a broken rule set fails the switch instead of
+reaching your agents. Set `lintPolicies = false` to opt out.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `package` | this flake's `packages.default` | cmdguard build to install |
+| `configDir` | `~/.config/cmdguard` | Policy directory, also pinned into the hooks |
+| `syncBasePolicies` | `true` | Run `base sync` during activation |
+| `policies` | `{}` | Rego written to `policies/<name>.rego` |
+| `commands` | `null` | Nickel written to `commands.ncl` |
+| `policyTests` | `null` | Tests written to `policy_tests.yaml` and run during activation |
+| `lintPolicies` | managed rules present | Fail activation on lint errors |
+| `hookTargets` | `[ "claude" ]` | Agent hook protocols to register |
+| `activationAfter` | `[ "writeBoundary" ]` | Activation entries that must finish first |
+
+`configDir` deliberately ignores `xdg.configHome`. Agents started from a GUI
+hand their hooks no `XDG_CONFIG_HOME`, so cmdguard's own resolution would fall
+back to `~/.config/cmdguard` there while picking the XDG path in a terminal; the
+module pins one directory into the registered hook command so both see the same
+policies. Set it to `"${config.xdg.configHome}/cmdguard"` if you want the XDG
+location regardless.
+
+Activation never removes hooks: it cannot tell a registration the module wrote
+from one you wrote by hand, so removing every supported target on each switch
+would delete hooks it does not own. Before disabling the module — or after
+dropping a target from `hookTargets` — unregister it yourself:
+
+```console
+cmdguard hook uninstall --target claude
+cmdguard hook uninstall --target codex
+```
+
+#### Binary cache
+
+CI builds `packages.default` and the flake checks on Linux and macOS and pushes
+them to Cachix, so consumers do not have to compile cmdguard themselves:
+
+```nix
+nix.settings = {
+  extra-substituters = [ "https://cmdguard.cachix.org" ];
+  extra-trusted-public-keys = [
+    "cmdguard.cachix.org-1:PZTI4eAHd6H8tcZEGQ3E3KiaVTDQZSy1ec237PZdKp8="
+  ];
+};
+```
+
+`cachix use cmdguard` writes the same two settings imperatively instead.
+
+A flake's own `nixConfig` does not propagate to flakes that depend on it, so this
+has to live in the consuming system or user configuration. On a multi-user Nix
+install, substituters set in a user's own configuration are ignored unless that
+user is trusted, so set them system-wide (NixOS or nix-darwin `nix.settings`, or
+`/etc/nix/nix.conf`) if the cache is not being used.
+
+The cache only has builds made with cmdguard's own pinned `nixpkgs`, for
+x86_64-linux and aarch64-darwin. Setting
+`inputs.cmdguard.inputs.nixpkgs.follows = "nixpkgs"` builds cmdguard against
+your nixpkgs instead, which the cache has no build for, so it compiles locally,
+as it also does on any other platform.
+
 After installation, cmdguard is active. Test it:
 
 ```bash
@@ -80,15 +223,27 @@ cmdguard eval "curl example.com"         # -> ask
 ### Upgrading
 
 After upgrading the `cmdguard` binary, re-run `cmdguard base sync` to refresh
-the shipped base policies in `~/.config/cmdguard/base/`. cmdguard warns on
+the shipped base policies in the config directory's `base/`. cmdguard warns on
 stderr when the on-disk base policies differ from the binary's embedded
 bundle; the warning clears once you sync. Releases that don't change base
 policies won't warn.
 
 ## Directory Structure
 
+The config directory is `$XDG_CONFIG_HOME/cmdguard` when `XDG_CONFIG_HOME` is
+set to an absolute path, and `~/.config/cmdguard` otherwise — the same layout on
+every platform. Whichever of the two already holds policies wins over that
+preference, so setting the variable does not orphan an existing
+`~/.config/cmdguard`. An empty directory does not count: it would otherwise
+shadow a real install and silently load no rules at all.
+
+The reverse does not hold. Once `XDG_CONFIG_HOME` is unset its value is gone, so
+policies installed under it are only reachable by setting it again. `--policy-dir`
+overrides both, and `cmdguard hook install` pins the hook to whichever directory
+it resolved, so a GUI-launched agent reads the same policies your terminal does.
+
 ```
-~/.config/cmdguard/
+$XDG_CONFIG_HOME/cmdguard/  (or ~/.config/cmdguard/)
   base/                          # Shipped policies (managed by cmdguard base sync)
     stdlib.rego                  # Decision helpers, table dispatch, priority resolution
     safe.rego                    # Always-safe read-only commands (cat, ls, grep, ...)
@@ -470,6 +625,7 @@ cmdguard test my_tests.yaml --verbose
 
 # Manage base policies
 cmdguard base sync                             # Write/update base policies
+cmdguard base sync --policy-dir ~/policies     # Into a specific directory
 
 # Show loaded policies and tables
 cmdguard status
@@ -486,6 +642,10 @@ cmdguard hook status --target claude           # Check only Claude Code
 cmdguard hook install --target codex           # Register both hooks in ~/.codex/hooks.json
 cmdguard hook uninstall --target codex
 cmdguard hook status --target codex            # Check only Codex
+
+# Pin the registered hook to a policy directory instead of letting it resolve
+# one from the environment the agent happens to start with
+cmdguard hook install --policy-dir ~/.config/cmdguard
 
 # Validate Nickel configuration
 cmdguard validate
