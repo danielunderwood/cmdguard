@@ -73,7 +73,24 @@
           packages.default = pkgs.rustPlatform.buildRustPackage {
             pname = manifest.name;
             version = manifest.version;
-            src = ./.;
+            # Only what the build and its test suite read. Anything else in the
+            # repo (docs, CI config, the Home Manager module) would change this
+            # store path without changing the binary, so a docs-only commit
+            # would miss the binary cache. Keep this in step with the path
+            # filter in .github/workflows/nix.yml, which decides what CI builds
+            # and pushes.
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./Cargo.toml
+                ./Cargo.lock
+                ./src
+                # Embedded with include_str! and loaded by tests.
+                ./config
+                ./policies
+                ./tests
+              ];
+            };
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.git ];
 
